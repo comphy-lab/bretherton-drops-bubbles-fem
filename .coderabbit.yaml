@@ -1,0 +1,45 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+language: "en-GB"
+early_access: false
+
+reviews:
+  profile: "chill"
+  high_level_summary: true
+  path_filters:
+    - "!**/*.lock"
+    - "!dist/**"
+    - "!build/**"
+    - "!**/__pycache__/**"
+    - "!**/*.ipynb_checkpoints/**"
+    - "!runs/**"
+    - "!**/*.vtu"
+    - "!**/*.pvd"
+    - "!**/*.pvtu"
+    - "!**/*.png"
+    - "!**/*.pdf"
+  path_instructions:
+    - path: "problems/**"
+      instructions: |
+        pyoomph FEM: the bubble interior is a void. Do not suggest meshing a
+        gas domain or adding a second fluid to match Basilisk VoF. Flag
+        DirichletBC values that depend on unknowns; those must be EnforcedBC.
+        Axisymmetric integrals already include 2*pi*r; do not multiply again.
+        Follow AGENTS.md.
+    - path: "cases/**"
+      instructions: |
+        Portable pyoomph-case-v1 documents. Check schema keys, positive
+        tolerances, and that physics.interior remains void.
+    - path: "tests/**"
+      instructions: |
+        Software-contract tests. At least one path must import no pyoomph.
+    - path: "AGENTS.md"
+      instructions: |
+        Canonical repo operating manual. Check for stale pins, broken
+        references, and contradictions with the actual layout.
+  tools:
+    ruff:
+      enabled: true
+    markdownlint:
+      enabled: true
+    actionlint:
+      enabled: true
