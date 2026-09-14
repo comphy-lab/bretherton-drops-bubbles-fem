@@ -104,6 +104,17 @@ def solve_case(
     geom = problem.geometry
     ca_b = checks.frame_speed
 
+    # The converged interface, as data. The mesh nodes *are* the interface in
+    # this formulation, so this is the solution itself rather than a
+    # reconstruction, and saving it means a figure never has to re-solve.
+    z, r = problem.interface_polyline()
+    profile = output_dir / "interface.csv"
+    profile.parent.mkdir(parents=True, exist_ok=True)
+    profile.write_text(
+        "z,r\n" + "\n".join(f"{zi:.12g},{ri:.12g}" for zi, ri in zip(z, r)) + "\n",
+        encoding="utf-8",
+    )
+
     return {
         "ca_in": problem.ca_in,
         "laplace": problem.laplace,
@@ -144,6 +155,8 @@ def solve_case(
         "check_film_flatness": film.flatness,
         "check_initial_constraint_audit": audit,
         "check_central_nodes": film.n_central,
+        "interface_profile": str(profile.relative_to(ROOT)) if profile.is_relative_to(ROOT)
+        else str(profile),
     }
 
 
