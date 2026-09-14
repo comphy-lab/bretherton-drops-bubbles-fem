@@ -38,6 +38,14 @@ pyoomph-build = [
 line-length = 100
 target-version = "py313"
 
+[tool.ruff.lint.per-file-ignores]
+# Matplotlib label strings are LaTeX, where `%` is the comment character and
+# braces are syntax. Percent formatting is therefore the correct interpolation
+# here: an f-string would require doubling every LaTeX brace, which is both
+# less readable and a standing source of silent label corruption. UP031 does
+# not know that, so it is disabled for the figure module only.
+"postprocess/figures.py" = ["UP031"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
