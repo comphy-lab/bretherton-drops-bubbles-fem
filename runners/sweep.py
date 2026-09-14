@@ -35,7 +35,17 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--film-elements", type=float, default=None)
     parser.add_argument("--bulk-resolution", type=float, default=None)
     parser.add_argument("--out", type=Path, default=ROOT / "receipts" / "sweep.json")
+    parser.add_argument("--output-root", type=Path, default=None,
+                        help="directory to hold per-case solver output; defaults to "
+                             "receipts/ inside the checkout, which is only appropriate "
+                             "for local exploration. A dispatched run must place output "
+                             "on a registered working volume, outside the source tree.")
+    parser.add_argument("--pad-rear", type=float, default=None)
+    parser.add_argument("--pad-front", type=float, default=None)
     args = parser.parse_args(argv)
+
+    output_root = args.output_root or (ROOT / "receipts")
+    output_root.mkdir(parents=True, exist_ok=True)
 
     case = load_case(args.case)
     solve = case["solve"]
@@ -44,6 +54,10 @@ def main(argv: list[str] | None = None) -> int:
         overrides: dict = {"physics": {"ca_in": ca}, "mesh": {}}
         if args.la is not None:
             overrides["physics"]["laplace"] = args.la
+        if args.pad_rear is not None:
+            overrides["physics"]["pad_rear"] = args.pad_rear
+        if args.pad_front is not None:
+            overrides["physics"]["pad_front"] = args.pad_front
         if args.film_elements is not None:
             overrides["mesh"]["film_elements"] = args.film_elements
         if args.bulk_resolution is not None:
@@ -52,7 +66,7 @@ def main(argv: list[str] | None = None) -> int:
             results.append(
                 solve_case(
                     build(case, overrides=overrides),
-                    output_dir=ROOT / "receipts" / f"sweep_ca{ca:g}",
+                    output_dir=output_root / f"sweep_ca{ca:g}",
                     relax_time=float(solve["relax_time"]),
                     start_step=float(solve["start_step"]),
                     temporal_error=float(solve["temporal_error"]),
