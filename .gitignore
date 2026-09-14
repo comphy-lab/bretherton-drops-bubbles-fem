@@ -1,0 +1,48 @@
+# Byte-compiled / optimized
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments and pyoomph build custody
+venv/
+env/
+.venv/
+.venv-pyoomph/
+.pyoomph-builds/
+.pyoomph-pin.json
+.pyoomph-environment.lock
+
+# Distribution / packaging
+dist/
+build/
+*.egg-info/
+*.egg
+
+# IDE / OS
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+
+# Jupyter / testing
+.ipynb_checkpoints/
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+
+# Solver output
+*.vtu
+*.pvd
+*.pvtu
+output/
+_ccode/
+runs/attempts/
+runs/live/
+runs/accepted/
+
+# Environment
+.env
+.env.local
