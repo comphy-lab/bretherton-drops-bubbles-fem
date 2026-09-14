@@ -1,0 +1,41 @@
+{
+  "passed": true,
+  "results": [
+    {
+      "frame_speed": 2.2129898456994436e-08,
+      "laplace_jump": 1.9999955503088602,
+      "laplace_jump_expected": 2.0,
+      "laplace_rel_error": -2.2248455698870018e-06,
+      "passed": true,
+      "r_body_seed": 0.9,
+      "r_tube": 1.5,
+      "resolution": 0.12,
+      "sphere_radius_max_dev": 1.0858389995593853e-05,
+      "sphere_radius_mean": 1.0000020242544925,
+      "void_volume_audit": {
+        "void_moment": -1.0671159865860425e-05,
+        "void_volume": -1.0671159870634384e-05
+      },
+      "volume_error": 2.3292479056635784e-13
+    },
+    {
+      "frame_speed": 1.774582676335505e-08,
+      "laplace_jump": 1.9999998882764967,
+      "laplace_jump_expected": 2.0,
+      "laplace_rel_error": -5.5861751668828674e-08,
+      "passed": true,
+      "r_body_seed": 0.9,
+      "r_tube": 1.5,
+      "resolution": 0.06,
+      "sphere_radius_max_dev": 1.032891393748514e-06,
+      "sphere_radius_mean": 1.0000001382836958,
+      "void_volume_audit": {
+        "void_moment": -6.683777750149389e-07,
+        "void_volume": -6.683777750149389e-07
+      },
+      "volume_error": 2.360334150353083e-13
+    }
+  ],
+  "rtol": 0.002,
+  "stage": "S1"
+}

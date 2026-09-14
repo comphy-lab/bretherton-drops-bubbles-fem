@@ -1,5 +1,5 @@
 {
-  "schema": "pyoomph-case-v1",
+  "schema": "pyoomph-case-v2",
   "case_id": "bubble_ca0p05",
   "geometry": {
     "kind": "axisymmetric",
@@ -15,28 +15,42 @@
   "physics": {
     "problem": "void-bubble-bretherton",
     "interior": "void",
+    "bubble_volume": "4/3 pi R0^3, held fixed; the void pressure is its Lagrange multiplier",
     "ca_in": 0.05,
-    "laplace": 1.0,
+    "laplace": 0.0,
     "r0": 1.0,
     "r_tube": 0.7,
-    "rb0_frac": 0.8,
-    "z_rear": 1.0,
-    "l_domain": 16.0,
-    "travel_r": 8.0
+    "pad_rear": 3.0,
+    "pad_front": 3.0,
+    "pad_comment": "liquid length behind and ahead of the bubble, in tube radii; the window parameter, established by verification/s5_window.py rather than assumed"
+  },
+  "boundaries": {
+    "inlet": "Poiseuille of mean Ca_in, shifted by -U",
+    "outlet": "poiseuille",
+    "outlet_comment": "Poiseuille at both ends is the exact infinite-tube condition; 'traction_free' reproduces the parent Basilisk outlet and carries a fixed absolute pressure deficit of 0.066 (measured, verification/s0_poiseuille.py)",
+    "wall": "no slip in the laboratory frame, hence -U in the bubble frame"
+  },
+  "closure": {
+    "frame_speed": "centroid",
+    "comment": "the void axial first moment is held fixed, removing the translational null mode; 'tip' pins the rear tip instead"
   },
   "tolerances": {
-    "newton": 0.0001
+    "newton": 1e-8
   },
   "mesh": {
-    "characteristic_size": 0.04,
+    "film_elements": 3.0,
+    "bulk_resolution": 0.1,
     "remeshing": true
   },
-  "output": {
-    "cadence": 0.2,
-    "write_states": true
+  "solve": {
+    "mode": "steady",
+    "relax_time": 8.0,
+    "start_step": 0.0001,
+    "temporal_error": 0.0001,
+    "comment": "a confined bubble has no static equilibrium, so a short transient relaxation precedes the stationary polish; see VoidBubbleProblem.solve_to_steady"
   },
-  "completion": {
-    "kind": "time",
-    "value": 160.0
+  "output": {
+    "cadence": 1.0,
+    "write_states": true
   }
 }

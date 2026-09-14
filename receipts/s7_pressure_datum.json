@@ -1,0 +1,98 @@
+{
+  "ca_in": 0.05,
+  "checks": {
+    "both_mechanisms_converged": true,
+    "no_datum_fails_as_expected": true,
+    "spread_within_tolerance": true
+  },
+  "mechanisms_converged": [
+    "fixation",
+    "integral"
+  ],
+  "passed": true,
+  "relative_spread_across_data": {
+    "bubble_pressure_gauge": 2.5979218776228663e-14,
+    "ca_b": 6.217248937900877e-15,
+    "h_flat_over_r_tube": 1.687538997430238e-14
+  },
+  "results": [
+    {
+      "aussillous_quere_at_ca_b": 0.14302781054236674,
+      "bretherton_at_ca_b": 0.22263547015611598,
+      "bubble_length": 4.139891619805871,
+      "bubble_pressure_excess": 3.981719783952985,
+      "bubble_pressure_gauge": 5.5570269789217495,
+      "bulk_resolution_over_r0": 0.1,
+      "ca_b": 0.06791314167602418,
+      "ca_in": 0.05,
+      "check_central_nodes": 112,
+      "check_film_flatness": 0.005011438118665618,
+      "check_flux_error": -1.1323613758596528e-15,
+      "check_initial_constraint_audit": {
+        "void_moment": -4.368629014095404e-09,
+        "void_volume": -4.3686285700061944e-09
+      },
+      "check_stagnant_film_error": -0.00047938627193278016,
+      "check_void_volume_error": -3.774758283725532e-15,
+      "closure": "centroid",
+      "deviation_from_aussillous_quere": -0.006035331370779717,
+      "film_element_size_over_r0": 0.029134410215495232,
+      "film_elements": 3.0,
+      "h_flat": 0.09951521321735451,
+      "h_flat_over_r_tube": 0.14216459031050646,
+      "h_min_over_r_tube": 0.12199030569412343,
+      "laplace": 0.0,
+      "ndof": 15964,
+      "outlet": "poiseuille",
+      "pad_front": 2.9999999999999982,
+      "pad_rear": 2.9999999999999996,
+      "pressure_datum": "fixation",
+      "r_tube": 0.7,
+      "route": "transient+stationary",
+      "speed_ratio": 1.3582628335204834,
+      "wall_seconds": 3.241994857788086
+    },
+    {
+      "aussillous_quere_at_ca_b": 0.14302781054236635,
+      "bretherton_at_ca_b": 0.22263547015611507,
+      "bubble_length": 4.139891619805875,
+      "bubble_pressure_excess": 3.9817197839528697,
+      "bubble_pressure_gauge": 5.557026978921605,
+      "bulk_resolution_over_r0": 0.1,
+      "ca_b": 0.06791314167602376,
+      "ca_in": 0.05,
+      "check_central_nodes": 112,
+      "check_film_flatness": 0.005011438118665113,
+      "check_flux_error": -1.0065434452086032e-15,
+      "check_initial_constraint_audit": {
+        "void_moment": -4.368629014095404e-09,
+        "void_volume": -4.3686285700061944e-09
+      },
+      "check_stagnant_film_error": -0.00047938627193333527,
+      "check_void_volume_error": 7.771561172376096e-15,
+      "closure": "centroid",
+      "deviation_from_aussillous_quere": -0.006035331370793706,
+      "film_element_size_over_r0": 0.029134410215495232,
+      "film_elements": 3.0,
+      "h_flat": 0.09951521321735285,
+      "h_flat_over_r_tube": 0.14216459031050407,
+      "h_min_over_r_tube": 0.1219903056941201,
+      "laplace": 0.0,
+      "ndof": 15966,
+      "outlet": "poiseuille",
+      "pad_front": 2.9999999999999982,
+      "pad_rear": 2.9999999999999996,
+      "pressure_datum": "integral",
+      "r_tube": 0.7,
+      "route": "transient+stationary",
+      "speed_ratio": 1.3582628335204752,
+      "wall_seconds": 3.2535791397094727
+    },
+    {
+      "failed": "RuntimeError: OomphException",
+      "pressure_datum": "none"
+    }
+  ],
+  "rtol": 1e-06,
+  "stage": "S7"
+}
