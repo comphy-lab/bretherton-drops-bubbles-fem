@@ -237,10 +237,20 @@ def fig_deviation_vs_cab(receipts: Path, parent_csv: Path, outdir: Path, dpi: in
     ax.set_ylabel(r"$100\,(h - h_{\mathrm{AQ}})/h_{\mathrm{AQ}}$",
                   fontsize=f["label"], labelpad=f["labelpad"])
     style_axes(ax, f)
-    clean_log_axis(ax.xaxis, [2e-3, 1e-2, 5e-2],
-                   [r"$2\times10^{-3}$", r"$10^{-2}$", r"$5\times10^{-2}$"])
-    ax.set_xlim(1.4e-3, 1.1e-1)
-    ax.set_ylim(-2.5, 1.35)
+    # Limits derive from the data, never hardcoded. An earlier version fixed the
+    # range to the original five-point sweep, and when the sweep was extended to
+    # sixteen points spanning four decades of Ca_b, eleven of them were silently
+    # clipped off the axes while the figure still looked perfectly well formed.
+    lo_x, hi_x = min(ca_f.min(), ca_p.min()), max(ca_f.max(), ca_p.max())
+    ax.set_xlim(lo_x / 1.6, hi_x * 1.6)
+    # math.floor/ceil already return int; the redundant int() calls tripped RUF046.
+    decades = [10.0 ** e for e in range(
+        math.floor(math.log10(lo_x)), math.ceil(math.log10(hi_x)) + 1)]
+    decades = [t for t in decades if lo_x / 1.6 <= t <= hi_x * 1.6]
+    clean_log_axis(ax.xaxis, decades,
+                   [r"$10^{%d}$" % round(math.log10(t)) for t in decades])
+    span = max(abs(min(d_f.min(), d_p.min())), abs(max(d_f.max(), d_p.max())))
+    ax.set_ylim(-1.55 * span, 1.35 * span)
     ax.legend(loc="upper left", frameon=False, fontsize=f["legend"] * 0.58,
               handlelength=2.4, borderpad=0.2, labelspacing=0.35)
     ax.text(0.03, 0.04, r"$h_{\mathrm{AQ}}$ evaluated at the measured $Ca_b$",
@@ -413,16 +423,16 @@ def fig_interface_profiles(receipts: Path, parent_csv: Path, outdir: Path, dpi: 
     f = fonts(w * 0.62)
     zmin = min(p[:, 0].min() for _, p in profiles)
     zmax = max(p[:, 0].max() for _, p in profiles)
-    fig, ax = plt.subplots(figsize=(w, w * 0.46))
 
-    # magnified, equal-aspect view of the deposited film, placed in the
-    # otherwise empty bubble interior; magnification is exact by construction.
-    zoom_z, zoom_r = (3.8, 4.3), (0.58, 0.70)
-    mag = 5.0
-    box = [zoom_z[0] - 0.5 * (mag * (zoom_z[1] - zoom_z[0]) - (zoom_z[1] - zoom_z[0])),
-           -0.5 * mag * (zoom_r[1] - zoom_r[0]),
-           mag * (zoom_z[1] - zoom_z[0]), mag * (zoom_r[1] - zoom_r[0])]
-    axin = ax.inset_axes(box, transform=ax.transData, zorder=6)
+    # Two panels rather than a magnified inset. The sweep spans a hundredfold
+    # range of film thickness, from h/R_t = 0.0029 to 0.313, and no linear zoom
+    # resolves both ends at once: an equal-aspect inset sized for the thin films
+    # loses the thick ones off the bottom, and one sized for the thick films
+    # renders the thin ones as a single line on the wall. The lower panel plots
+    # the gap R_t - r(z) logarithmically instead, which separates every case.
+    fig, (ax, axg) = plt.subplots(
+        2, 1, figsize=(w, w * 0.60), sharex=True,
+        gridspec_kw={"height_ratios": [2.0, 1.0], "hspace": 0.10})
 
     cmap = plt.get_cmap("viridis")
     n = len(profiles)
@@ -432,7 +442,9 @@ def fig_interface_profiles(receipts: Path, parent_csv: Path, outdir: Path, dpi: 
         ax.plot(z, r, "-", color=colour, lw=f["lw"] * 0.6,
                 label=r"$Ca_b = %.4f$" % row["ca_b"])
         ax.plot(z, -r, "-", color=colour, lw=f["lw"] * 0.6)
-        axin.plot(z, r, "-", color=colour, lw=f["lw"] * 0.6)
+        gap = R_TUBE - r
+        keep = gap > 0
+        axg.plot(z[keep], gap[keep], "-", color=colour, lw=f["lw"] * 0.6)
 
     for sgn in (+1.0, -1.0):
         ax.plot([zmin - 0.3, zmax + 0.3], [sgn * R_TUBE, sgn * R_TUBE],
@@ -441,23 +453,16 @@ def fig_interface_profiles(receipts: Path, parent_csv: Path, outdir: Path, dpi: 
     ax.text(zmax + 0.25, R_TUBE + 0.035, r"$r = \pm R_t = \pm 0.7\,R_0$",
             ha="right", va="bottom", fontsize=f["annot"] * 0.85, color="0.15")
 
-    # inset: same equal aspect, film region only
-    axin.axhline(R_TUBE, color="0.15", lw=f["lw"] * 0.9)
-    axin.set_xlim(*zoom_z)
-    axin.set_ylim(*zoom_r)
-    axin.set_xticks([])
-    axin.set_yticks([0.60, 0.70])
-    axin.tick_params(axis="y", labelsize=f["tick"] * 0.62, length=3, pad=3)
-    for sp in axin.spines.values():
-        sp.set_linewidth(f["lw"] * 0.35)
-        sp.set_color("0.45")
-    axin.set_facecolor("white")
-    ax.text(box[0] + 0.5 * box[2], box[1] - 0.06,
-            r"deposited film, $%g\times$ magnified, equal aspect" % mag,
-            ha="center", va="top", fontsize=f["annot"] * 0.8, color="0.35")
-    ax.add_patch(plt.Rectangle((zoom_z[0], zoom_r[0]), zoom_z[1] - zoom_z[0],
-                               zoom_r[1] - zoom_r[0], fill=False,
-                               ec="0.45", lw=f["lw"] * 0.3, ls="--", zorder=6))
+    axg.set_yscale("log")
+    axg.set_ylabel(r"$(R_t - r)/R_0$", fontsize=f["label"] * 0.8,
+                   labelpad=f["labelpad"] * 0.6)
+    # Short enough to sit inside the panel: a longer caption right-aligned at the
+    # frame ran off the left edge and over the y-label.
+    axg.text(0.985, 0.08, "plateau = reported film; rear dip = capillary ripple",
+             transform=axg.transAxes, ha="right",
+             fontsize=f["annot"] * 0.78, color="0.35")
+    style_axes(axg, f)
+    axg.tick_params(labelsize=f["tick"] * 0.8)
 
     # orientation: bubble advances towards +z, so the wall moves rearward here
     ax.annotate("", xy=(zmin + 1.55, 0.83), xytext=(zmin + 0.35, 0.83),
@@ -475,7 +480,7 @@ def fig_interface_profiles(receipts: Path, parent_csv: Path, outdir: Path, dpi: 
     ax.set_xlim(zmin - 0.35, zmax + 0.3)
     ax.set_ylim(-1.05, 1.0)
     ax.set_aspect("equal", adjustable="box")
-    ax.set_xlabel(r"$z/R_0$", fontsize=f["label"], labelpad=f["labelpad"] * 0.6)
+    axg.set_xlabel(r"$z/R_0$", fontsize=f["label"], labelpad=f["labelpad"] * 0.6)
     ax.set_ylabel(r"$r/R_0$", fontsize=f["label"], labelpad=f["labelpad"] * 0.6)
     style_axes(ax, f)
     ax.set_yticks([-0.5, 0.0, 0.5])
