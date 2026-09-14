@@ -1,0 +1,147 @@
+{
+  "deficit_window_independence": [
+    {
+      "deficits": [
+        0.06625508853600692,
+        0.06625656073066466
+      ],
+      "lengths": [
+        8.0,
+        16.0
+      ],
+      "passed": true,
+      "relative_spread": 2.2220099471101888e-05,
+      "resolution": 0.12
+    },
+    {
+      "deficits": [
+        0.06234162454572978,
+        0.06256682174221773
+      ],
+      "lengths": [
+        8.0,
+        16.0
+      ],
+      "passed": true,
+      "relative_spread": 0.003612308760461596,
+      "resolution": 0.06
+    }
+  ],
+  "passed": true,
+  "results": [
+    {
+      "ca_in": 0.05,
+      "flux": 0.07696902001294993,
+      "flux_expected": 0.07696902001294992,
+      "flux_rel_error": 2.220446049250313e-16,
+      "l_domain": 8.0,
+      "outlet": "poiseuille",
+      "passed": true,
+      "pressure_drop": 6.530612244897747,
+      "pressure_drop_abs_deficit": 2.1316282072803006e-13,
+      "pressure_drop_expected": 6.53061224489796,
+      "pressure_drop_rel_error": -3.26405569239796e-14,
+      "resolution": 0.12
+    },
+    {
+      "ca_in": 0.05,
+      "flux": 0.07696902001294996,
+      "flux_expected": 0.07696902001294992,
+      "flux_rel_error": 4.440892098500626e-16,
+      "l_domain": 16.0,
+      "outlet": "poiseuille",
+      "passed": true,
+      "pressure_drop": 13.061224489795416,
+      "pressure_drop_abs_deficit": 5.044853423896711e-13,
+      "pressure_drop_expected": 13.06122448979592,
+      "pressure_drop_rel_error": -3.863576125695545e-14,
+      "resolution": 0.12
+    },
+    {
+      "ca_in": 0.05,
+      "flux": 0.07696902001294996,
+      "flux_expected": 0.07696902001294992,
+      "flux_rel_error": 4.440892098500626e-16,
+      "l_domain": 8.0,
+      "outlet": "poiseuille",
+      "passed": true,
+      "pressure_drop": 6.530612244897635,
+      "pressure_drop_abs_deficit": 3.2507330161024584e-13,
+      "pressure_drop_expected": 6.53061224489796,
+      "pressure_drop_rel_error": -4.973799150320701e-14,
+      "resolution": 0.06
+    },
+    {
+      "ca_in": 0.05,
+      "flux": 0.07696902001294995,
+      "flux_expected": 0.07696902001294992,
+      "flux_rel_error": 4.440892098500626e-16,
+      "l_domain": 16.0,
+      "outlet": "poiseuille",
+      "passed": true,
+      "pressure_drop": 13.061224489795572,
+      "pressure_drop_abs_deficit": 3.481659405224491e-13,
+      "pressure_drop_expected": 13.06122448979592,
+      "pressure_drop_rel_error": -2.6645352591003757e-14,
+      "resolution": 0.06
+    },
+    {
+      "ca_in": 0.05,
+      "flux": 0.07696902001294995,
+      "flux_expected": 0.07696902001294992,
+      "flux_rel_error": 4.440892098500626e-16,
+      "l_domain": 8.0,
+      "outlet": "traction_free",
+      "passed": true,
+      "pressure_drop": 6.464357156361953,
+      "pressure_drop_abs_deficit": 0.06625508853600692,
+      "pressure_drop_expected": 6.53061224489796,
+      "pressure_drop_rel_error": -0.010145310432076005,
+      "resolution": 0.12
+    },
+    {
+      "ca_in": 0.05,
+      "flux": 0.07696902001294995,
+      "flux_expected": 0.07696902001294992,
+      "flux_rel_error": 4.440892098500626e-16,
+      "l_domain": 16.0,
+      "outlet": "traction_free",
+      "passed": true,
+      "pressure_drop": 12.994967929065256,
+      "pressure_drop_abs_deficit": 0.06625656073066466,
+      "pressure_drop_expected": 13.06122448979592,
+      "pressure_drop_rel_error": -0.005072767930941469,
+      "resolution": 0.12
+    },
+    {
+      "ca_in": 0.05,
+      "flux": 0.07696902001294996,
+      "flux_expected": 0.07696902001294992,
+      "flux_rel_error": 4.440892098500626e-16,
+      "l_domain": 8.0,
+      "outlet": "traction_free",
+      "passed": true,
+      "pressure_drop": 6.46827062035223,
+      "pressure_drop_abs_deficit": 0.06234162454572978,
+      "pressure_drop_expected": 6.53061224489796,
+      "pressure_drop_rel_error": -0.00954606125856483,
+      "resolution": 0.06
+    },
+    {
+      "ca_in": 0.05,
+      "flux": 0.07696902001294995,
+      "flux_expected": 0.07696902001294992,
+      "flux_rel_error": 4.440892098500626e-16,
+      "l_domain": 16.0,
+      "outlet": "traction_free",
+      "passed": true,
+      "pressure_drop": 12.998657668053703,
+      "pressure_drop_abs_deficit": 0.06256682174221773,
+      "pressure_drop_expected": 13.06122448979592,
+      "pressure_drop_rel_error": -0.004790272289638575,
+      "resolution": 0.06
+    }
+  ],
+  "rtol": 1e-06,
+  "stage": "S0"
+}

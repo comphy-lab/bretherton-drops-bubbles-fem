@@ -7,7 +7,7 @@ __pycache__/
 venv/
 env/
 .venv/
-.venv-pyoomph/
+.venv-pyoomph*/
 .pyoomph-builds/
 .pyoomph-pin.json
 .pyoomph-environment.lock
@@ -39,6 +39,11 @@ htmlcov/
 *.pvtu
 output/
 _ccode/
+_gmsh/
+_states/
+receipts/*/
+*.msh
+*.geo_unrolled
 runs/attempts/
 runs/live/
 runs/accepted/
