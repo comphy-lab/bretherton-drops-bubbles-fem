@@ -1,0 +1,42 @@
+{
+  "schema": "pyoomph-case-v1",
+  "case_id": "bubble_ca0p05",
+  "geometry": {
+    "kind": "axisymmetric",
+    "coordinates": ["r", "z"],
+    "frame": "co-moving"
+  },
+  "nondimensionalization": {
+    "length": "R0",
+    "surface_tension": 1,
+    "viscosity": 1,
+    "comment": "sigma = mu = R0 = 1, so Ca_in is the mean inlet speed and La = rho"
+  },
+  "physics": {
+    "problem": "void-bubble-bretherton",
+    "interior": "void",
+    "ca_in": 0.05,
+    "laplace": 1.0,
+    "r0": 1.0,
+    "r_tube": 0.7,
+    "rb0_frac": 0.8,
+    "z_rear": 1.0,
+    "l_domain": 16.0,
+    "travel_r": 8.0
+  },
+  "tolerances": {
+    "newton": 0.0001
+  },
+  "mesh": {
+    "characteristic_size": 0.04,
+    "remeshing": true
+  },
+  "output": {
+    "cadence": 0.2,
+    "write_states": true
+  },
+  "completion": {
+    "kind": "time",
+    "value": 160.0
+  }
+}

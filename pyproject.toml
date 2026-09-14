@@ -1,0 +1,44 @@
+[project]
+name = "bretherton-drops-bubbles-fem"
+version = "0.1.0"
+description = "Axisymmetric sharp-interface FEM for a void bubble in a capillary tube"
+readme = "README.md"
+requires-python = ">=3.13,<3.14"
+license = { text = "MIT" }
+authors = [{ name = "Vatsal Sanjay", email = "vatsal.sanjay@comphy-lab.org" }]
+
+dependencies = [
+    "numpy>=1.24.4",
+    "scipy>=1.10.1",
+    "matplotlib>=3.7.5",
+    "meshio>=5.3.4",
+    "pygmsh>=7.1.17",
+    "gmsh>=4.11",
+    "mpi4py>=3.1",
+    "pyoomph",
+]
+
+[tool.uv]
+package = false
+
+[tool.uv.sources]
+pyoomph = { git = "https://github.com/comphy-lab/pyoomph", rev = "a186e07e1a7ea6b74ecc4f3a3fc39cc763d41618" }
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.6",
+]
+pyoomph-build = [
+    "nanobind==2.9.2",
+    "scikit-build-core==0.11.6",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "-q"
