@@ -20,6 +20,7 @@ different route to the same state, or a limit in which the answer is known.
 | `s9_steadiness.py` | Is the stationary state an attractor, and over how many film renewals is that shown? | `s9_steadiness.json` |
 | `s10_route.py` | Does the answer depend on the solve route, the ladder direction, or the bubble length? | `s10_route.json` |
 | `s11_rear_cap.py` | Where does the rear cap stop being convex, and is that onset resolved? | `s11_rear_cap.json` |
+| `s12_azimuthal.py` | Is azimuthal linear stability available for this formulation, and how many eigenvalues does it need? | `s12_azimuthal.json` |
 
 Stage numbering has gaps because S2 to S4 were folded into the production path
 during development rather than kept as separate scripts.
@@ -46,3 +47,10 @@ indentation is a few parts in `1e5` of the tube radius, small enough to be a
 property of the mesh; two film resolutions are what separate the two, and the
 stage's only pass condition is that they agree where the indentation is large
 enough that they should.
+
+**S12** is a capability and calibration check, not a physics result. It does not
+locate a critical capillary number; it establishes that the azimuthal
+eigenproblem runs on a moving mesh with a free surface, records the pressure-datum
+requirement that makes it possible, and measures how many eigenvalues must be
+requested before the rightmost one is a property of the operator rather than of
+the call.

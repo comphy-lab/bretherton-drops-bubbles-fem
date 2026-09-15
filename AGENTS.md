@@ -117,7 +117,7 @@ These were established by the checks in `verification/`; do not rediscover them.
   of any cross-code difference can be attributed to a mismatch in `R0/R_tube`.
 - **A pressure datum is required and the choice is free.** With Poiseuille at
   both ends, `pressure_datum="none"` fails to solve; `"fixation"` and
-  `"integral"` agree on every reported observable to 1e-14.
+  `"integral"` agree on every reported observable to 2.6e-14.
 
 ## pyoomph traps that apply here
 
@@ -143,6 +143,21 @@ These were established by the checks in `verification/`; do not rediscover them.
   any fallback must checkpoint first or start from a fresh problem.
 - Boundary names must be identical in both branches of `define_geometry`, or
   interpolation across a remesh raises.
+- Angular (azimuthal) eigensolving is **refused** when the pressure datum is a
+  fixation: `solve_eigenproblem(..., azimuthal_m=m)` raises
+  `Do not use pressure_fixation with angular eigensolving`. Since
+  `pressure_datum="fixation"` is this solver's default, azimuthal stability
+  looks unavailable until the message is read. It is not: use
+  `pressure_datum="integral"`, which is the `with_pressure_integral_constraint`
+  the message names, and which `verification/s7_pressure_datum.py` shows agrees
+  with the fixation on every reported observable to 2.6e-14.
+- `setup_for_stability_analysis()` changes code generation and must be called
+  **before** `initialise()`.
+- A shift-invert eigensolve asked for too few eigenvalues can converge to a
+  cluster that does not contain the rightmost one, and report a more negative
+  growth rate with no warning. Measured in `verification/s12_azimuthal.py`:
+  at four eigenvalues the `m = 0` rightmost comes out 41% too negative for one
+  shift in three. Request at least eight.
 
 ## Repository conventions
 

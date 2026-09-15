@@ -93,11 +93,12 @@ to `receipts/`. They are ordered so that a failure localises.
 | `s1_static_sphere.py` | Does an unconfined void relax to a sphere with a Laplace pressure of 2? | radius to `1.1e-5`, `P` to `2.2e-6` |
 | `s5_window.py` | Is the answer independent of the window length? | see below |
 | `s6_mesh.py` | Is it mesh-converged, and to what? | see below |
-| `s7_pressure_datum.py` | Does the pressure datum matter, and is it working? | datum required; two mechanisms agree to `1e-14` |
+| `s7_pressure_datum.py` | Does the pressure datum matter, and is it working? | datum required; two mechanisms agree to `2.6e-14` |
 | `s8_inertia.py` | Does inertia matter, and is the non-inertial frame term exercised? | linear in `Re`; `-0.0255%` from `La = 0` to `1` |
 | `s9_steadiness.py` | Is the stationary state an attractor, and over how many film renewals is that shown? | displaced, it returns to within 0.6% of the displacement in 1.5 renewals |
 | `s10_route.py` | Does the answer depend on the solve route, the ladder direction, or the bubble length? | routes agree to `9e-5`; retrace to `8e-13`; bubble length `1.3e-3` |
 | `s11_rear_cap.py` | Where does the rear cap stop being convex, and is that onset resolved? | onset in `1.024 < Ca_b < 1.048` |
+| `s12_azimuthal.py` | Is azimuthal stability available here, and how many eigenvalues does it need? | yes, with `pressure_datum="integral"`; `m = 0` needs 8 |
 
 `s8` is also the only stage that executes the frame-acceleration body force
 `-rho dU/dt`, which makes the co-moving frame consistent while `U` is still
