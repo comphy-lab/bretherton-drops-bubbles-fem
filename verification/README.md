@@ -24,6 +24,8 @@ different route to the same state, or a limit in which the answer is known.
 | `s13_eigen_dynamic.py` | Does the rightmost eigenvalue match an independent time-march on the same mesh? | `s13_eigen_dynamic.json` |
 | `s14_azimuthal_sweep.py` | Are the 25 committed states stable to azimuthal wavenumbers 0, 1, 2? | `s14_azimuthal_sweep.json` |
 | `s15_inertia_bound.py` | To what Reynolds number may the Stokes baseline be quoted? | `s15_inertia_bound.json` |
+| `s16_pressure_datum_spectrum.py` | Does the pressure datum move the axisymmetric spectrum? | `s16_pressure_datum_spectrum.json` |
+| `s17_la1_barrier.py` | Does La=1 continuation past Ca_in=2.91 survive with remesh off? | `s17_la1_barrier.json` |
 
 Stage numbering has gaps because S2 to S4 were folded into the production path
 during development rather than kept as separate scripts.
