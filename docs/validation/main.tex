@@ -48,11 +48,10 @@ $-4.56\%$ at $Ca_b=14.8$ where that fit is extrapolated far beyond its data.
 Nine verification stages are reported, including a displacement test showing the
 computed state is an attractor rather than merely a fixed point, and a
 route-independence test showing the curve does not carry its own history. We
-record, as an observation and not as a result this report defends, that the
-rear cap ceases to be convex between $Ca_b=1.024$ and $1.048$ in Stokes flow,
-develops an indentation reaching $0.27R_t$ by $Ca_b=14.8$, and traps a slow
-axisymmetric vortex ring in that indentation; one candidate mechanism is
-measured and rejected. A
+also find the rear cap ceasing to be convex between $Ca_b=1.024$ and $1.048$
+in Stokes flow, a bracket containing the $1.026$ obtained by extrapolating the
+independent Stokes correlation of Balestra and co-workers, and we resolve the
+vortex ring trapped in the resulting indentation. A
 companion volume-of-fluid campaign lies above the present curve by up to
 $4.6\%$ near $Ca_b=1$; the cause of that difference is not established, though
 two candidates are eliminated.
@@ -446,28 +445,70 @@ $50\%$ in capillary number. The two transitions are therefore ordered and
 distinct, and the bypass condition is not sufficient for the indentation. The
 computed $m$ rises to $0.595$ at $Ca_b=14.8$.
 
-\paragraph{How this stands relative to the literature.}
-\citet{giavedoni1999rear} is the dedicated study of the rear meniscus in this
-exact axisymmetric geometry, and the companion paper
-\citep{giavedoni1997axisymmetric}, whose film data are used in
-Section~\ref{sec:finite}, reaches $Ca=10$ and reports uncovering a recirculating
-flow pattern that it describes as having been overlooked previously. We do not
-claim either paper as a precedent for the indented cap shown here: we have not
-found the re-entrant cap in them, and a recirculation reported without the
-accompanying shape is not the same observation. Nor have we located a published
-critical capillary number for this transition in the Stokes limit, or a
-published measurement of the indentation depth. The bracket $1.024<Ca_b<1.048$,
-Figure~\ref{fig:rear} and Figure~\ref{fig:rearflow} are therefore presented as
-measurements and not as reproductions.
+\paragraph{This reproduces a published Stokes-flow prediction.} A re-entrant
+rear cap in a tube at vanishing Reynolds number is not new, and the critical
+capillary number is not new either. \citet{martinez1990axisymmetric} predicted
+the onset of a re-entrant cavity at the trailing end of a drop at $Ca\approx
+0.75$ by boundary integrals; \citet{olbricht1992deformation} observed an
+indentation that entrains outer liquid for low viscosity ratio;
+\citet{lac2009motion} and \citet{nath2017migration} find the same feature, the
+former reporting eventual breakup through a rear re-entrant jet.
 
-They are also not pursued further here. A re-entrant trailing interface with a
-trapped eddy is not what this solver was built to study, and there is a large
-existing literature on skirted and cusped bubbles in other settings---rising
-under buoyancy, in viscoelastic liquids---from which this case must be kept
-carefully separate, since it occurs at zero Reynolds number in a confined
-Newtonian liquid. The observation is recorded because the formulation produces
-it cleanly and because it bears on the interpretation of the high-$Ca_b$ film,
-not as a result this report defends.
+The sharpest comparison is \citet{balestra2018viscous}, who solve the
+axisymmetric Stokes equations for a confined droplet and fit the plane
+curvature of the rear cap as
+\begin{equation}
+  \kappa_r R=\frac{1+T_r(3Ca_b)^{2/3}}{1+Z_r(3Ca_b)^{2/3}},
+  \label{eq:rearcurv}
+\end{equation}
+with the capillary number built on the \emph{droplet} velocity, as ours is. At viscosity ratio
+zero their tabulated coefficients give $T_r=-0.4725$, so the rear curvature
+changes sign where $(3Ca_b)^{2/3}=1/0.4725$, that is at $Ca_b=1.026$. Our
+bracket, $1.024<Ca_b<1.048$, contains that value.
+
+Three things limit how much weight that agreement carries, and they should be
+read before it is quoted. The root is obtained by extrapolating their
+correlation to the edge of, and arguably just beyond, the capillary-number
+range over which it was fitted, so it is not a value they compute and report.
+It is derived from their tabulated coefficients rather than printed by them,
+and therefore inherits whatever error the fit carries. And their droplet
+volume, $12.9R^3$ against our $12.2R_t^3$, is close but not identical. What can
+fairly be said is this: two independent Stokes solvers, neither tuned to this
+transition, place it within about one per cent of each other. That is
+consistency, and it is the right weight to give it.
+
+The same source predicts the other transition. Their $\lambda=0$ film law with
+$Q=2.483$ reaches $H=1-1/\sqrt2$ at $Ca_b=0.720$, against the $0.695$ measured
+here, a difference of $3.4\%$. The ordering of the two transitions is worth
+recording, because \citet{balestra2018viscous} state in prose that the rear
+recirculation detaches at a film thickness \emph{smaller} than the
+complete-bypass value, while their own $\lambda=0$ fit puts curvature reversal
+at $H=0.311$ and bypass at $H=0.293$, the other way round. Our two independent
+measurements, $0.695$ then $1.024$--$1.048$, agree with their model and not
+with their prose.
+
+\paragraph{What Giavedoni and Saita do and do not contain.} We cite
+\citet{giavedoni1997axisymmetric} for the film data of
+Section~\ref{sec:finite}, and it is worth being precise about what else that
+pair of papers supports. The 1997 calculation is of a semi-infinite gas finger
+with a single advancing meniscus, so it has no rear cap to invert; the
+recirculating pattern its abstract reports as overlooked is therefore not a
+rear-cap phenomenon. \citet{giavedoni1999rear} adds the trailing meniscus, and
+does report a rear-meniscus curvature change --- but at finite Reynolds
+number, with the critical capillary number falling as inertia grows. We
+therefore exclude that pair as precedent for the \emph{inertialess} inversion
+reported here, and not as precedent for the phenomenon at large.
+
+\paragraph{What is not already published.} Two things, both modest. We have
+found no published measurement of the indentation \emph{depth} against
+capillary number, in any geometry; the monotone growth to $0.27R_t$ at
+$Ca_b=14.8$ in Figure~\ref{fig:rear} appears to be new. And the steady branch
+is continued an order of magnitude beyond where the prior studies stop: they
+terminate near onset because their bubbles break up, whereas a fixed-volume
+void in a steady co-moving formulation cannot pinch off. That is a capability
+and also a caveat, stated in Section~\ref{sec:open}: this solver will continue
+a branch that a physical bubble may have left by breaking up, and nothing here
+establishes that these states are stable.
 
 \paragraph{A vortex ring sits in the cavity.} Figure~\ref{fig:rearflow} shows
 the flow around the cap in the frame of the bubble, which is the only frame in
@@ -527,9 +568,38 @@ magnitudes and not a measurement: the local deviatoric stress depends on the
 velocity gradient at the interface, which in a cavity where the liquid barely
 moves need not follow the global scale at all. Settling the mechanism requires
 the full normal-stress balance evaluated along the interface, deviatoric part
-included, which this report does not attempt.
+included, which this report does not attempt. \citet{balestra2018viscous} had
+already established that the viscous normal stresses at the caps cannot be
+neglected for $Ca_b>10^{-3}$, so that framing is theirs and not ours; what is
+added here is the measurement along the cap rather than at the vertex, an order
+of magnitude beyond their range.
+
+A published candidate mechanism exists, and we record it as a candidate rather
+than adopt it. \citet{cappello2025superfast} argue that a convergent
+stagnation point on the interface corresponds to a locally pushing normal
+stress and a divergent one to a locally pulling stress, so the inhomogeneous
+normal stress set up by the recirculating flow lowers the curvature near
+convergent points; on that reading the rear on-axis stagnation point is the
+convergent one, which would be why the rear cap and not the front inverts. It
+is consistent with the recirculation we resolve, and we have \emph{not} tested
+it: doing so means measuring the stagnation-point structure on the interface
+and the normal stress there, which is the same unattempted calculation as
+above. The same paper states that rear recirculation in this regime ``appears
+as soon as there is an invagination at the back of the bubble'', with the
+supporting figure not shown; Figure~\ref{fig:rearflow} is that figure for a
+true void at $Ca_b=9.80$.
+
+Two cautions for anyone reading the coincidence of numbers. Bubbles in
+viscoelastic liquids develop a rear cusp above a critical capillary number
+itself of order one, also at vanishing Reynolds number; that is a constitutive
+effect with a negative wake and a hysteretic dependence on bubble volume, and
+none of those features is present here. And the regime our high-$Ca_b$ points
+occupy, $U_b/\overline U>2$, is the one the recent literature calls
+\emph{super-fast}; at $Ca_b=9.80$ the present solution has
+$U_b/\overline U=2.45$.
 
 \section{What is established, and what is not}
+\label{sec:open}
 
 The following are established by the evidence above. The solver reproduces
 Poiseuille flow, the static Laplace pressure, and window and mesh independence
