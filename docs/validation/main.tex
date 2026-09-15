@@ -45,11 +45,12 @@ to $+0.12\%$ at $Ca_b=1.0$, $-0.18\%$ at $2.0$ and $+0.05\%$ at $10.0$. It
 departs from the Aussillous--Qu\'er\'e representation of Taylor's measurements
 by at most $1.37\%$ anywhere below $Ca_b=2$, with two sign changes, and by
 $-4.56\%$ at $Ca_b=14.8$ where that fit is extrapolated far beyond its data.
-Eight verification stages are reported, including a displacement test showing the
+Nine verification stages are reported, including a displacement test showing the
 computed state is an attractor rather than merely a fixed point, and a
 route-independence test showing the curve does not carry its own history. We
 also report that the rear cap ceases to be convex at $Ca_b\approx1.03$ in
-Stokes flow and develops an indentation reaching $0.27R_t$ by $Ca_b=14.8$; the
+Stokes flow, between $Ca_b=1.024$ and $1.048$, and develops an indentation
+reaching $0.27R_t$ by $Ca_b=14.8$; the
 trend is consistent with published observations, the mechanism is not
 established here, and one candidate explanation is measured and rejected. A
 companion volume-of-fluid campaign lies above the present curve by up to
@@ -205,6 +206,7 @@ discretisation, or a limit in which the answer is known.
     S8 & How large is the inertial correction? & $-0.0255\%$ in $H$ between $La=0$ and $La=1$ \\
     S9 & Is the computed state an attractor? & Displacements decay to $0.03$--$0.57\%$ in $1.5$ film renewals \\
     S10 & Does the answer depend on the solve route? & Routes agree to $9.1\times10^{-5}$; retrace to $8\times10^{-13}$ \\
+    S11 & Where does the rear cap stop being convex? & Onset in $1.024<Ca_b<1.048$; resolutions agree above $4\times10^{-4}R_t$ \\
     \bottomrule
   \end{tabular}
 \end{table}
@@ -421,10 +423,12 @@ $\delta_{\mathrm{tail}}=z_{\mathrm{tip}}-\min z$ over the rear cap.
 \end{figure}
 
 \paragraph{The onset is bracketed, not resolved.} At both film resolutions the
-cap is strictly convex up to $Ca_b=1.024$ and indented from $Ca_b=1.060$
-onwards. Between those the two resolutions disagree by factors of four to
-forty, so the indentation there is at the level of the discretisation and the
-onset cannot be located more sharply than $1.02<Ca_b<1.06$. Once
+cap is strictly convex up to $Ca_b=1.024$, and both give a non-zero
+indentation from $Ca_b=1.048$ onwards, so the onset lies in
+$1.024<Ca_b<1.048$. It cannot be located more sharply than that: through
+$Ca_b\approx1.1$ the two resolutions disagree by factors of four to forty,
+which is the signature of an indentation at the level of the discretisation
+rather than of the solution. Once
 $\delta_{\mathrm{tail}}$ exceeds about $4\times10^{-4}R_t$, at $Ca_b\gtrsim1.1$,
 the two resolutions agree to $5\%$ and to $3\%$ beyond that. The indentation
 then grows monotonically to $0.27R_t$ at $Ca_b=14.8$. All of this is at
@@ -455,7 +459,7 @@ Section~\ref{sec:finite}, reports uncovering a recirculating flow pattern that
 appears to have been overlooked previously. We have not located a published
 value for the critical capillary number in the Stokes limit, nor a published
 measurement of the indentation depth, and we therefore present
-$1.02<Ca_b<1.06$ and Figure~\ref{fig:rear} as a measurement rather than as a
+$1.024<Ca_b<1.048$ and Figure~\ref{fig:rear} as a measurement rather than as a
 reproduction.
 
 \paragraph{One mechanism was proposed and measured to be wrong.} A natural

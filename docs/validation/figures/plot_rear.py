@@ -103,7 +103,7 @@ ind.plot(ca_o[d3 > 0], d3[d3 > 0], ls="none", marker="^", ms=8,
 ind.plot(ca_o[d6 > 0], d6[d6 > 0], ls="none", marker="v", ms=8,
          color="#0072B2", mfc="none", mew=1.5, zorder=5,
          label=r"onset scan, $n_{\mathrm{film}}=6$")
-ind.axvspan(1.024, 1.060, color="0.85", zorder=1)
+ind.axvspan(1.024, 1.048, color="0.85", zorder=1)
 ind.set(xscale="log", yscale="log", xlim=(0.5, 22), ylim=(1e-7, 0.45))
 ind.set_xlabel(r"$Ca_b=\mu U_b/\sigma$", fontsize=FS_LABEL, labelpad=12)
 ind.set_ylabel(r"$\delta_{\mathrm{tail}}/R_t$", fontsize=FS_LABEL, labelpad=12)

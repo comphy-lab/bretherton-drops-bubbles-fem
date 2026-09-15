@@ -19,11 +19,12 @@ different route to the same state, or a limit in which the answer is known.
 | `s8_inertia.py` | How large is the inertial correction, and is the frame-acceleration term exercised? | `s8_inertia.json` |
 | `s9_steadiness.py` | Is the stationary state an attractor, and over how many film renewals is that shown? | `s9_steadiness.json` |
 | `s10_route.py` | Does the answer depend on the solve route, the ladder direction, or the bubble length? | `s10_route.json` |
+| `s11_rear_cap.py` | Where does the rear cap stop being convex, and is that onset resolved? | `s11_rear_cap.json` |
 
 Stage numbering has gaps because S2 to S4 were folded into the production path
 during development rather than kept as separate scripts.
 
-Two stages deserve a note on what they do *not* establish.
+Three stages deserve a note on what they do *not* establish.
 
 **S9** marches the converged state forward. Persistence alone is weak evidence:
 a stationary solution is an exact fixed point of the implicit time
@@ -39,3 +40,9 @@ about whether either is right. The bubble-length comparison in the same stage
 is the one that carries physics: the residual 1.3e-3 at `Ca_b = 0.011` survives
 mesh refinement and is a real finite-bubble effect, which is why it has its own
 looser tolerance rather than being tuned away.
+
+**S11** reports a bracket rather than a value, deliberately. Near onset the
+indentation is a few parts in `1e5` of the tube radius, small enough to be a
+property of the mesh; two film resolutions are what separate the two, and the
+stage's only pass condition is that they agree where the indentation is large
+enough that they should.
