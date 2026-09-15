@@ -26,6 +26,8 @@ different route to the same state, or a limit in which the answer is known.
 | `s15_inertia_bound.py` | To what Reynolds number may the Stokes baseline be quoted? | `s15_inertia_bound.json` |
 | `s16_pressure_datum_spectrum.py` | Does the pressure datum move the axisymmetric spectrum? | `s16_pressure_datum_spectrum.json` |
 | `s17_la1_barrier.py` | Does La=1 continuation past Ca_in=2.91 survive with remesh off? | `s17_la1_barrier.json` |
+| `s18_azimuthal_k3.py` | Are the 25 committed states stable to azimuthal wavenumber 3? | `s18_azimuthal_k3.json` |
+| `s19_la_grid.py` | What is H at the named (Ca_in, La) grid, and do the windows hold? | `s19_la_grid.json` |
 
 Stage numbering has gaps because S2 to S4 were folded into the production path
 during development rather than kept as separate scripts.
@@ -75,3 +77,12 @@ and Newton residuals go to ``inf``.
 top-of-sweep inertial row is missing or if the Stokes pad-doubled windows
 there disagree in film thickness by more than two percent. An inertial
 solve that dies on the doubled window is recorded, not fatal.
+
+**S18** is the k=3 half of Campaign S. S14 already labelled k=0,1,2 on
+every committed state. A sign change is still a bracket at two film
+resolutions, never a point value. Production ``Ca_in=5`` may remain
+``untested`` when shift-invert sets disagree; that is not a crossing.
+
+**S19** is the named La grid that S15 deliberately was not. It reuses
+S15 cells, fills La=0.1 and La=10 at the thin-film and mid stations, and
+records pad-doubled windows at La>0. It does not build h(Ca_b, La).

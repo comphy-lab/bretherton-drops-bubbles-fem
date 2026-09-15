@@ -46,11 +46,11 @@ of those is printed text, not a digitised figure). It
 departs from the Aussillous--Qu\'er\'e representation of Taylor's measurements
 by at most $1.37\%$ anywhere below $Ca_b=2$, with two sign changes, and by
 $-4.56\%$ at $Ca_b=14.8$ where that fit is extrapolated far beyond its data.
-Fourteen verification stages are reported, including a displacement test showing
+Seventeen verification stages are reported, including a displacement test showing
 the computed state is an attractor rather than merely a fixed point, a
 route-independence test showing the curve does not carry its own history, and
-an azimuthal linear-stability sweep in which every one of the twenty-five
-states is stable to wavenumbers $k=0,1,2$. We also find the rear cap ceasing
+an azimuthal linear-stability sweep in which the twenty-five states are stable
+to $k=0,1,2$ and, except for one untested production row, to $k=3$. We also find the rear cap ceasing
 to be convex between $Ca_b=1.024$ and $1.048$ in Stokes flow, a bracket
 containing the $1.026$ obtained by extrapolating the independent Stokes
 correlation of Balestra and co-workers, and we resolve the vortex ring trapped
@@ -216,6 +216,9 @@ discretisation, or a limit in which the answer is known.
     S14 & Are the twenty-five states stable to $k=0,1,2$? & All stable; no crossing; pad-doubled labels agree \\
     S15 & To what $Re$ may the Stokes baseline be quoted? & Holds to $0.78\%$ for $Re<1.47$ \\
     S16 & Does the pressure datum move the axisymmetric spectrum? & Rightmost $\lambda$ agrees; $Ca_b$ spread $5.0\times10^{-14}$ \\
+    S17 & Does $La=1$ continuation past $Ca_{\mathrm{in}}=2.91$ survive with remesh off? & No; it dies at $2.90851$ with the mesh unchanged. Continuation limit \\
+    S18 & Are the twenty-five states stable to $k=3$? & No crossing; $24$ of $25$ production rows stable; $Ca_{\mathrm{in}}=5$ untested \\
+    S19 & What is $H$ on the named $(Ca_{\mathrm{in}},La)$ grid? & Stokes quote unchanged for $Re<1.47$; $La=10$ at $Ca_{\mathrm{in}}=0.5$ thins $H$ by $5.8\%$ \\
     \bottomrule
   \end{tabular}
 \end{table}
@@ -302,14 +305,27 @@ $k$ unused, under the integral datum with $k$ unused, and under the integral
 datum with $k=0$. The three base states agree in $Ca_b$ to $5.0\times10^{-14}$.
 Angular eigensolving remains refused under fixation; the class default is
 unchanged.
+S18 labels the same twenty-five states at $k=3$. There is no sign change
+to bracket. Twenty-four production rows are stable. The production row at
+$Ca_{\mathrm{in}}=5$ ($Ca_b=12.30$) is untested: two shift-invert sets
+disagree on the imaginary part of the rightmost eigenvalue, while both
+remain damped. The doubled-film state at that station, and a pad-doubled
+window, are stable. Production rows at $Ca_{\mathrm{in}}=4$, $3$ and
+$2.5$ failed on a downward climb from $Ca_{\mathrm{in}}=6$ and were
+re-solved from the $Ca_{\mathrm{in}}=0.7$ seed; those three are stable.
+Spurious-mode checks at $Ca_{\mathrm{in}}=0.05$, $0.5$ and $6$ find no
+near-zero $k=3$ eigenvalue.
 
 \begin{figure}[t]
   \centering
   \includegraphics[width=0.82\textwidth]{azimuthal-growth.pdf}
   \caption{Scaled growth rate of the rightmost eigenvalue against $Ca_b$ for
-  azimuthal wavenumbers $k=0,1,2$. Filled markers are the production film
-  resolution; open markers at $Ca_b\ge2.3$ are the doubled-film check. The
-  tabulated data are supplied in \nolinkurl{data/s14-azimuthal-growth.csv}.}
+  azimuthal wavenumbers $k=0,1,2,3$. Filled markers are the production film
+  resolution; open markers at $Ca_b\ge2.3$ are the doubled-film check.
+  The $k=3$ production row at $Ca_b=12.30$ is omitted (untested).
+  At $Ca_b\lesssim10^{-2}$ the $k=3$ rate lies below the frame and remains
+  negative. The tabulated data are supplied in
+  \nolinkurl{data/s14-azimuthal-growth.csv}.}
   \label{fig:azimuthal}
 \end{figure}
 
@@ -653,7 +669,8 @@ Poiseuille flow, the static Laplace pressure, and window and mesh independence
 at the stated tolerances. The computed state is an attractor under time
 evolution, not merely a fixed point. Its curve does not depend on the route
 taken to compute it. Every reported Stokes state is linearly stable to
-azimuthal wavenumbers $k=0,1,2$. In the thin-film limit it recovers Bretherton's film
+azimuthal wavenumbers $k=0,1,2$, and to $k=3$ except for one untested
+production row at $Ca_{\mathrm{in}}=5$. In the thin-film limit it recovers Bretherton's film
 coefficient to $0.03$--$0.04\%$ and his front-meniscus pressure coefficient to
 $0.4\%$, both by extrapolation and neither given to the solver. Over $0.3\le Ca_b\le10$ it
 agrees with an independent published axisymmetric computation to about one per
@@ -679,23 +696,35 @@ $Ca_{\mathrm{in}}=2$ to $2.9$, and dies at the same $Ca_{\mathrm{in}}=2.90851$
 as S15. A remesh-off transient seed at $Ca_{\mathrm{in}}=2$ fails before a
 state is obtained, so remesh is required to start the row but does not
 remove the barrier. The top-of-sweep inertial point is accordingly quoted
-at $La=0.1$ rather than $La=1$. The S15 rows are not near
+at $La=0.1$ rather than $La=1$. S19 fills the named
+$(Ca_{\mathrm{in}},La)$ grid. At $Ca_{\mathrm{in}}=0.05$ the $3\times3$ and
+$6\times6$ pads agree in $H$ to $7\times10^{-8}$ at $La=0.1$, $1$ and $10$;
+$La=10$ there thins the film by $0.253\%$ at $Re=0.679$. At
+$Ca_{\mathrm{in}}=0.5$, $La=10$ the film is $5.8\%$ thinner than Stokes
+($H=0.295$, $Ca_b=1.006$, $Re=10.1$), so inertia is no longer a perturbation
+at that station. The last completed $La=1$ station,
+$Ca_{\mathrm{in}}=2.9$, has $H=0.346$ and $Ca_b=6.77$. Allowed failures
+remain at $La=10$, $Ca_{\mathrm{in}}=2$ and at the $Ca_{\mathrm{in}}=6$,
+$La=0.1$ pad-doubled window. The S15 and S19 rows are not near
 the rear-meniscus threshold of \citet{magnini2025stability}: their modified
 Weber number is $We_p=We(2-U_b/U_l)^2/2$ with $We=2\rho U_l^2 R_t/\sigma$,
 which on the present scales is
 $0.7\,La\,Ca_{\mathrm{in}}^2(2-Ca_b/Ca_{\mathrm{in}})^2$. Converted, the three
 S15 stations give $We_p=7.2\times10^{-4}$, $2.5\times10^{-3}$ and $0.55$, all
-below $We_p^*\approx3.65$ and the last two outside their $Ca_l$ window. Our
+below $We_p^*\approx3.65$ and the last two outside their $Ca_l$ window; the
+S19 station at $La=10$, $Ca_{\mathrm{in}}=0.5$ has $We_p=2.5\times10^{-4}$,
+so that $5.8\%$ thinning is a Reynolds-number effect, not their rear
+threshold. At $Ca_{\mathrm{in}}=2.9$, $La=1$ one has $We_p=0.664$. Our
 $We=La\,Ca_b^2$ is a different group; at the top of the sweep it is $21.5$.
 Nothing here
 addresses drops, for which a true void cannot stand in for the interior phase
 and a second meshed phase is required.
 
 The twenty-five Stokes states have been labelled for azimuthal wavenumbers
-$k=0,1,2$. All are stable; S14 reports no crossing to bracket. The
-eigenproblem cannot distinguish breakup from another axisymmetric state, and
-the labels are not a bifurcation study. $k=3$ was checked only at the top row,
-where it is also stable.
+$k=0,1,2$ and $k=3$. All labelled rows are stable; S14 and S18 report no
+crossing to bracket. The production row at $Ca_{\mathrm{in}}=5$ remains
+untested at $k=3$. The eigenproblem cannot distinguish breakup from another
+axisymmetric state, and the labels are not a bifurcation study.
 
 \section*{Data}
 

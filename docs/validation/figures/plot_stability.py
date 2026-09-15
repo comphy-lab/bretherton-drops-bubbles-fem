@@ -20,8 +20,8 @@ import numpy as np
 ROOT = Path(__file__).resolve().parent
 DATA = ROOT.parent / "data"
 
-C_K = {0: "#0072B2", 1: "#D55E00", 2: "#009E73"}
-MARK = {0: "o", 1: "s", 2: "D"}
+C_K = {0: "#0072B2", 1: "#D55E00", 2: "#009E73", 3: "#CC79A7"}
+MARK = {0: "o", 1: "s", 2: "D", 3: "^"}
 
 
 def read(name):
@@ -30,7 +30,8 @@ def read(name):
 
 
 rows = read("s14-azimuthal-growth.csv")
-assert len(rows) == 99
+modes = sorted({int(r["azimuthal_k"]) for r in rows})
+assert modes in ([0, 1, 2], [0, 1, 2, 3])
 assert all(r["label"] == "stable" for r in rows)
 
 FS_LABEL, FS_TICK, FS_LEGEND = 36, 26, 22
@@ -50,7 +51,7 @@ for spine in ax.spines.values():
 
 ax.axhline(0.0, color="0.35", lw=1.8, zorder=1)
 
-for k in (0, 1, 2):
+for k in modes:
     prod = [r for r in rows if int(r["azimuthal_k"]) == k and r["role"] == "production"]
     fine = [r for r in rows if int(r["azimuthal_k"]) == k and r["role"] == "fine"]
     prod.sort(key=lambda r: float(r["ca_b"]))
