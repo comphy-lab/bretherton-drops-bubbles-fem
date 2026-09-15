@@ -1,0 +1,221 @@
+{
+  "ca_b": 0.06791426125431912,
+  "ca_in": 0.05,
+  "check": "s12_azimuthal",
+  "eigensolver_ran_for_every_mode": true,
+  "failures": [],
+  "h_over_r_tube": 0.1421759132085714,
+  "ndof": 7328,
+  "note": "Establishes that azimuthal linear stability is available for this moving-mesh free-surface formulation and that its rightmost eigenvalue is a property of the operator rather than of the solver call, and calibrates how many eigenvalues must be requested for that to hold. It does NOT locate a critical capillary number. pressure_datum must be 'integral': pyoomph refuses angular eigensolving with a pressure fixation, and s7_pressure_datum.py shows the two mechanisms agree to 2.6e-14.",
+  "passed": true,
+  "reference_state_stable": true,
+  "required_eigenvalue_count": 8,
+  "results": [
+    {
+      "consensus_from_count": 16,
+      "m": 0,
+      "min_reliable_count": 8,
+      "relative_error_by_count": {
+        "4": 0.41386250839215893,
+        "8": 8.67212736850096e-13,
+        "16": 6.343865611040058e-13
+      },
+      "rightmost_imag": 0.15779600896314497,
+      "rightmost_real": -0.12320516499843849,
+      "samples": [
+        {
+          "imag": 0.15779600896306883,
+          "n": 4,
+          "real": -0.12320516499852069,
+          "shift": 0.0
+        },
+        {
+          "imag": 0.11204785697195342,
+          "n": 4,
+          "real": -0.17419516363156207,
+          "shift": -0.05
+        },
+        {
+          "imag": 0.15779600896309726,
+          "n": 4,
+          "real": -0.12320516499850016,
+          "shift": 0.05
+        },
+        {
+          "imag": 0.15779600896312024,
+          "n": 8,
+          "real": -0.12320516499854534,
+          "shift": 0.0
+        },
+        {
+          "imag": 0.15779600896311602,
+          "n": 8,
+          "real": -0.12320516499843771,
+          "shift": -0.05
+        },
+        {
+          "imag": 0.157796008963067,
+          "n": 8,
+          "real": -0.12320516499851104,
+          "shift": 0.05
+        },
+        {
+          "imag": 0.157796008963106,
+          "n": 16,
+          "real": -0.12320516499851665,
+          "shift": 0.0
+        },
+        {
+          "imag": 0.15779600896314497,
+          "n": 16,
+          "real": -0.12320516499843849,
+          "shift": -0.05
+        },
+        {
+          "imag": 0.15779600896307808,
+          "n": 16,
+          "real": -0.12320516499849514,
+          "shift": 0.05
+        }
+      ]
+    },
+    {
+      "consensus_from_count": 16,
+      "m": 1,
+      "min_reliable_count": 4,
+      "relative_error_by_count": {
+        "4": 6.705751917865641e-14,
+        "8": 5.2491746570177764e-14,
+        "16": 5.441552785809004e-14
+      },
+      "rightmost_imag": 7.347512028600205e-18,
+      "rightmost_real": -0.05049665222605651,
+      "samples": [
+        {
+          "imag": -3.4683816753426144e-17,
+          "n": 4,
+          "real": -0.05049665222605649,
+          "shift": 0.0
+        },
+        {
+          "imag": -3.183796648110765e-19,
+          "n": 4,
+          "real": -0.05049665222605931,
+          "shift": -0.05
+        },
+        {
+          "imag": 4.314371583509495e-16,
+          "n": 4,
+          "real": -0.050496652226059896,
+          "shift": 0.05
+        },
+        {
+          "imag": -2.6524615484717517e-17,
+          "n": 8,
+          "real": -0.05049665222605677,
+          "shift": 0.0
+        },
+        {
+          "imag": 2.2930448868270745e-21,
+          "n": 8,
+          "real": -0.05049665222605867,
+          "shift": -0.05
+        },
+        {
+          "imag": 3.858834337789456e-16,
+          "n": 8,
+          "real": -0.05049665222605916,
+          "shift": 0.05
+        },
+        {
+          "imag": 7.347512028600205e-18,
+          "n": 16,
+          "real": -0.05049665222605651,
+          "shift": 0.0
+        },
+        {
+          "imag": -1.7030694493016442e-19,
+          "n": 16,
+          "real": -0.05049665222605866,
+          "shift": -0.05
+        },
+        {
+          "imag": 2.631938448942367e-17,
+          "n": 16,
+          "real": -0.05049665222605926,
+          "shift": 0.05
+        }
+      ]
+    },
+    {
+      "consensus_from_count": 16,
+      "m": 2,
+      "min_reliable_count": 4,
+      "relative_error_by_count": {
+        "4": 4.672476655365707e-15,
+        "8": 8.283026798148299e-15,
+        "16": 5.0972472603989524e-15
+      },
+      "rightmost_imag": 5.626462612961214e-16,
+      "rightmost_real": -0.26137002218839067,
+      "samples": [
+        {
+          "imag": 2.698404615547353e-16,
+          "n": 4,
+          "real": -0.2613700221883917,
+          "shift": 0.0
+        },
+        {
+          "imag": -3.8893265289628177e-16,
+          "n": 4,
+          "real": -0.2613700221883914,
+          "shift": -0.05
+        },
+        {
+          "imag": -8.775499225265334e-16,
+          "n": 4,
+          "real": -0.2613700221883919,
+          "shift": 0.05
+        },
+        {
+          "imag": 4.77490754924848e-16,
+          "n": 8,
+          "real": -0.26137002218839217,
+          "shift": 0.0
+        },
+        {
+          "imag": -1.5132242958330495e-16,
+          "n": 8,
+          "real": -0.2613700221883918,
+          "shift": -0.05
+        },
+        {
+          "imag": -3.8111768679096313e-16,
+          "n": 8,
+          "real": -0.26137002218839284,
+          "shift": 0.05
+        },
+        {
+          "imag": 5.626462612961214e-16,
+          "n": 16,
+          "real": -0.26137002218839067,
+          "shift": 0.0
+        },
+        {
+          "imag": 1.2169133708189836e-16,
+          "n": 16,
+          "real": -0.2613700221883912,
+          "shift": -0.05
+        },
+        {
+          "imag": 2.821372797416898e-16,
+          "n": 16,
+          "real": -0.261370022188392,
+          "shift": 0.05
+        }
+      ]
+    }
+  ],
+  "rightmost_resolved_at_some_tested_count": true,
+  "rtol": 0.0001
+}
