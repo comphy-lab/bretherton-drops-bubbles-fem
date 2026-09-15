@@ -45,16 +45,18 @@ to $+0.12\%$ at $Ca_b=1.0$, $-0.18\%$ at $2.0$ and $+0.05\%$ at $10.0$. It
 departs from the Aussillous--Qu\'er\'e representation of Taylor's measurements
 by at most $1.37\%$ anywhere below $Ca_b=2$, with two sign changes, and by
 $-4.56\%$ at $Ca_b=14.8$ where that fit is extrapolated far beyond its data.
-Ten verification stages are reported, including a displacement test showing the
-computed state is an attractor rather than merely a fixed point, and a
-route-independence test showing the curve does not carry its own history. We
-also find the rear cap ceasing to be convex between $Ca_b=1.024$ and $1.048$
-in Stokes flow, a bracket containing the $1.026$ obtained by extrapolating the
-independent Stokes correlation of Balestra and co-workers, and we resolve the
-vortex ring trapped in the resulting indentation. A
-companion volume-of-fluid campaign lies above the present curve by up to
-$4.6\%$ near $Ca_b=1$; the cause of that difference is not established, though
-two candidates are eliminated.
+Thirteen verification stages are reported, including a displacement test showing
+the computed state is an attractor rather than merely a fixed point, a
+route-independence test showing the curve does not carry its own history, and
+an azimuthal linear-stability sweep in which every one of the twenty-five
+states is stable to wavenumbers $k=0,1,2$. We also find the rear cap ceasing
+to be convex between $Ca_b=1.024$ and $1.048$ in Stokes flow, a bracket
+containing the $1.026$ obtained by extrapolating the independent Stokes
+correlation of Balestra and co-workers, and we resolve the vortex ring trapped
+in the resulting indentation. At the top of the sweep the Stokes film moves by
+$0.78\%$ at $Re=1.47$. A companion volume-of-fluid campaign lies above the
+present curve by up to $4.6\%$ near $Ca_b=1$; the cause of that difference is
+not established, though two candidates are eliminated.
 \end{abstract}
 
 \section{Scope}
@@ -169,7 +171,9 @@ The working nondimensionalisation is $\sigma=\mu=R_0=1$, so $Ca_{\mathrm{in}}$
 is the imposed mean inlet speed and the Laplace number $La=\rho$. All results
 below are at $La=0$, that is, Stokes flow, with $R_t/R_0=0.7$ and bubble volume
 $\tfrac43\pi R_0^3$. Section~\ref{sec:verification} reports the measured size
-of the inertial correction at $La=1$, the value the companion campaign fixes.
+of the inertial correction at $La=1$ on the thin-film state, and
+Section~\ref{sec:open} quotes the Reynolds bound measured at the top of the
+sweep.
 
 The implementation uses pyoomph \citep{diddens2024bifurcation}, which is built
 on \texttt{oomph-lib} \citep{heil2006oomph} and GiNaC \citep{bauer2002ginac},
@@ -202,11 +206,14 @@ discretisation, or a limit in which the answer is known.
     S5 & Is the answer independent of the window length? & See below \\
     S6 & Is it independent of the mesh? & $H$ moves by at most $7.9\times10^{-5}$ relative \\
     S7 & Does the pressure datum affect any observable? & Two mechanisms agree to $2.6\times10^{-14}$ \\
-    S8 & How large is the inertial correction? & $-0.0255\%$ in $H$ between $La=0$ and $La=1$ \\
+    S8 & How large is the inertial correction? & $-0.0255\%$ in $H$ between $La=0$ and $La=1$ at one $Ca$ \\
     S9 & Is the computed state an attractor? & Displacements decay to $0.03$--$0.57\%$ in $1.5$ film renewals \\
     S10 & Does the answer depend on the solve route? & Routes agree to $9.1\times10^{-5}$; retrace to $8\times10^{-13}$ \\
     S11 & Where does the rear cap stop being convex? & Onset in $1.024<Ca_b<1.048$; resolutions agree above $4\times10^{-4}R_t$ \\
-    S12 & Is azimuthal linear stability available for this formulation? & Yes, with an integral pressure datum; $m=0$ needs eight eigenvalues \\
+    S12 & Is azimuthal linear stability available for this formulation? & Yes, with an integral pressure datum; $k=0$ needs eight eigenvalues \\
+    S13 & Does the rightmost eigenvalue match an independent time march? & Period to machine precision; decay rate to $14\%$ \\
+    S14 & Are the twenty-five states stable to $k=0,1,2$? & All stable; no crossing; pad-doubled labels agree \\
+    S15 & To what $Re$ may the Stokes baseline be quoted? & Holds to $0.78\%$ for $Re<1.47$ \\
     \bottomrule
   \end{tabular}
 \end{table}
@@ -270,6 +277,32 @@ Eq.~\eqref{eq:stagnant}, reaches at most $6.0\times10^{-4}$. The latter couples
 the frame speed, the film thickness and the flux in one relation and would fail
 if any of them were wrong; it is a consistency check on mass conservation and
 film flatness, and it is not by itself evidence that $H$ is correct.
+
+\paragraph{Azimuthal stability is labelled, not assumed.}
+S12 showed that the azimuthal eigenproblem runs on this moving mesh once the
+pressure datum is the integral constraint rather than a nodal fixation. S13
+marches the S12 state after an eigenfunction perturbation: the period of the
+rightmost $k=0$ pair matches the eigenvalue to machine precision, and the
+fitted decay agrees to $14\%$. S14 then labels every committed sweep state for
+wavenumbers $k=0,1,2$. The wavenumber is written $k$ here because $m$ is
+already the deposited-liquid fraction. All twenty-five production rows, and
+the eight states recomputed at doubled film resolution, are stable. There is
+no sign change to bracket. A pad-doubled window at $Ca_{\mathrm{in}}=6$ agrees
+on the three labels and moves $H$ by $5.3\times10^{-4}$ relative. Growth rates
+are plotted as $\mathrm{Re}(\lambda)\,R_t/U_b$ in
+Figure~\ref{fig:azimuthal}, not as raw $\lambda$, because $\lambda$ is in units
+of $\sigma/(\mu R_0)$ and its meaning changes across five decades. Zero is
+invariant; nothing in the figure is an extrapolation off the computed ladder.
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=0.82\textwidth]{azimuthal-growth.pdf}
+  \caption{Scaled growth rate of the rightmost eigenvalue against $Ca_b$ for
+  azimuthal wavenumbers $k=0,1,2$. Filled markers are the production film
+  resolution; open markers at $Ca_b\ge2.3$ are the doubled-film check. The
+  tabulated data are supplied in \nolinkurl{data/s14-azimuthal-growth.csv}.}
+  \label{fig:azimuthal}
+\end{figure}
 
 \section{The Bretherton limit}
 \label{sec:limit}
@@ -383,8 +416,9 @@ the thin-film limit and separate as the film thickens, and over the range where
 the literature points are reliable the present curve sits with them. The cause
 of the difference is \emph{not established}. Two candidates have been
 eliminated. Inertia is not responsible: S8 measures the film moving by
-$-0.0255\%$ between $La=0$ and the companion's $La=1$, two orders below the
-gap. A mismatch in bubble length is not responsible: S10 bounds its effect at
+$-0.0255\%$ between $La=0$ and the companion's $La=1$ at $Ca_b=0.068$, and S15
+finds at most $0.78\%$ anywhere with $Re<1.47$, both far below the gap. A
+mismatch in bubble length is not responsible: S10 bounds its effect at
 $1.3\times10^{-3}$. Two candidates remain, and they are distinguishable by
 calculations that do not exist yet. The companion's bubble is a viscous gas
 with $\mu_g/\mu_c=10^{-2}$ where the present interior is a true void, which is
@@ -606,7 +640,8 @@ The following are established by the evidence above. The solver reproduces
 Poiseuille flow, the static Laplace pressure, and window and mesh independence
 at the stated tolerances. The computed state is an attractor under time
 evolution, not merely a fixed point. Its curve does not depend on the route
-taken to compute it. In the thin-film limit it recovers Bretherton's film
+taken to compute it. Every reported Stokes state is linearly stable to
+azimuthal wavenumbers $k=0,1,2$. In the thin-film limit it recovers Bretherton's film
 coefficient to $0.03$--$0.04\%$ and his front-meniscus pressure coefficient to
 $0.4\%$, both by extrapolation and neither given to the solver. Over $0.3\le Ca_b\le10$ it
 agrees with an independent published axisymmetric computation to about one per
@@ -620,19 +655,19 @@ The mechanism of the re-entrant rear cap is open, with one candidate measured
 and rejected. The difference from the companion volume-of-fluid campaign is
 resolved on the present side but its cause is unidentified; of the four
 candidates considered, two are eliminated and the remaining two require work on
-the companion side. Inertial effects are quantified only at $La\le10$ and at a
-single capillary number. Nothing here addresses drops, for which a true void
-cannot stand in for the interior phase and a second meshed phase is required.
+the companion side. Inertial effects are no longer a single-state caveat: S15
+measures $\mathrm{d}H/\mathrm{d}Re$ at $Ca_b=0.068$, $1.06$ and $14.8$, and
+the Stokes baseline holds to $0.78\%$ for $Re<1.47$. Continuation in
+$Ca_{\mathrm{in}}$ at $La=1$ terminates near $Ca_{\mathrm{in}}=2.91$, so the
+top-of-sweep inertial point is at $La=0.1$ rather than $La=1$. Nothing here
+addresses drops, for which a true void cannot stand in for the interior phase
+and a second meshed phase is required.
 
-Most consequentially, \emph{no state reported here has had its stability to
-non-axisymmetric perturbations tested.} S9 displaces a state and marches it
-back, but a time march on an axisymmetric mesh sees only axisymmetric
-perturbations, and a bubble is free to break that symmetry. S12 establishes
-that the azimuthal eigenproblem is available for this formulation, which is
-what makes the test possible; it has not been run across the sweep. The
-high-$Ca_b$ states are therefore axisymmetric steady solutions of untested
-stability, and should not be quoted as physical predictions without that
-qualification.
+The twenty-five Stokes states have been labelled for azimuthal wavenumbers
+$k=0,1,2$. All are stable; S14 reports no crossing to bracket. The
+eigenproblem cannot distinguish breakup from another axisymmetric state, and
+the labels are not a bifurcation study. $k=3$ was checked only at the top row,
+where it is also stable.
 
 \section*{Data}
 
