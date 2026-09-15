@@ -89,8 +89,9 @@ def build_stability_problem(
     pad_rear: float = 1.5,
     pad_front: float = 3.0,
     laplace: float = 0.0,
+    azimuthal_stability: bool = True,
 ) -> VoidBubbleProblem:
-    if pressure_datum == "fixation":
+    if pressure_datum == "fixation" and azimuthal_stability:
         raise ValueError(
             "azimuthal eigensolving is refused with pressure_datum='fixation'; "
             "pass 'integral' as an argument, do not change the class default"
@@ -105,7 +106,7 @@ def build_stability_problem(
     )
     output_dir.mkdir(parents=True, exist_ok=True)
     problem.set_output_directory(str(output_dir))
-    problem.setup_for_stability_analysis(azimuthal_stability=True)
+    problem.setup_for_stability_analysis(azimuthal_stability=azimuthal_stability)
     problem.initialise()
     problem.audit_constraints()
     return problem
@@ -129,7 +130,7 @@ def shift_sets(rate: float) -> tuple[list[float], list[float]]:
     return set_a, set_b
 
 
-def rightmost_sample(problem: VoidBubbleProblem, azimuthal_k: int, n: int,
+def rightmost_sample(problem: VoidBubbleProblem, azimuthal_k: int | None, n: int,
                      shift: float) -> dict:
     values, vectors = problem.solve_eigenproblem(n, azimuthal_m=azimuthal_k, shift=shift)
     index = int(max(range(len(values)), key=lambda i: values[i].real))
@@ -181,7 +182,7 @@ def consensus(samples: list[dict], *, rtol: float, atol: float) -> dict | None:
 
 def two_set_rightmost(
     problem: VoidBubbleProblem,
-    azimuthal_k: int,
+    azimuthal_k: int | None,
     *,
     n: int,
     rate: float,

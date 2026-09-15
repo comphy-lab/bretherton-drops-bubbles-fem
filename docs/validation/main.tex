@@ -40,12 +40,13 @@ of Bretherton's $0.643\,3^{2/3}=1.3375$, so the asymptotic coefficient is
 recovered rather than assumed. The dynamic pressure excess across the front
 meniscus independently recovers Bretherton's other coefficient, $3.58$, to
 $0.4\%$. At finite capillary number the solver agrees
-with the digitised axisymmetric finite-element results of Giavedoni and Saita
-to $+0.12\%$ at $Ca_b=1.0$, $-0.18\%$ at $2.0$ and $+0.05\%$ at $10.0$. It
+with the published axisymmetric finite-element results of Giavedoni and Saita
+to $+0.12\%$ at $Ca_b=1.0$, $-0.18\%$ at $2.0$ and $+0.05\%$ at $10.0$ (the last
+of those is printed text, not a digitised figure). It
 departs from the Aussillous--Qu\'er\'e representation of Taylor's measurements
 by at most $1.37\%$ anywhere below $Ca_b=2$, with two sign changes, and by
 $-4.56\%$ at $Ca_b=14.8$ where that fit is extrapolated far beyond its data.
-Thirteen verification stages are reported, including a displacement test showing
+Fourteen verification stages are reported, including a displacement test showing
 the computed state is an attractor rather than merely a fixed point, a
 route-independence test showing the curve does not carry its own history, and
 an azimuthal linear-stability sweep in which every one of the twenty-five
@@ -214,6 +215,7 @@ discretisation, or a limit in which the answer is known.
     S13 & Does the rightmost eigenvalue match an independent time march? & Period to machine precision; decay rate to $14\%$ \\
     S14 & Are the twenty-five states stable to $k=0,1,2$? & All stable; no crossing; pad-doubled labels agree \\
     S15 & To what $Re$ may the Stokes baseline be quoted? & Holds to $0.78\%$ for $Re<1.47$ \\
+    S16 & Does the pressure datum move the axisymmetric spectrum? & Rightmost $\lambda$ agrees; $Ca_b$ spread $5.0\times10^{-14}$ \\
     \bottomrule
   \end{tabular}
 \end{table}
@@ -293,6 +295,13 @@ are plotted as $\mathrm{Re}(\lambda)\,R_t/U_b$ in
 Figure~\ref{fig:azimuthal}, not as raw $\lambda$, because $\lambda$ is in units
 of $\sigma/(\mu R_0)$ and its meaning changes across five decades. Zero is
 invariant; nothing in the figure is an extrapolation off the computed ladder.
+S16 checks that the pressure datum does not move that axisymmetric pencil. At
+$Ca_{\mathrm{in}}=0.05$ the rightmost pair is
+$-0.123205\pm0.157796\,\mathrm{i}$ under nodal fixation with
+$k$ unused, under the integral datum with $k$ unused, and under the integral
+datum with $k=0$. The three base states agree in $Ca_b$ to $5.0\times10^{-14}$.
+Angular eigensolving remains refused under fixation; the class default is
+unchanged.
 
 \begin{figure}[t]
   \centering
@@ -371,9 +380,10 @@ The tabulated data are supplied in \nolinkurl{data/film-sweep.csv}.
   Left: $H$ with the Bretherton asymptote and the Aussillous--Qu\'er\'e fit.
   Right: the deviation of every series from that fit, all recomputed from raw
   $H$ and $Ca_b$ against the unrounded coefficient of
-  Eq.~\eqref{eq:bretherton}. The literature points are digitised from figures
+  Eq.~\eqref{eq:bretherton}. Most literature points are digitised from figures
   and are drawn as large soft symbols for that reason; their scatter at small
-  $Ca$ is reading error, not disagreement. Two companion cases reached the end
+  $Ca$ is reading error, not disagreement. The points at $Ca=2$ and $Ca=10$
+  are printed values from the same paper. Two companion cases reached the end
   of their laboratory-frame domain and are drawn open.}
   \label{fig:film}
 \end{figure}
@@ -397,7 +407,9 @@ beyond the data it represents.
 \paragraph{Agreement with an independent computation.} The closest available
 independent check is \citet{giavedoni1997axisymmetric}: the same geometry, the
 same formulation class, a different implementation, and published. Twenty-two
-of their twenty-four digitised points fall inside the present range.
+of their twenty-four points fall inside the present range; $Ca=2$ and $Ca=10$
+are printed ($m=0.559$ and $m=0.592$, $h_\infty=0.361$ on p.~2424), the rest
+digitised from figures.
 Interpolating the present sweep onto them, the difference is $+0.12\%$ at
 $Ca=1.0$, $-0.18\%$ at $2.0$, $+1.00\%$ at $5.18$ and $+0.05\%$ at $10.0$;
 over the nine points with $Ca\ge0.3$ the mean difference is $+1.16\%$ with a
@@ -647,10 +659,12 @@ $0.4\%$, both by extrapolation and neither given to the solver. Over $0.3\le Ca_
 agrees with an independent published axisymmetric computation to about one per
 cent, and at three separate capillary numbers to better than $0.2\%$.
 
-The following are not established. The correctness of the film at capillary
-numbers above $10$ rests on one digitised point and on no independent
-computation; the departure from the Aussillous--Qu\'er\'e fit there is
-attributed to extrapolation of the fit, and that attribution is an inference.
+The following are not established. The film is validated through $Ca=10$ by
+that printed Giavedoni and Saita point. Beyond it the $Ca_b=14.8$ film is an
+unvalidated continuation of the same branch: there is no printed table and no
+second independent Stokes computation in the bibliography at $Ca_b>10$. The
+departure from the Aussillous--Qu\'er\'e fit there is attributed to
+extrapolation of the fit, and that attribution is an inference.
 The mechanism of the re-entrant rear cap is open, with one candidate measured
 and rejected. The difference from the companion volume-of-fluid campaign is
 resolved on the present side but its cause is unidentified; of the four
@@ -658,8 +672,22 @@ candidates considered, two are eliminated and the remaining two require work on
 the companion side. Inertial effects are no longer a single-state caveat: S15
 measures $\mathrm{d}H/\mathrm{d}Re$ at $Ca_b=0.068$, $1.06$ and $14.8$, and
 the Stokes baseline holds to $0.78\%$ for $Re<1.47$. Continuation in
-$Ca_{\mathrm{in}}$ at $La=1$ terminates near $Ca_{\mathrm{in}}=2.91$, so the
-top-of-sweep inertial point is at $La=0.1$ rather than $La=1$. Nothing here
+$Ca_{\mathrm{in}}$ at $La=1$ terminates near $Ca_{\mathrm{in}}=2.91$ both
+with automatic remeshing and without it: S17 seeds that row with remesh,
+then climbs with remesh suppressed, holds $11104$ degrees of freedom from
+$Ca_{\mathrm{in}}=2$ to $2.9$, and dies at the same $Ca_{\mathrm{in}}=2.90851$
+as S15. A remesh-off transient seed at $Ca_{\mathrm{in}}=2$ fails before a
+state is obtained, so remesh is required to start the row but does not
+remove the barrier. The top-of-sweep inertial point is accordingly quoted
+at $La=0.1$ rather than $La=1$. The S15 rows are not near
+the rear-meniscus threshold of \citet{magnini2025stability}: their modified
+Weber number is $We_p=We(2-U_b/U_l)^2/2$ with $We=2\rho U_l^2 R_t/\sigma$,
+which on the present scales is
+$0.7\,La\,Ca_{\mathrm{in}}^2(2-Ca_b/Ca_{\mathrm{in}})^2$. Converted, the three
+S15 stations give $We_p=7.2\times10^{-4}$, $2.5\times10^{-3}$ and $0.55$, all
+below $We_p^*\approx3.65$ and the last two outside their $Ca_l$ window. Our
+$We=La\,Ca_b^2$ is a different group; at the top of the sweep it is $21.5$.
+Nothing here
 addresses drops, for which a true void cannot stand in for the interior phase
 and a second meshed phase is required.
 
@@ -675,7 +703,7 @@ All quantities plotted or tabulated in this report are supplied as compact CSV
 files under \nolinkurl{data/}, and every figure is regenerated from them by the
 scripts in \nolinkurl{figures/} without a solver or a simulation dump. The
 digitised points of \citet{giavedoni1997axisymmetric} record the source figure
-and the coordinates read. The companion volume-of-fluid table is reproduced
+and the coordinates read; printed values record the page. The companion volume-of-fluid table is reproduced
 with that campaign's agreement and carries its own resolution measure and its
 outlet-limited flag, both of which are honoured in the figures.
 

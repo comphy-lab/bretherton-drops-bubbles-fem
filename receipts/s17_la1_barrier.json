@@ -1,0 +1,107 @@
+{
+  "check": "s17_la1_barrier",
+  "classification": "still_blocked_without_remesh",
+  "do_call_remeshing_when_necessary_on_climb": false,
+  "failure": {
+    "failed": "RuntimeError: OomphException",
+    "last_ok_ca_in": 2.9,
+    "target_ca_in": 3.0
+  },
+  "failure_ca_in": 2.90851,
+  "last_ok_ca_in": 2.9,
+  "ndof_constant_on_climb": true,
+  "note": "Seed at Ca_in=2 La=1 with remesh on, then climb with do_call_remeshing_when_necessary=False. ndof stays 11104 from 2.0 to 2.9; RemeshWhen prints expansion requests but does not rebuild during arclength. The step to 3.0 dies at Ca_in=2.90851, the same station as S15. Classification: continuation limit, not remesh wreck.",
+  "passed": true,
+  "passed_barrier": false,
+  "passed_s15_barrier_without_remesh": false,
+  "remesh_on_seed": true,
+  "seed": {
+    "aussillous_quere_at_ca_b": 0.3612430011570159,
+    "bretherton_at_ca_b": 3.7282866263253984,
+    "bubble_length": 7.0270099293329995,
+    "bubble_pressure_excess": 23.93169857766638,
+    "bubble_pressure_gauge": 88.6928236418807,
+    "bulk_resolution_over_r0": 0.1,
+    "ca_b": 4.653998354747388,
+    "ca_in": 2.0,
+    "ca_in_seeded": 2.0,
+    "check_central_nodes": 67,
+    "check_film_flatness": 0.0013010415021732068,
+    "check_flux_error": -2.173970340844275e-16,
+    "check_initial_constraint_audit": {},
+    "check_stagnant_film_error": -0.00028772085067219066,
+    "check_void_volume_error": -1.4432899320127035e-15,
+    "closure": "centroid",
+    "deviation_from_aussillous_quere": -0.04620918703906007,
+    "film_element_size_over_r0": 0.08458991213870654,
+    "film_elements": 3.0,
+    "h_flat": 0.24118517902499997,
+    "h_flat_over_r_tube": 0.34455025575,
+    "h_min_over_r_tube": 0.3444765536228571,
+    "laplace": 1.0,
+    "ndof": 11104,
+    "outlet": "poiseuille",
+    "pad_front": 2.9999999999999996,
+    "pad_rear": 1.4999999999999998,
+    "r_tube": 0.7,
+    "route": "transient+stationary",
+    "speed_ratio": 2.326999177373694,
+    "wall_seconds": 0.0
+  },
+  "stations": [
+    {
+      "ca_b": 4.891262348028593,
+      "ca_in": 2.1,
+      "h_over_r_tube": 0.34486058698571426,
+      "ndof": 11104
+    },
+    {
+      "ca_b": 5.128089698904317,
+      "ca_in": 2.2,
+      "h_over_r_tube": 0.3451107630571428,
+      "ndof": 11104
+    },
+    {
+      "ca_b": 5.364485415339078,
+      "ca_in": 2.3,
+      "h_over_r_tube": 0.3453192302685714,
+      "ndof": 11104
+    },
+    {
+      "ca_b": 5.600455246678075,
+      "ca_in": 2.4,
+      "h_over_r_tube": 0.3454756042357143,
+      "ndof": 11104
+    },
+    {
+      "ca_b": 5.836005478030751,
+      "ca_in": 2.5,
+      "h_over_r_tube": 0.3456066207228571,
+      "ndof": 11104
+    },
+    {
+      "ca_b": 6.071142773072232,
+      "ca_in": 2.6,
+      "h_over_r_tube": 0.34571088241,
+      "ndof": 11104
+    },
+    {
+      "ca_b": 6.305874054680337,
+      "ca_in": 2.7,
+      "h_over_r_tube": 0.34577811023999994,
+      "ndof": 11104
+    },
+    {
+      "ca_b": 6.540206412939539,
+      "ca_in": 2.8,
+      "h_over_r_tube": 0.3458340726614285,
+      "ndof": 11104
+    },
+    {
+      "ca_b": 6.774147024349371,
+      "ca_in": 2.9,
+      "h_over_r_tube": 0.3458604966057143,
+      "ndof": 11104
+    }
+  ]
+}
