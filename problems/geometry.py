@@ -61,6 +61,35 @@ class CapsuleGeometry:
             raise ValueError("R0 and Rb must be positive")
         return 2.0 * r_body + (4.0 / 3.0) * (r0**3 / r_body**2 - r_body)
 
+    @staticmethod
+    def expected_bubble_speed(ca_in: float, *, iterations: int = 60) -> float:
+        """Self-consistent estimate of the bubble speed for an imposed inlet speed.
+
+        ``Ca_b`` is an output of this formulation, not an input, and it exceeds
+        ``Ca_in`` substantially. The ratio is the stagnant-film identity
+        ``(R_t/(R_t - h))^2``: 1.03 at ``Ca_b ~ 1e-4`` but 2.29 at ``Ca_b ~ 2.3``.
+        Combining it with the Aussillous-Quere film gives a fixed point in the
+        ratio, solved here by direct iteration.
+
+        This matters only for seeding, and the converged steady state does not
+        depend on it. But at ``Ca_in = 2`` a capsule seeded from ``AQ(Ca_in)``
+        carries a film of 0.337 where the bubble wants 0.363, and the transient
+        must deform the mesh far enough that an element shrinks by a factor of
+        three, triggering a remesh into a solve whose backward error exceeds the
+        solver's own limit. Seeding from the bubble's own speed removes that.
+        The parent Basilisk campaign inverts the same relation when it chooses
+        ``Ca_in = 0.4788`` to target ``Ca_b = 1``.
+        """
+        if ca_in <= 0:
+            raise ValueError("Ca_in must be positive")
+        ratio = 1.0
+        for _ in range(iterations):
+            film = aussillous_quere(ca_in * ratio)
+            if not 0.0 < film < 1.0:
+                break
+            ratio = 1.0 / (1.0 - film) ** 2
+        return ca_in * ratio
+
     @classmethod
     def for_capillary_number(
         cls,
@@ -70,6 +99,7 @@ class CapsuleGeometry:
         r_tube: float = 0.7,
         pad_rear: float = 3.0,
         pad_front: float = 3.0,
+        seed_from_bubble_speed: bool = False,
     ) -> CapsuleGeometry:
         """Seed the capsule with the Aussillous-Quere film gap for this ``Ca``.
 
@@ -79,9 +109,12 @@ class CapsuleGeometry:
         capillary ripple and the film relaxation, the front sees only the
         Poiseuille approach, so they need not converge at the same pad.
         """
-        if not 0.0 < aussillous_quere(ca) < 1.0:
-            raise ValueError(f"the Aussillous-Quere film at Ca={ca} is not a fraction of R_tube")
-        r_body = r_tube * (1.0 - aussillous_quere(ca))
+        seed_ca = cls.expected_bubble_speed(ca) if seed_from_bubble_speed else ca
+        if not 0.0 < aussillous_quere(seed_ca) < 1.0:
+            raise ValueError(
+                f"the Aussillous-Quere film at Ca={seed_ca} is not a fraction of R_tube"
+            )
+        r_body = r_tube * (1.0 - aussillous_quere(seed_ca))
         z_rear = pad_rear * r_tube
         z_front = z_rear + cls.bubble_length(r0, r_body)
         return cls(
@@ -192,7 +225,8 @@ class CapsuleGeometry:
         return out
 
 
-def geometry_from_case(physics: dict) -> CapsuleGeometry:
+def geometry_from_case(physics: dict, *,
+                       seed_from_bubble_speed: bool = False) -> CapsuleGeometry:
     """Build the capsule from the portable case physics block.
 
     ``rb0_frac`` seeds the gap directly; omitting it seeds from the
@@ -214,4 +248,5 @@ def geometry_from_case(physics: dict) -> CapsuleGeometry:
         r_tube=r_tube,
         pad_rear=float(physics["pad_rear"]),
         pad_front=float(physics["pad_front"]),
+        seed_from_bubble_speed=seed_from_bubble_speed,
     )

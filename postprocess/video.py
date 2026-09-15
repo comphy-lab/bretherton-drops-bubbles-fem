@@ -83,6 +83,7 @@ and ``liquid/liquid_*.vtu``.
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import shutil
 import struct
@@ -410,10 +411,13 @@ class Layout:
     vmax: float
     dmin: float
     dmax: float
+    # Per-frame (Ca_in, Ca_b) for a continuation walk. ``None`` for the ordinary
+    # case, where Ca_in is fixed and the frame's own time is the varying label.
+    trail: tuple[tuple[float, float], ...] | None = None
 
 
 def make_layout(
-    *, r_tube, l_domain, ca_in, lower, limits, dpi, fig_w
+    *, r_tube, l_domain, ca_in, lower, limits, dpi, fig_w, trail=None
 ) -> Layout:
     ylim = 1.06 * r_tube
     left, right = 0.055, 0.865
@@ -429,6 +433,7 @@ def make_layout(
         ylim=ylim, zticks=zticks, dpi=dpi, ca_in=ca_in, lower=lower,
         vmin=limits["vmin"], vmax=limits["vmax"],
         dmin=limits["dmin"], dmax=limits["dmax"],
+        trail=trail,
     )
 
 
@@ -474,26 +479,26 @@ def draw_frame(frame: Frame, lay: Layout, dest: Path) -> Path:
     for spine in ax.spines.values():
         spine.set_linewidth(1.2)
 
+    # Label what varies along the sequence. A relaxation holds Ca_in fixed and
+    # advances in time, so the time is the informative half. A continuation walk
+    # advances in Ca_in and every frame is a converged steady state, so its time
+    # is a meaningless output counter and printing it would imply an evolution
+    # that is not there.
+    if lay.trail is not None:
+        ca_in_f, ca_b_f = lay.trail[frame.index]
+        caption = rf"$Ca_{{\rm in}} = {ca_in_f:.3f}$,   $Ca_b = {ca_b_f:.3f}$"
+    else:
+        caption = rf"$Ca_{{\rm in}} = {lay.ca_in:g}$,   $t = {frame.time:5.2f}$"
     fig.text(
-        0.5, 1.0 - 0.30 / lay.fig_h,
-        rf"$Ca_{{\rm in}} = {lay.ca_in:g}$,   $t = {frame.time:5.2f}$",
+        0.5, 1.0 - 0.30 / lay.fig_h, caption,
         ha="center", va="center", fontsize=FS_TITLE,
     )
-    fig.text(
-        0.5, 1.0 - 0.66 / lay.fig_h,
-        "co-moving frame: one fixed window, the bubble does not translate",
-        ha="center", va="center", fontsize=FS_SUB, color="0.30",
-    )
-    lower_name = (
-        r"$p$" if lay.lower == "pressure"
-        else r"$\Phi = 2\mu\,\mathsf{E}\!:\!\mathsf{E}$ (hoop term $u_r/r$ included)"
-    )
-    fig.text(
-        0.5, 0.30 / lay.fig_h,
-        r"velocities in the BUBBLE frame: wall at $-U$, far field Poiseuille $-\,U$."
-        "   below the axis, " + lower_name + r".   $\sigma=\mu=R_0=1$",
-        ha="center", va="center", fontsize=FS_CAPTION, color="0.25",
-    )
+    # No explanatory prose is drawn on the frames. Vatsal's standing instruction
+    # is that rendered output carries no text beyond what identifies the plotted
+    # quantities - axis labels, ticks and colourbar labels. The frame is in the
+    # bubble frame with the wall at -U, the lower half is the dissipation (or
+    # pressure) field, and sigma = mu = R0 = 1; all of that belongs in the
+    # caption of whatever document embeds the video, not burned into the pixels.
 
     x0, y0, w, h = lay.rect
     cax_u = fig.add_axes([x0 + w + 0.018, y0 + 0.52 * h, 0.010, 0.46 * h])
@@ -593,6 +598,15 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--dpi", type=int, default=120)
     ap.add_argument("--fig-width", type=float, default=14.5, help="figure width in inches")
     ap.add_argument("--ca-in", type=float, default=0.05, help="Ca_in, for the title only")
+    ap.add_argument("--skip-first", type=int, default=0,
+                    help="drop this many leading snapshots. A continuation run has to "
+                         "reach its starting state by a transient first, and those "
+                         "frames are not converged; including them would put a "
+                         "relaxation at the front of a walk along the steady curve.")
+    ap.add_argument("--ca-trail", type=Path, default=None,
+                    help="JSON with a 'trail' list of {ca_in, ca_b}, one entry per "
+                         "retained frame. Switches the caption from (Ca_in, t) to "
+                         "(Ca_in, Ca_b), which is what varies in a continuation walk.")
     ap.add_argument("--lower", choices=("dissipation", "pressure"), default="dissipation",
                     help="field drawn below the axis")
     ap.add_argument("--check", action="store_true",
@@ -604,9 +618,29 @@ def main(argv: list[str] | None = None) -> int:
     if args.fps < 1:
         ap.error("--fps must be at least 1")
 
+    if args.skip_first < 0:
+        ap.error("--skip-first must not be negative")
+
     output_dir = args.output_dir.resolve()
     series = read_series(output_dir)
+    if args.skip_first:
+        if args.skip_first >= len(series):
+            ap.error(f"--skip-first {args.skip_first} leaves no snapshots of {len(series)}")
+        print(f"dropping the first {args.skip_first} of {len(series)} snapshots", flush=True)
+        series = series[args.skip_first:]
     print(f"{len(series)} snapshots, t = {series[0][0]:g} to {series[-1][0]:g}", flush=True)
+
+    trail = None
+    if args.ca_trail is not None:
+        raw = json.loads(args.ca_trail.read_text())["trail"]
+        if len(raw) != len(series):
+            # Silently zipping to the shorter of the two would mislabel every
+            # frame after the first mismatch, and the video would still look fine.
+            ap.error(
+                f"--ca-trail has {len(raw)} entries but {len(series)} snapshots are "
+                "retained; the captions would not correspond to the frames"
+            )
+        trail = tuple((float(e["ca_in"]), float(e["ca_b"])) for e in raw)
 
     probe = load_frame(0, series[0][0], series[0][1])
     r_tube = float(np.max(probe.points[:, 0]))
@@ -628,7 +662,7 @@ def main(argv: list[str] | None = None) -> int:
 
     lay = make_layout(
         r_tube=r_tube, l_domain=l_domain, ca_in=args.ca_in, lower=args.lower,
-        limits=limits, dpi=args.dpi, fig_w=args.fig_width,
+        limits=limits, dpi=args.dpi, fig_w=args.fig_width, trail=trail,
     )
 
     out_mp4 = args.out or (output_dir / "bubble.mp4")

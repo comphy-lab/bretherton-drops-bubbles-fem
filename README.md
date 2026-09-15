@@ -188,6 +188,8 @@ to `receipts/`. They are ordered so that a failure localises.
 | `s6_mesh.py` | Is it mesh-converged, and to what? | see below |
 | `s7_pressure_datum.py` | Does the pressure datum matter, and is it working? | datum required; two mechanisms agree to `1e-14` |
 | `s8_inertia.py` | Does inertia matter, and is the non-inertial frame term exercised? | linear in `Re`; see below |
+| `s9_steadiness.py` | Is the stationary state an attractor, and over how many film renewals is that shown? | displaced, it returns to within 0.6% of the displacement in 1.5 renewals |
+| `s10_route.py` | Does the answer depend on the solve route, the ladder direction, or the bubble length? | routes agree to `9e-5`; retrace to `8e-13`; bubble length `1.3e-3` |
 
 `s8` is also the only stage that executes the frame-acceleration body force
 `-rho dU/dt`, which makes the co-moving frame consistent while `U` is still
@@ -195,6 +197,15 @@ changing. It exists only for `La > 0` — `La = 0` selects `StokesEquations` —
 and only during the transient, since a stationary solve zeroes time
 derivatives. Without this stage that term would be written, plausible and never
 run.
+
+`s9` and `s10` were added because the earlier stages all measure how well the
+discrete equations are solved, and none of them can fail if the solver converges
+neatly to the wrong state. `s9` asks whether the converged state is an attractor
+rather than merely a fixed point — a stationary solution is an exact fixed point
+of the implicit time discretisation as well, so marching from it proves almost
+nothing and the stage displaces it instead. `s10` asks whether the curve carries
+its own history, since points reached by continuation inherit their
+predecessor's state.
 
 `s1` is the one that matters most for trusting the formulation: it checks the
 surface tension and its sign, the kinematic condition, the mesh motion, the
