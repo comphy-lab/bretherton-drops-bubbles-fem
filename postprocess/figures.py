@@ -48,6 +48,9 @@ C_FEM = "#1f4e9c"
 C_PARENT = "#d1622b"
 C_BRETH = "#111111"
 C_AQ = "#5c5c5c"
+C_LIT = "#4f8f4a"
+C_LIT_SOFT = "#9ac295"
+C_LIT_FILL = "#e5f0e3"
 C_CA_HI = "#8b1a1a"
 C_CA_LO = "#1f6f4e"
 
@@ -109,6 +112,46 @@ def clean_log_axis(axis, ticks, labels=None) -> None:
             axis.set_ticklabels(labels)
 
 
+
+def decade_ticks(lo: float, hi: float, *, max_labels: int = 8):
+    """Decade ticks spanning [lo, hi], labelled ``10^n``.
+
+    Derived from the data, never hardcoded. Fixed tick lists went stale twice as
+    the sweep grew: labels sized for a two-decade range ended up crowded at one
+    edge of a five-decade axis with the rest of the data unlabelled.
+
+    Thins to every second or third decade rather than letting labels collide.
+    """
+    first = math.floor(math.log10(lo))
+    last = math.ceil(math.log10(hi))
+    exps = list(range(first, last + 1))
+    exps = [e for e in exps if lo <= 10.0**e <= hi]
+    if not exps:
+        # A range narrower than one decade contains no decade tick. Returning a
+        # tick outside [lo, hi] would place a label matplotlib then clips,
+        # leaving an unlabelled axis that looks deliberate. Say "no ticks".
+        return [], []
+    step = 1
+    while len(exps[::step]) > max_labels:
+        step += 1
+    exps = exps[::step]
+    return [10.0**e for e in exps], [rf"$10^{{{e}}}$" for e in exps]
+
+
+def load_reference_series(receipts: Path, name: str) -> list[dict]:
+    """Load a vendored external series, or return nothing if it is absent.
+
+    Absent is a legitimate state: the comparison data is vendored from another
+    project and from digitised literature, and a checkout without it should
+    still render every figure that does not need it.
+    """
+    path = receipts / name
+    if not path.is_file():
+        return []
+    with path.open(newline="") as fh:
+        return list(csv.DictReader(fh))
+
+
 def save(fig, outdir: Path, name: str, dpi_png: int) -> list[Path]:
     outdir.mkdir(parents=True, exist_ok=True)
     paths = []
@@ -167,31 +210,66 @@ def interface_xy(receipts: Path, row: dict) -> np.ndarray:
 # figures
 # --------------------------------------------------------------------------
 def fig_film_vs_cab(receipts: Path, parent_csv: Path, outdir: Path, dpi: int):
-    """h/R_tube against the measured Ca_b, log-log, both codes plus laws."""
-    fem = sweep_rows(receipts)
-    par = load_parent(parent_csv)
+    """h/R_tube against the measured Ca_b, log-log: this solver, Basilisk, literature.
 
+    Three series and two laws. The Basilisk points are the parent campaign's full
+    table rather than its four committed rows, and they are split on the
+    campaign's own ``outlet_limited`` flag: a flagged case reached the end of its
+    lab-frame domain, so its film carries a domain-truncation error and must not
+    be read as an equal-quality measurement. Giavedoni & Saita (1997) is the
+    canonical axisymmetric finite-element study of this problem and is the
+    closest independent check available - same geometry, independent
+    implementation, published.
+    """
+    fem = sweep_rows(receipts)
     ca_f = np.array([r["ca_b"] for r in fem])
     h_f = np.array([r["h_flat_over_r_tube"] for r in fem])
-    ca_p = np.array([r["Ca_b"] for r in par])
-    h_p = np.array([r["b_flat_over_R"] for r in par])
 
-    lo = 0.8 * min(ca_f.min(), ca_p.min())
-    hi = 1.3 * max(ca_f.max(), ca_p.max())
+    # Prefer the vendored full parent table; fall back to the committed baseline.
+    full = load_reference_series(receipts, "parent-basilisk-h-ca.csv")
+    if full:
+        ok = [r for r in full if r.get("outlet_limited") != "True"]
+        lim = [r for r in full if r.get("outlet_limited") == "True"]
+        ca_p = np.array([float(r["Ca_b"]) for r in ok])
+        h_p = np.array([float(r["H"]) for r in ok])
+        ca_l = np.array([float(r["Ca_b"]) for r in lim])
+        h_l = np.array([float(r["H"]) for r in lim])
+    else:
+        par = load_parent(parent_csv)
+        ca_p = np.array([r["Ca_b"] for r in par])
+        h_p = np.array([r["b_flat_over_R"] for r in par])
+        ca_l = h_l = np.array([])
+
+    gs = load_reference_series(receipts, "giavedoni-saita-1997-axisym.csv")
+    ca_g = np.array([float(r["Ca"]) for r in gs]) if gs else np.array([])
+    h_g = np.array([float(r["H"]) for r in gs]) if gs else np.array([])
+
+    every_ca = [ca_f, ca_p, ca_l, ca_g]
+    every_h = [h_f, h_p, h_l, h_g]
+    lo = 0.6 * min(a.min() for a in every_ca if a.size)
+    hi = 1.8 * max(a.max() for a in every_ca if a.size)
     ca_line = np.logspace(math.log10(lo), math.log10(hi), 400)
 
-    w = 7.0
+    w = 7.4
     f = fonts(w)
-    fig, ax = plt.subplots(figsize=(w, w * 0.82))
+    fig, ax = plt.subplots(figsize=(w, w * 0.80))
 
     ax.plot(ca_line, bretherton(ca_line), "--", color=C_BRETH, lw=f["lw"] * 0.8,
             label=r"Bretherton, $h/R_t = 0.643\,(3Ca_b)^{2/3}$", zorder=1)
     ax.plot(ca_line, aussillous_quere(ca_line), "-", color=C_AQ, lw=f["lw"] * 0.8,
             label=r"Aussillous--Qu\'er\'e", zorder=1)
-    ax.plot(ca_p, h_p, "s", mfc="none", mec=C_PARENT, ms=f["ms"] * 1.8,
-            mew=f["lw"] * 0.55, ls="none", label=LBL_PARENT, zorder=3)
-    ax.plot(ca_f, h_f, "o", color=C_FEM, ms=f["ms"] * 0.85, mec="k",
-            mew=f["lw"] * 0.2, ls="none", label=LBL_FEM, zorder=4)
+    if ca_g.size:
+        ax.plot(ca_g, h_g, "^", mfc="none", mec=C_LIT, ms=f["ms"] * 1.15,
+                mew=f["lw"] * 0.45, ls="none", zorder=2,
+                label=r"Giavedoni \& Saita 1997, axisymmetric FEM")
+    ax.plot(ca_p, h_p, "s", mfc="none", mec=C_PARENT, ms=f["ms"] * 1.5,
+            mew=f["lw"] * 0.5, ls="none", label=LBL_PARENT, zorder=3)
+    if ca_l.size:
+        ax.plot(ca_l, h_l, "x", color=C_PARENT, ms=f["ms"] * 1.4,
+                mew=f["lw"] * 0.6, ls="none", zorder=3,
+                label=r"Basilisk, outlet-limited")
+    ax.plot(ca_f, h_f, "o", color=C_FEM, ms=f["ms"] * 0.8, mec="k",
+            mew=f["lw"] * 0.18, ls="none", label=LBL_FEM, zorder=4)
 
     ax.set_xscale("log")
     ax.set_yscale("log")
@@ -199,14 +277,15 @@ def fig_film_vs_cab(receipts: Path, parent_csv: Path, outdir: Path, dpi: int):
                   labelpad=f["labelpad"])
     ax.set_ylabel(r"$h/R_t$", fontsize=f["label"], labelpad=f["labelpad"])
     style_axes(ax, f)
-    ax.legend(loc="upper left", frameon=False, fontsize=f["legend"] * 0.62,
-              handlelength=2.0, borderpad=0.2, labelspacing=0.35)
-    clean_log_axis(ax.xaxis, [2e-3, 1e-2, 5e-2],
-                   [r"$2\times10^{-3}$", r"$10^{-2}$", r"$5\times10^{-2}$"])
-    clean_log_axis(ax.yaxis, [2e-2, 5e-2, 1e-1],
-                   [r"$2\times10^{-2}$", r"$5\times10^{-2}$", r"$10^{-1}$"])
+    ax.legend(loc="upper left", frameon=False, fontsize=f["legend"] * 0.56,
+              handlelength=2.0, borderpad=0.2, labelspacing=0.32)
+
+    ylo = 0.65 * min(a.min() for a in every_h if a.size)
+    yhi = 4.0 * max(a.max() for a in every_h if a.size)
     ax.set_xlim(lo, hi)
-    ax.set_ylim(0.7 * min(h_f.min(), h_p.min()), 3.2 * max(h_f.max(), h_p.max()))
+    ax.set_ylim(ylo, yhi)
+    clean_log_axis(ax.xaxis, *decade_ticks(lo, hi))
+    clean_log_axis(ax.yaxis, *decade_ticks(ylo, yhi))
     fig.tight_layout()
     return save(fig, outdir, "film_vs_cab", dpi)
 
@@ -214,18 +293,60 @@ def fig_film_vs_cab(receipts: Path, parent_csv: Path, outdir: Path, dpi: int):
 def fig_deviation_vs_cab(receipts: Path, parent_csv: Path, outdir: Path, dpi: int):
     """Relative deviation from Aussillous-Quere, per cent, for both codes."""
     fem = sweep_rows(receipts)
-    par = load_parent(parent_csv)
-
     ca_f = np.array([r["ca_b"] for r in fem])
     d_f = 100.0 * np.array([r["deviation_from_aussillous_quere"] for r in fem])
-    ca_p = np.array([r["Ca_b"] for r in par])
-    d_p = np.array([r["deviation_from_taylor_percent"] for r in par])
+
+    # Full parent table when vendored, with its own AQ deviation recomputed here
+    # from Ca_b and H so both series are reduced the same way. Outlet-limited
+    # cases are excluded: their film carries a domain-truncation error, so
+    # plotting them as a departure from the fit would attribute that error to
+    # the physics.
+    full = load_reference_series(receipts, "parent-basilisk-h-ca.csv")
+    if full:
+        ok = [r for r in full if r.get("outlet_limited") != "True"]
+        ca_p = np.array([float(r["Ca_b"]) for r in ok])
+        h_p = np.array([float(r["H"]) for r in ok])
+        d_p = 100.0 * (h_p / aussillous_quere(ca_p) - 1.0)
+    else:
+        # Recompute from H rather than reading the CSV's own
+        # deviation_from_taylor_percent, so both branches reduce the parent data
+        # against the same reference law as the FEM series. Mixing a stored
+        # column with a computed one would put two different reductions on one
+        # axis and the difference would look like physics.
+        par = load_parent(parent_csv)
+        ca_p = np.array([r["Ca_b"] for r in par])
+        h_p = np.array([r["b_flat_over_R"] for r in par])
+        d_p = 100.0 * (h_p / aussillous_quere(ca_p) - 1.0)
+    order = np.argsort(ca_p)
+    ca_p, d_p = ca_p[order], d_p[order]
+
+    # Giavedoni & Saita, drawn large and light on purpose. The series is
+    # digitised from a 1997 figure, so a fixed pixel reading error becomes a
+    # large relative error wherever the film is thin, and its points scatter
+    # from -10.6% to +7.8% at low Ca. That fuzziness is real and worth seeing,
+    # but it must not read as a precise measurement competing with the two
+    # solver curves: hence a big, pale, unfilled marker behind everything, with
+    # no connecting line.
+    gs = load_reference_series(receipts, "giavedoni-saita-1997-axisym.csv")
+    if gs:
+        ca_g = np.array([float(r["Ca"]) for r in gs])
+        h_g = np.array([float(r["H"]) for r in gs])
+        d_g = 100.0 * (h_g / aussillous_quere(ca_g) - 1.0)
+        g_order = np.argsort(ca_g)
+        ca_g, d_g = ca_g[g_order], d_g[g_order]
+    else:
+        ca_g = d_g = np.array([])
 
     w = 7.0
     f = fonts(w)
     fig, ax = plt.subplots(figsize=(w, w * 0.82))
 
     ax.axhline(0.0, color=C_AQ, ls=":", lw=f["lw"] * 0.7, zorder=1)
+    if ca_g.size:
+        ax.plot(ca_g, d_g, "^", mfc=C_LIT_FILL, mec=C_LIT_SOFT,
+                ms=f["ms"] * 2.6, mew=f["lw"] * 0.4, ls="none", alpha=0.75,
+                zorder=1.5,
+                label=r"Giavedoni \& Saita 1997 (digitised; reading error)")
     ax.plot(ca_p, d_p, "s--", mfc=C_PARENT, color=C_PARENT, ms=f["ms"], mec="k",
             mew=f["lw"] * 0.25, lw=f["lw"] * 0.6, label=LBL_PARENT, zorder=3)
     ax.plot(ca_f, d_f, "o-", color=C_FEM, ms=f["ms"] * 1.1, mec="k",
@@ -241,20 +362,24 @@ def fig_deviation_vs_cab(receipts: Path, parent_csv: Path, outdir: Path, dpi: in
     # range to the original five-point sweep, and when the sweep was extended to
     # sixteen points spanning four decades of Ca_b, eleven of them were silently
     # clipped off the axes while the figure still looked perfectly well formed.
-    lo_x, hi_x = min(ca_f.min(), ca_p.min()), max(ca_f.max(), ca_p.max())
-    ax.set_xlim(lo_x / 1.6, hi_x * 1.6)
-    # math.floor/ceil already return int; the redundant int() calls tripped RUF046.
-    decades = [10.0 ** e for e in range(
-        math.floor(math.log10(lo_x)), math.ceil(math.log10(hi_x)) + 1)]
-    decades = [t for t in decades if lo_x / 1.6 <= t <= hi_x * 1.6]
-    clean_log_axis(ax.xaxis, decades,
-                   [r"$10^{%d}$" % round(math.log10(t)) for t in decades])
-    span = max(abs(min(d_f.min(), d_p.min())), abs(max(d_f.max(), d_p.max())))
-    ax.set_ylim(-1.55 * span, 1.35 * span)
+    # Every plotted series, including the literature one - the y limits already
+    # pool all three, and leaving ca_g out of the x limits would clip the same
+    # series the comment above is about, just along the other axis.
+    x_pool = [ca_f, ca_p] + ([ca_g] if ca_g.size else [])
+    lo_x = min(a.min() for a in x_pool) / 1.6
+    hi_x = max(a.max() for a in x_pool) * 1.6
+    ax.set_xlim(lo_x, hi_x)
+    clean_log_axis(ax.xaxis, *decade_ticks(lo_x, hi_x))
+    # Pad the actual range rather than symmetrising about zero: the deviation is
+    # strongly asymmetric (-4.6% to +1.3%), and a symmetric limit wastes the top
+    # third of the panel on whitespace.
+    pool = [d_f, d_p] + ([d_g] if ca_g.size else [])
+    lo_y = min(a.min() for a in pool)
+    hi_y = max(a.max() for a in pool)
+    pad_y = 0.16 * (hi_y - lo_y)
+    ax.set_ylim(lo_y - pad_y, hi_y + pad_y)
     ax.legend(loc="upper left", frameon=False, fontsize=f["legend"] * 0.58,
               handlelength=2.4, borderpad=0.2, labelspacing=0.35)
-    ax.text(0.03, 0.04, r"$h_{\mathrm{AQ}}$ evaluated at the measured $Ca_b$",
-            transform=ax.transAxes, fontsize=f["annot"] * 0.8, color="0.25")
     fig.tight_layout()
     return save(fig, outdir, "deviation_vs_cab", dpi)
 
@@ -456,11 +581,6 @@ def fig_interface_profiles(receipts: Path, parent_csv: Path, outdir: Path, dpi: 
     axg.set_yscale("log")
     axg.set_ylabel(r"$(R_t - r)/R_0$", fontsize=f["label"] * 0.8,
                    labelpad=f["labelpad"] * 0.6)
-    # Short enough to sit inside the panel: a longer caption right-aligned at the
-    # frame ran off the left edge and over the y-label.
-    axg.text(0.985, 0.08, "plateau = reported film; rear dip = capillary ripple",
-             transform=axg.transAxes, ha="right",
-             fontsize=f["annot"] * 0.78, color="0.35")
     style_axes(axg, f)
     axg.tick_params(labelsize=f["tick"] * 0.8)
 
@@ -472,10 +592,8 @@ def fig_interface_profiles(receipts: Path, parent_csv: Path, outdir: Path, dpi: 
             fontsize=f["annot"] * 0.85, color="0.15")
     ax.text(zmin, -0.80, r"rear cap", ha="center", va="top",
             fontsize=f["annot"] * 0.85, color="0.2")
-    ax.text(zmax - 0.35, -0.80, r"front (advancing) cap", ha="right", va="top",
+    ax.text(zmax - 0.35, -0.80, r"front cap", ha="right", va="top",
             fontsize=f["annot"] * 0.85, color="0.2")
-    ax.text(zmin + 0.35, -1.0, r"wall moves rearward ($-z$) in this frame",
-            ha="left", va="bottom", fontsize=f["annot"] * 0.8, color="0.45")
 
     ax.set_xlim(zmin - 0.35, zmax + 0.3)
     ax.set_ylim(-1.05, 1.0)

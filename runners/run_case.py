@@ -34,13 +34,14 @@ def load_case(path: Path) -> dict:
     return payload
 
 
-def build(case: dict, *, overrides: dict | None = None) -> VoidBubbleProblem:
+def build(case: dict, *, overrides: dict | None = None,
+          seed_from_bubble_speed: bool = False) -> VoidBubbleProblem:
     physics = dict(case["physics"])
     mesh = dict(case["mesh"])
     physics.update((overrides or {}).get("physics", {}))
     mesh.update((overrides or {}).get("mesh", {}))
 
-    geometry = geometry_from_case(physics)
+    geometry = geometry_from_case(physics, seed_from_bubble_speed=seed_from_bubble_speed)
     # A case that seeds its capsule the legacy way, by `rb0_frac` with an explicit
     # `z_rear` and `l_domain`, carries no pads for `geometry_from_case` to read.
     # Re-apply them here so a pad override means the same thing for every case
@@ -99,6 +100,37 @@ def solve_case(
         route = "transient"
     wall = time.time() - started
 
+    return record_case(problem, output_dir=output_dir, route=route, wall=wall, audit=audit)
+
+
+def continue_case(problem, *, output_dir: Path, target_ca: float,
+                  max_step: float = 0.25) -> dict:
+    """Continue an already-converged problem to a new Ca_in and record it.
+
+    Above Ca_in ~ 2 a fresh transient start no longer reaches the steady state,
+    but continuation from a converged neighbour does, and costs well under a
+    second per step. The problem must already be initialised and solved.
+    """
+    # Point the solver's own output at this step's directory before stepping.
+    # As written, continuation emits nothing beyond the interface.csv that
+    # record_case writes - go_to_param does not call output() - so the seed's
+    # directory holds only the seed's own transient, and nothing is currently
+    # misfiled. What this fixes is the contract rather than an observed leak:
+    # output_dir was being used as a receipt path while the problem still
+    # pointed at the seed, so the first caller to add an output() inside the
+    # ladder would have silently written every point into cont_ca0.7.
+    output_dir.mkdir(parents=True, exist_ok=True)
+    problem.set_output_directory(str(output_dir))
+    started = time.time()
+    problem.go_to_param(Ca_in=target_ca, max_step=max_step)
+    wall = time.time() - started
+    return record_case(problem, output_dir=output_dir, route="continuation",
+                       wall=wall, audit={})
+
+
+def record_case(problem, *, output_dir: Path, route: str, wall: float,
+                audit: dict) -> dict:
+    """Extract every reported quantity and its checks from a converged state."""
     checks = problem.consistency()
     film = problem.measure_film()
     geom = problem.geometry
@@ -116,7 +148,11 @@ def solve_case(
     )
 
     return {
-        "ca_in": problem.ca_in,
+        # The live parameter, not the constructor attribute: after continuation
+        # they differ, and a receipt that records the seed value while reporting
+        # the continued bubble speed is internally inconsistent.
+        "ca_in": problem.current_ca_in(),
+        "ca_in_seeded": problem.ca_in,
         "laplace": problem.laplace,
         "r_tube": geom.r_tube,
         "pad_rear": geom.pad_rear,
@@ -135,7 +171,11 @@ def solve_case(
         "wall_seconds": wall,
         # Results.
         "ca_b": ca_b,
-        "speed_ratio": ca_b / problem.ca_in,
+        # Against the live Ca_in for the same reason as the field above. Divided
+        # by the seed instead, a continued row at Ca_in = 6 reported 21.2 where
+        # the ratio is 2.47 - and the number is the stagnant-film ratio
+        # (R_t/(R_t-h))^2, so a wrong one looks like a physical claim.
+        "speed_ratio": ca_b / problem.current_ca_in(),
         "h_flat": checks.h_flat,
         "h_flat_over_r_tube": checks.h_flat / geom.r_tube,
         "h_min_over_r_tube": film.h_min / geom.r_tube,

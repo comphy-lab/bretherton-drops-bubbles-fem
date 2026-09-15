@@ -1,0 +1,129 @@
+{
+  "bubble_length_dependence": [
+    {
+      "ca_in": 0.01,
+      "cases": [
+        {
+          "bubble_length": 3.5032000552000238,
+          "ca_b": 0.011235731413456577,
+          "film_elements_refined": 6.0,
+          "h_over_r_tube": 0.05666788041428569,
+          "h_over_r_tube_refined": 0.05666829663928564,
+          "r0_over_r_tube": 1.4285714285714286,
+          "r_tube": 0.7,
+          "self_convergence": 7.344989734869856e-06
+        },
+        {
+          "bubble_length": 6.318378388440996,
+          "ca_b": 0.011235763962501737,
+          "film_elements_refined": 6.0,
+          "h_over_r_tube": 0.05659386443000003,
+          "h_over_r_tube_refined": 0.05659326381500002,
+          "r0_over_r_tube": 2.0,
+          "r_tube": 0.5,
+          "self_convergence": 1.0612722881941927e-05
+        }
+      ],
+      "length_ratio": 1.8036019321997392,
+      "rel_diff_ca_b": 2.8969142881196674e-06,
+      "rel_diff_h": 0.0013078446759402507,
+      "rel_diff_h_refined": 0.0013258260652875276
+    },
+    {
+      "ca_in": 0.3,
+      "cases": [
+        {
+          "bubble_length": 5.578198550660977,
+          "ca_b": 0.5848797972007816,
+          "film_elements_refined": 6.0,
+          "h_over_r_tube": 0.2838659443899999,
+          "h_over_r_tube_refined": 0.2838638481,
+          "r0_over_r_tube": 1.4285714285714286,
+          "r_tube": 0.7,
+          "self_convergence": 7.384788634712258e-06
+        },
+        {
+          "bubble_length": 10.51442818176233,
+          "ca_b": 0.5848823308480275,
+          "film_elements_refined": 6.0,
+          "h_over_r_tube": 0.28381309409199995,
+          "h_over_r_tube_refined": 0.28381206332,
+          "r0_over_r_tube": 2.0,
+          "r_tube": 0.5,
+          "self_convergence": 3.631869076592409e-06
+        }
+      ],
+      "length_ratio": 1.884914652332776,
+      "rel_diff_ca_b": 4.3318922666735205e-06,
+      "rel_diff_h": 0.0001862151503932985,
+      "rel_diff_h_refined": 0.0001824615183521061
+    }
+  ],
+  "check": "s10_route",
+  "hysteresis_up_vs_down": [
+    {
+      "ca_in": 1.0,
+      "down_ca_b": 2.2906181814534676,
+      "down_h_over_r_tube": 0.33935682225428565,
+      "rel_diff_ca_b": 7.593925488436071e-13,
+      "rel_diff_h": 0.0,
+      "up_ca_b": 2.290618181455207,
+      "up_h_over_r_tube": 0.33935682225428565
+    },
+    {
+      "ca_in": 2.0,
+      "down_ca_b": 4.785294267037051,
+      "down_h_over_r_tube": 0.3536024186064285,
+      "rel_diff_ca_b": 1.7763568394002505e-15,
+      "rel_diff_h": 0.0,
+      "up_ca_b": 4.785294267037043,
+      "up_h_over_r_tube": 0.3536024186064285
+    },
+    {
+      "ca_in": 4.0,
+      "down_ca_b": 9.795053499001128,
+      "down_h_over_r_tube": 0.3610471784792857,
+      "rel_diff_ca_b": 3.774758283725532e-15,
+      "rel_diff_h": 0.0,
+      "up_ca_b": 9.795053499001165,
+      "up_h_over_r_tube": 0.3610471784792857
+    }
+  ],
+  "length_tolerance": 0.002,
+  "overlap_fresh_vs_continued": [
+    {
+      "ca_in": 1.0,
+      "continued_ca_b": 2.290618181455178,
+      "continued_h_over_r_tube": 0.33935682225428565,
+      "fresh_ca_b": 2.2906214510477563,
+      "fresh_h_over_r_tube": 0.33935577156857133,
+      "rel_diff_ca_b": 1.427382327556792e-06,
+      "rel_diff_h": 3.096118593948205e-06
+    },
+    {
+      "ca_in": 1.5,
+      "continued_ca_b": 3.535869908888424,
+      "continued_h_over_r_tube": 0.34876408802428566,
+      "fresh_ca_b": 3.5357343950347597,
+      "fresh_h_over_r_tube": 0.34875330705428564,
+      "rel_diff_ca_b": 3.832693254746111e-05,
+      "rel_diff_h": 3.0912882492906135e-05
+    },
+    {
+      "ca_in": 2.0,
+      "continued_ca_b": 4.785294267037443,
+      "continued_h_over_r_tube": 0.3536024186064285,
+      "fresh_ca_b": 4.78485932737598,
+      "fresh_h_over_r_tube": 0.3535732910857142,
+      "rel_diff_ca_b": 9.089915328863718e-05,
+      "rel_diff_h": 8.238043270969442e-05
+    }
+  ],
+  "passed": true,
+  "self_convergence_tolerance": 0.0001,
+  "tolerance": 0.001,
+  "worst_bubble_length_difference": 0.0013078446759402507,
+  "worst_bubble_length_difference_refined": 0.0013258260652875276,
+  "worst_route_disagreement": 9.089915328863718e-05,
+  "worst_self_convergence": 1.0612722881941927e-05
+}

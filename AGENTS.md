@@ -81,6 +81,39 @@ These were established by the checks in `verification/`; do not rediscover them.
   `La = 0` and `La = 1` at `Ca = 0.05` the film moves by −0.026%; `dh/Re` is
   constant to 2% between `Re = 0.068` and `Re = 0.679`. The parent's unswept
   `La = 1` is therefore not a confounder in any comparison.
+- **The reported state is steady in the strong sense: displaced, it comes back.**
+  The answer is a stationary solve, so persistence under time marching proves
+  little on its own - a stationary solution is an exact fixed point of the
+  implicit discretisation too, and marching from it stays on it to round-off
+  whether it is an attractor or a saddle. It does stay: drift is under 6e-12 in
+  `r/R_t` over at least 1.5 film renewals at every decade from `Ca_b = 0.001`
+  to 1.06. The load-bearing check is the displacement test in
+  `verification/s9_steadiness.py`: move the state to the converged solution at
+  `Ca_in` 5% away, put the parameter back, and march in time alone with no
+  stationary polish. The imposed interface displacement of 4.6e-4 to 3.6e-3 in
+  `r/R_t` decays to between 0.03% and 0.57% of itself within 1.5 renewals, and
+  `h` returns to within 3.8e-7 to 1.4e-5 relative.
+- **Quote a march in film renewals, not in time units.** The film is renewed on
+  `L_b/U_b`, which is 3172 time units at `Ca_b = 1.0e-3` and 0.51 at
+  `Ca_b = 14.8` - a factor of 6000 across the sweep. A fixed 40-unit march is
+  79 renewals at the top and 1.3% of one renewal at the bottom, so reported as
+  a single number it claims far more at low `Ca` than it shows. S9 sets its
+  horizon in renewals for this reason.
+- **The two solve routes agree where both exist, and the ladder is not
+  path-dependent.** A fresh transient start seeded from the self-consistent
+  bubble speed does reach `Ca_in = 2`, i.e. `Ca_b = 4.79`; the committed sweep
+  nevertheless switches to continuation from `Ca_in = 1` upward, for cost
+  rather than necessity, and the `route` field records which produced each row.
+  Where both work the answers agree to 9.1e-5 in `Ca_b` and 8.2e-5 in `h/R_t`
+  (`Ca_in` = 1, 1.5, 2). Walking the ladder up to `Ca_in = 6` and back down
+  returns the same states to 8e-13. `verification/s10_route.py`.
+- **The film depends weakly but measurably on bubble length.** At fixed `R0`,
+  changing `R_tube` from 0.7 to 0.5 lengthens the bubble by 1.8x and moves
+  `h/R_t` by 1.31e-3 at `Ca_b = 0.011`, falling to 1.86e-4 at `Ca_b = 0.585`.
+  This is resolved, not numerical: each confinement is self-converged to ~1e-5
+  under doubled film elements and the difference is unchanged at 1.33e-3. The
+  shorter bubble's film has not fully reached its plateau. It bounds how much
+  of any cross-code difference can be attributed to a mismatch in `R0/R_tube`.
 - **A pressure datum is required and the choice is free.** With Poiseuille at
   both ends, `pressure_datum="none"` fails to solve; `"fixation"` and
   `"integral"` agree on every reported observable to 1e-14.

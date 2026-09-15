@@ -423,6 +423,23 @@ class VoidBubbleProblem(Problem):
     def _global(self, name: str) -> float:
         return float(self.get_ode("globals").get_value(name, as_float=True))
 
+    def current_ca_in(self) -> float:
+        """The imposed inlet speed **now**, read from the global parameter.
+
+        Not ``self.ca_in``. That attribute records the value the problem was
+        constructed with, and continuation moves the global parameter without
+        touching it. Reading the attribute after ``go_to_param`` silently
+        compares the new bubble speed against the old inlet speed: measured, a
+        continuation from Ca_in = 2 to 2.5 reported a stagnant-film residual of
+        +0.25 where the true value is -4.1e-4, and by Ca_in = 6 it read +2.0.
+        The physics was right and only the check was wrong, which is the worst
+        way for a check to fail.
+        """
+        try:
+            return float(self.get_global_parameter("Ca_in").value)
+        except Exception:  # noqa: BLE001 - before the parameter exists, fall back
+            return float(self.ca_in)
+
     def frame_speed(self) -> float:
         """``U``, which in this nondimensionalisation *is* ``Ca_b``.
 
@@ -446,17 +463,74 @@ class VoidBubbleProblem(Problem):
         )
 
     def interface_polyline(self):
-        """Interface node coordinates as ``(z, r)`` arrays, ordered along the axis.
+        """Interface node coordinates as ``(z, r)`` arrays, in curve order.
 
         The mesh nodes are the interface: there is no reconstruction step and no
         isoline to chase, which is the structural advantage of the sharp
         formulation over the parent's VOF facets.
+
+        The order comes from walking the element chain, **not** from sorting on
+        ``z``. At high capillary number the rear meniscus is re-entrant: it
+        folds back, so ``r(z)`` is multivalued there and a z-sort interleaves the
+        two branches. Measured at ``Ca_in = 6``, sorting produced jumps of 0.30
+        in ``r`` between consecutive points at the same ``z``, drawing the rear
+        cap as a zigzag that looked like a failed solve. The reported film was
+        never affected - ``measure_film`` takes a median of gaps over a window in
+        ``z``, which does not depend on order - but the profile was wrong, and a
+        wrong-looking profile is indistinguishable from a wrong solution until
+        someone checks.
         """
         import numpy as np
 
         mesh = self.get_mesh("liquid/interface")
-        pts = np.array([[n.x(1), n.x(0)] for n in mesh.nodes()], dtype=float)
-        pts = pts[np.argsort(pts[:, 0])]
+        elements = list(mesh.elements())
+
+        def key(node):
+            return (round(node.x(0), 12), round(node.x(1), 12))
+
+        # Quadratic line elements are stored [end, mid, end].
+        segments = []
+        for el in elements:
+            if el.nnode() < 3:
+                continue
+            a, mid, b = el.node_pt(0), el.node_pt(1), el.node_pt(2)
+            segments.append((key(a), key(mid), key(b)))
+        if not segments:
+            raise RuntimeError("interface mesh has no line elements to walk")
+
+        adjacency: dict = {}
+        for index, (a, _mid, b) in enumerate(segments):
+            adjacency.setdefault(a, []).append(index)
+            adjacency.setdefault(b, []).append(index)
+
+        ends = [node for node, hits in adjacency.items() if len(hits) == 1]
+        if len(ends) != 2:
+            raise RuntimeError(
+                f"interface chain has {len(ends)} endpoints, expected 2 (the two "
+                "tips on the axis); the interface may be split or closed"
+            )
+        start = min(ends, key=lambda node: node[1])  # begin at the rear tip
+
+        chain = [start]
+        used = set()
+        node = start
+        while True:
+            nxt = [i for i in adjacency[node] if i not in used]
+            if not nxt:
+                break
+            index = nxt[0]
+            used.add(index)
+            a, mid, b = segments[index]
+            far = b if a == node else a
+            chain.extend([mid, far])
+            node = far
+        if len(used) != len(segments):
+            raise RuntimeError(
+                f"walked {len(used)} of {len(segments)} interface elements; "
+                "the chain is not connected"
+            )
+
+        pts = np.array([[z, r] for r, z in chain], dtype=float)
         return pts[:, 0], pts[:, 1]
 
     def measure_film(self, trim: float = 0.30):
@@ -505,6 +579,7 @@ class VoidBubbleProblem(Problem):
         geom = self.geometry
         film = self.measure_film(trim=trim)
         speed = self.frame_speed()
+        ca_in = self.current_ca_in()
 
         void_volume = self.observable("void_volume", "liquid/interface")
         inlet_flux = self.observable("inlet_flux", "liquid/inlet")
@@ -516,12 +591,12 @@ class VoidBubbleProblem(Problem):
         # Poiseuille drop from the measured front tip to the outlet, which the
         # raw gauge contains and which has nothing to do with the bubble.
         front_pad_drop = (
-            8.0 * self.ca_in * (geom.l_domain - film.z_front) / geom.r_tube**2
+            8.0 * ca_in * (geom.l_domain - film.z_front) / geom.r_tube**2
         )
         return Consistency(
             volume_error=void_volume / geom.volume - 1.0,
             flux_error=(outlet_flux - inlet_flux) / scale,
-            stagnant_film_error=(speed / self.ca_in) / stagnant - 1.0,
+            stagnant_film_error=(speed / ca_in) / stagnant - 1.0,
             h_flat=film.h_flat,
             frame_speed=speed,
             bubble_pressure=gauge,

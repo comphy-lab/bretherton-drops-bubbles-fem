@@ -83,7 +83,10 @@ def main(argv: list[str] | None = None) -> int:
                         help="tolerance on the traction-free deficit's window independence")
     parser.add_argument("--rtol", type=float, default=1e-6)
     parser.add_argument("--outlet", nargs="+", default=["poiseuille", "traction_free"])
-    parser.add_argument("--out", type=Path, default=None)
+    parser.add_argument("--out", type=Path,
+                        default=ROOT / "receipts" / "s0.json",
+                        help="receipt path. An ordinary run writes one, like every "
+                             "other stage; the JSON is printed either way.")
     args = parser.parse_args(argv)
 
     results = [
@@ -124,8 +127,8 @@ def main(argv: list[str] | None = None) -> int:
                     or (bool(deficit_checks) and all(c["passed"] for c in deficit_checks)))}
     text = json.dumps(payload, indent=2, sort_keys=True)
     print(text)
-    if args.out:
-        args.out.write_text(text + "\n", encoding="utf-8")
+    args.out.parent.mkdir(parents=True, exist_ok=True)
+    args.out.write_text(text + "\n", encoding="utf-8")
     return 0 if payload["passed"] else 1
 
 
