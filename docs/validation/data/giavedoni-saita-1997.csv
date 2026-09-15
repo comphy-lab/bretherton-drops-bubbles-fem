@@ -1,0 +1,25 @@
+Ca,m,H,source,note
+5.3482283e-05,0.0039639744,0.0019839552,fig3b,"Fig.3b open square; px=(470,1787)"
+7.8022737e-05,0.0046683013,0.0023368812,fig3b,"Fig.3b open square; px=(505,1768)"
+0.00010328996,0.0054506538,0.0027290508,fig3b,"Fig.3b open square; px=(531,1750)"
+0.00020604609,0.0086759643,0.0043474322,fig3b,"Fig.3b open square; px=(595,1696)"
+0.00040661616,0.01392917,0.006989008,fig3b,"Fig.3b open square; px=(658,1641)"
+0.00061935553,0.017878721,0.0089796778,fig3b,"Fig.3b open square; px=(697,1612)"
+0.00081993032,0.021421068,0.010768514,fig3b,"Fig.3b open square; px=(723,1591)"
+0.001006495,0.025227206,0.012694174,fig3b,"Fig.3b open square; px=(742,1572)"
+0.0020295695,0.03879583,0.019589795,fig3b,"Fig.3b open square; px=(807,1522)"
+0.0040925713,0.05966243,0.030289955,fig3b,"Fig.3b open square; px=(872,1472)"
+0.01024022,0.094966426,0.048667474,fig3b,"Fig.3b open square; px=(957,1418)"
+0.020427516,0.14479303,0.075225991,fig3b,"Fig.3b open square; px=(1021,1369)"
+0.040312135,0.20785334,0.10997379,fig3b,"Fig.3b open square; px=(1084,1327)"
+0.10196118,0.31964867,0.17516588,fig3b,"Fig.3b open square; px=(1170,1277)"
+0.2,0.40710526,0.23000342,fig7,"Fig.7 axisym. m filled circle left spine; px=(489,758)"
+0.30699588,0.42552632,0.24205958,fig7,"Fig.7 axisym. m filled circle ; px=(619,688)"
+0.60246914,0.47342105,0.2743424,fig7,"Fig.7 axisym. m filled circle ; px=(978,506)"
+0.69,0.4999,0.29282251,text,p.2426 m=0.4999 at Ca=0.690 (axisym. recirculation)
+0.75390947,0.49394737,0.28862624,fig7,"Fig.7 axisym. m filled circle ; px=(1162,428)"
+0.83621399,0.505,0.29643764,fig7,"Fig.7 axisym. m filled circle ; px=(1262,386)"
+0.99588477,0.52421053,0.31022506,fig7,"Fig.7 axisym. m filled circle right spine; px=(1456,313)"
+2,0.559,0.33592169,text,p.2424 m=0.559 at Ca=2
+5.1778782,0.57891769,0.35109145,fig3b,"Fig.3b open square; px=(1534,1208)"
+10,0.592,0.361,text,p.2424 m=0.592 and h_inf=0.361 at Ca=10
