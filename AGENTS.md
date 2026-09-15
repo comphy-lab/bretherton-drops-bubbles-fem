@@ -73,7 +73,8 @@ These were established by the checks in `verification/`; do not rediscover them.
   in the bubble frame the wall moves rearward, so the advancing front meniscus
   is the coating meniscus that sets the film.
 - **Poiseuille at both ends is exact.** In the bare tube it reproduces the
-  analytic pressure drop to 3e-14 and the flux to 2e-16. The traction-free
+  analytic pressure drop to 5.0e-14 and the flux to 4.4e-16, worst of the four
+  resolution and length combinations S0 runs. The traction-free
   outlet carries a fixed *absolute* pressure deficit of 0.066 at `Ca = 0.05`,
   independent of window length, so its relative error falls as `1/L`. Keep it
   as a switch for comparison with the parent, not as production.
