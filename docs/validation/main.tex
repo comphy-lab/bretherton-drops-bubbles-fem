@@ -48,11 +48,11 @@ $-4.56\%$ at $Ca_b=14.8$ where that fit is extrapolated far beyond its data.
 Nine verification stages are reported, including a displacement test showing the
 computed state is an attractor rather than merely a fixed point, and a
 route-independence test showing the curve does not carry its own history. We
-also report that the rear cap ceases to be convex at $Ca_b\approx1.03$ in
-Stokes flow, between $Ca_b=1.024$ and $1.048$, and develops an indentation
-reaching $0.27R_t$ by $Ca_b=14.8$; the
-trend is consistent with published observations, the mechanism is not
-established here, and one candidate explanation is measured and rejected. A
+record, as an observation and not as a result this report defends, that the
+rear cap ceases to be convex between $Ca_b=1.024$ and $1.048$ in Stokes flow,
+develops an indentation reaching $0.27R_t$ by $Ca_b=14.8$, and traps a slow
+axisymmetric vortex ring in that indentation; one candidate mechanism is
+measured and rejected. A
 companion volume-of-fluid campaign lies above the present curve by up to
 $4.6\%$ near $Ca_b=1$; the cause of that difference is not established, though
 two candidates are eliminated.
@@ -446,21 +446,59 @@ $50\%$ in capillary number. The two transitions are therefore ordered and
 distinct, and the bypass condition is not sufficient for the indentation. The
 computed $m$ rises to $0.595$ at $Ca_b=14.8$.
 
-\paragraph{The trend is reported in the literature; this onset value is not.}
-That the trailing meniscus grows more concave as capillary number rises is
-documented. \citet{rocha2017wide} simulated Taylor bubbles in circular channels
-over $0.01\le Ca_b\le2$ and state that the rear of the bubble tends to become
-more concave for higher $Ca_b$, the effect being accentuated at higher Reynolds
-number---consistent with the present Stokes-flow result being the latest
-possible onset. \citet{giavedoni1999rear} is the dedicated study of the rear
-meniscus in this exact axisymmetric geometry, and the companion paper
+\paragraph{How this stands relative to the literature.}
+\citet{giavedoni1999rear} is the dedicated study of the rear meniscus in this
+exact axisymmetric geometry, and the companion paper
 \citep{giavedoni1997axisymmetric}, whose film data are used in
-Section~\ref{sec:finite}, reports uncovering a recirculating flow pattern that
-appears to have been overlooked previously. We have not located a published
-value for the critical capillary number in the Stokes limit, nor a published
-measurement of the indentation depth, and we therefore present
-$1.024<Ca_b<1.048$ and Figure~\ref{fig:rear} as a measurement rather than as a
-reproduction.
+Section~\ref{sec:finite}, reaches $Ca=10$ and reports uncovering a recirculating
+flow pattern that it describes as having been overlooked previously. We do not
+claim either paper as a precedent for the indented cap shown here: we have not
+found the re-entrant cap in them, and a recirculation reported without the
+accompanying shape is not the same observation. Nor have we located a published
+critical capillary number for this transition in the Stokes limit, or a
+published measurement of the indentation depth. The bracket $1.024<Ca_b<1.048$,
+Figure~\ref{fig:rear} and Figure~\ref{fig:rearflow} are therefore presented as
+measurements and not as reproductions.
+
+They are also not pursued further here. A re-entrant trailing interface with a
+trapped eddy is not what this solver was built to study, and there is a large
+existing literature on skirted and cusped bubbles in other settings---rising
+under buoyancy, in viscoelastic liquids---from which this case must be kept
+carefully separate, since it occurs at zero Reynolds number in a confined
+Newtonian liquid. The observation is recorded because the formulation produces
+it cleanly and because it bears on the interpretation of the high-$Ca_b$ film,
+not as a result this report defends.
+
+\paragraph{A vortex ring sits in the cavity.} Figure~\ref{fig:rearflow} shows
+the flow around the cap in the frame of the bubble, which is the only frame in
+which the question is well posed: in the laboratory frame the liquid near the
+bubble simply follows the flow, whereas in the bubble frame the far field
+behind the cap is Poiseuille flow minus $U_b$, which is directed rearward at
+\emph{every} radius. Any forward-moving liquid there is therefore a local
+structure and not the far field intruding.
+
+There is such a region, and it is closed. At $Ca_b=9.80$ the liquid inside the
+cavity moves forward along the axis, turns outward beneath the overhanging lip
+and rejoins the rearward stream: an axisymmetric vortex ring seated in the
+indentation, bounded by a dividing streamline. It occupies
+$-0.144\le(z-z_{\mathrm{tip}})/R_0\le-0.024$ and reaches to $r=0.19R_t$. It is
+slow. The peak forward speed is $0.065$ against a far-field on-axis value of
+$-1.53$ and a film speed near $-9$, so the eddy turns over at about four per
+cent of the through-flow. That weakness is why it is shaded in the figure
+rather than left to the streamlines to convey.
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=\textwidth]{rear-flow.pdf}
+  \caption{Streamlines about the re-entrant rear cap at $Ca_b=9.80$, in the
+  frame of the bubble, with the liquid shaded where it moves forward. Left: the
+  cap, the deposited film and the wake. Right: the cavity, where the closed
+  vortex ring is resolved. The heavy black curve is the interface and the heavy
+  line at the top of the left panel is the tube wall, which runs rearward at
+  $-U_b$ in this frame. Both panels are one converged solution, the sweep row at
+  $Ca_{\mathrm{in}}=4$.}
+  \label{fig:rearflow}
+\end{figure}
 
 \paragraph{One mechanism was proposed and measured to be wrong.} A natural
 explanation is that the film flux, which must be re-injected into the bulk
@@ -480,13 +518,16 @@ at $0.5R_0$ behind the tip the annular liquid moves at $-9.1$ in the bubble
 frame while the core moves at $-1.7$, relaxing to the fully developed $-1.83$
 on the axis within about $0.6R_0$.
 
-A sufficient explanation must also account for the magnitude. At $Ca_b=15$ the
-viscous normal stress is not a correction to the capillary term but comparable
-with it, and consistently with that we find that $p_{\mathrm{liquid}}+\sigma
-\kappa$ is not constant along the rear cap, varying by more than a factor of
-two. Establishing the mechanism therefore requires resolving the full normal
-stress balance along the interface, including the deviatoric contribution,
-which this report does not do.
+A sufficient explanation must also account for the magnitude, and the scaling
+gives only a warning rather than an answer. $Ca_b$ compares viscous with
+capillary stress on the global scales $U_b$ and $R_t$, so at $Ca_b\simeq10$
+there is no reason to expect the deviatoric normal stress on the interface to be
+a small correction to the capillary term. That is an expectation about
+magnitudes and not a measurement: the local deviatoric stress depends on the
+velocity gradient at the interface, which in a cavity where the liquid barely
+moves need not follow the global scale at all. Settling the mechanism requires
+the full normal-stress balance evaluated along the interface, deviatoric part
+included, which this report does not attempt.
 
 \section{What is established, and what is not}
 

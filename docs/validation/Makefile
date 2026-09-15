@@ -2,7 +2,8 @@ LATEXMK ?= latexmk
 PYTHON ?= python3
 BUILD_DIR := build
 TARGET := main.pdf
-FIGURES := figures/film-thickness-vs-ca.pdf figures/rear-cap.pdf
+FIGURES := figures/film-thickness-vs-ca.pdf figures/rear-cap.pdf \
+           figures/rear-flow.pdf
 
 .PHONY: all figures clean
 
@@ -19,13 +20,17 @@ $(TARGET): main.tex references.bib $(FIGURES)
 # deleted figure can rebuild it rather than failing inside LaTeX.
 figures: $(FIGURES)
 
-DATA := $(wildcard data/*.csv) $(wildcard data/profiles/*.csv)
+DATA := $(wildcard data/*.csv) $(wildcard data/*.csv.gz) \
+        $(wildcard data/profiles/*.csv)
 
 figures/film-thickness-vs-ca.pdf: figures/plot_film.py $(DATA)
 	$(PYTHON) figures/plot_film.py
 
 figures/rear-cap.pdf: figures/plot_rear.py $(DATA)
 	$(PYTHON) figures/plot_rear.py
+
+figures/rear-flow.pdf: figures/plot_rear_flow.py $(DATA)
+	$(PYTHON) figures/plot_rear_flow.py
 
 clean:
 	$(LATEXMK) -C -outdir=$(BUILD_DIR) main.tex
