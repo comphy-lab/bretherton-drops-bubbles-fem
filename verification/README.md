@@ -20,13 +20,9 @@ different route to the same state, or a limit in which the answer is known.
 | `s9_steadiness.py` | Is the stationary state an attractor, and over how many film renewals is that shown? | `s9_steadiness.json` |
 | `s10_route.py` | Does the answer depend on the solve route, the ladder direction, or the bubble length? | `s10_route.json` |
 | `s11_rear_cap.py` | Where does the rear cap stop being convex, and is that onset resolved? | `s11_rear_cap.json` |
-| `s12_azimuthal.py` | Is azimuthal linear stability available for this formulation, and how many eigenvalues does it need? | `s12_azimuthal.json` |
-| `s13_eigen_dynamic.py` | Does the rightmost eigenvalue match an independent time-march on the same mesh? | `s13_eigen_dynamic.json` |
-| `s14_azimuthal_sweep.py` | Are the 25 committed states stable to azimuthal wavenumbers 0, 1, 2? | `s14_azimuthal_sweep.json` |
 | `s15_inertia_bound.py` | To what Reynolds number may the Stokes baseline be quoted? | `s15_inertia_bound.json` |
 | `s16_pressure_datum_spectrum.py` | Does the pressure datum move the axisymmetric spectrum? | `s16_pressure_datum_spectrum.json` |
 | `s17_la1_barrier.py` | Does La=1 continuation past Ca_in=2.91 survive with remesh off? | `s17_la1_barrier.json` |
-| `s18_azimuthal_k3.py` | Are the 25 committed states stable to azimuthal wavenumber 3? | `s18_azimuthal_k3.json` |
 | `s19_la_grid.py` | What is H at the named (Ca_in, La) grid, and do the windows hold? | `s19_la_grid.json` |
 
 Stage numbering has gaps because S2 to S4 were folded into the production path
@@ -55,33 +51,10 @@ property of the mesh; two film resolutions are what separate the two, and the
 stage's only pass condition is that they agree where the indentation is large
 enough that they should.
 
-**S12** is a capability and calibration check, not a physics result. It does not
-locate a critical capillary number; it establishes that the azimuthal
-eigenproblem runs on a moving mesh with a free surface, records the pressure-datum
-requirement that makes it possible, and measures how many eigenvalues must be
-requested before the rightmost one is a property of the operator rather than of
-the call.
-
-**S13** is the eigensolver's independent check. It marches S12's own state and
-mesh and fails unless the fitted decay and period of an eigenfunction
-perturbation agree with the rightmost axisymmetric eigenvalue. Receipts call the
-wavenumber ``azimuthal_k``; the report's ``m`` is the deposited-liquid fraction.
-
-**S14** labels every committed sweep state. ``untested`` is a valid label.
-A sign change is a bracket at two film resolutions, never a point value.
-Continuation above ``Ca_in = 2`` remeshes at every committed sweep station:
-a single ``0.7 → 6`` jump plus remesh interpolates from a stretched mesh
-and Newton residuals go to ``inf``.
-
 **S15** is a Reynolds bound, not a Laplace-number grid. It fails if the
 top-of-sweep inertial row is missing or if the Stokes pad-doubled windows
 there disagree in film thickness by more than two percent. An inertial
 solve that dies on the doubled window is recorded, not fatal.
-
-**S18** is the k=3 half of Campaign S. S14 already labelled k=0,1,2 on
-every committed state. A sign change is still a bracket at two film
-resolutions, never a point value. Production ``Ca_in=5`` may remain
-``untested`` when shift-invert sets disagree; that is not a crossing.
 
 **S19** is the named La grid that S15 deliberately was not. It reuses
 S15 cells, fills La=0.1 and La=10 at the thin-film and mid stations, and
