@@ -155,9 +155,8 @@ These were established by the checks in `verification/`; do not rediscover them.
   **before** `initialise()`.
 - A shift-invert eigensolve asked for too few eigenvalues can converge to a
   cluster that does not contain the rightmost one, and report a more negative
-  growth rate with no warning. Measured in `verification/s12_azimuthal.py`:
-  at four eigenvalues the `m = 0` rightmost comes out 41% too negative for one
-  shift in three. Request at least eight.
+  growth rate with no warning. Request at least eight. The azimuthal
+  campaign is not part of the public validation case.
 
 ## Repository conventions
 

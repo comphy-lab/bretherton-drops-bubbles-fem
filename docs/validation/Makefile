@@ -3,7 +3,7 @@ PYTHON ?= python3
 BUILD_DIR := build
 TARGET := main.pdf
 FIGURES := figures/film-thickness-vs-ca.pdf figures/rear-cap.pdf \
-           figures/rear-flow.pdf figures/azimuthal-growth.pdf
+           figures/rear-flow.pdf
 
 .PHONY: all figures clean
 
@@ -31,9 +31,6 @@ figures/rear-cap.pdf: figures/plot_rear.py $(DATA)
 
 figures/rear-flow.pdf: figures/plot_rear_flow.py $(DATA)
 	$(PYTHON) figures/plot_rear_flow.py
-
-figures/azimuthal-growth.pdf: figures/plot_stability.py $(DATA)
-	$(PYTHON) figures/plot_stability.py
 
 clean:
 	$(LATEXMK) -C -outdir=$(BUILD_DIR) main.tex

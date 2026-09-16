@@ -38,7 +38,7 @@ make -C docs/validation
 ```
 
 `make figures` uses `python3` by default; point it at an interpreter that has
-NumPy and Matplotlib with `make PYTHON=/path/to/python figures`. Both figure
+NumPy and Matplotlib with `make PYTHON=/path/to/python figures`. The figure
 PDFs are committed, so an ordinary `make` needs LaTeX only.
 
 ## Data

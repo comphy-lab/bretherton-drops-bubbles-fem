@@ -46,11 +46,10 @@ of those is printed text, not a digitised figure). It
 departs from the Aussillous--Qu\'er\'e representation of Taylor's measurements
 by at most $1.37\%$ anywhere below $Ca_b=2$, with two sign changes, and by
 $-4.56\%$ at $Ca_b=14.8$ where that fit is extrapolated far beyond its data.
-Seventeen verification stages are reported, including a displacement test showing
-the computed state is an attractor rather than merely a fixed point, a
-route-independence test showing the curve does not carry its own history, and
-an azimuthal linear-stability sweep in which the twenty-five states are stable
-to $k=0,1,2$ and, except for one untested production row, to $k=3$. We also find the rear cap ceasing
+Thirteen verification stages are reported, including a displacement test showing
+the computed state is an attractor rather than merely a fixed point and a
+route-independence test showing the curve does not carry its own history.
+We also find the rear cap ceasing
 to be convex between $Ca_b=1.024$ and $1.048$ in Stokes flow, a bracket
 containing the $1.026$ obtained by extrapolating the independent Stokes
 correlation of Balestra and co-workers, and we resolve the vortex ring trapped
@@ -211,13 +210,9 @@ discretisation, or a limit in which the answer is known.
     S9 & Is the computed state an attractor? & Displacements decay to $0.03$--$0.57\%$ in $1.5$ film renewals \\
     S10 & Does the answer depend on the solve route? & Routes agree to $9.1\times10^{-5}$; retrace to $8\times10^{-13}$ \\
     S11 & Where does the rear cap stop being convex? & Onset in $1.024<Ca_b<1.048$; resolutions agree above $4\times10^{-4}R_t$ \\
-    S12 & Is azimuthal linear stability available for this formulation? & Yes, with an integral pressure datum; $k=0$ needs eight eigenvalues \\
-    S13 & Does the rightmost eigenvalue match an independent time march? & Period to machine precision; decay rate to $14\%$ \\
-    S14 & Are the twenty-five states stable to $k=0,1,2$? & All stable; no crossing; pad-doubled labels agree \\
     S15 & To what $Re$ may the Stokes baseline be quoted? & Holds to $0.78\%$ for $Re<1.47$ \\
     S16 & Does the pressure datum move the axisymmetric spectrum? & Rightmost $\lambda$ agrees; $Ca_b$ spread $5.0\times10^{-14}$ \\
     S17 & Does $La=1$ continuation past $Ca_{\mathrm{in}}=2.91$ survive with remesh off? & No; it dies at $2.90851$ with the mesh unchanged. Continuation limit \\
-    S18 & Are the twenty-five states stable to $k=3$? & No crossing; $24$ of $25$ production rows stable; $Ca_{\mathrm{in}}=5$ untested \\
     S19 & What is $H$ on the named $(Ca_{\mathrm{in}},La)$ grid? & Stokes quote unchanged for $Re<1.47$; $La=10$ at $Ca_{\mathrm{in}}=0.5$ thins $H$ by $5.8\%$ \\
     \bottomrule
   \end{tabular}
@@ -283,51 +278,10 @@ the frame speed, the film thickness and the flux in one relation and would fail
 if any of them were wrong; it is a consistency check on mass conservation and
 film flatness, and it is not by itself evidence that $H$ is correct.
 
-\paragraph{Azimuthal stability is labelled, not assumed.}
-S12 showed that the azimuthal eigenproblem runs on this moving mesh once the
-pressure datum is the integral constraint rather than a nodal fixation. S13
-marches the S12 state after an eigenfunction perturbation: the period of the
-rightmost $k=0$ pair matches the eigenvalue to machine precision, and the
-fitted decay agrees to $14\%$. S14 then labels every committed sweep state for
-wavenumbers $k=0,1,2$. The wavenumber is written $k$ here because $m$ is
-already the deposited-liquid fraction. All twenty-five production rows, and
-the eight states recomputed at doubled film resolution, are stable. There is
-no sign change to bracket. A pad-doubled window at $Ca_{\mathrm{in}}=6$ agrees
-on the three labels and moves $H$ by $5.3\times10^{-4}$ relative. Growth rates
-are plotted as $\mathrm{Re}(\lambda)\,R_t/U_b$ in
-Figure~\ref{fig:azimuthal}, not as raw $\lambda$, because $\lambda$ is in units
-of $\sigma/(\mu R_0)$ and its meaning changes across five decades. Zero is
-invariant; nothing in the figure is an extrapolation off the computed ladder.
-S16 checks that the pressure datum does not move that axisymmetric pencil. At
-$Ca_{\mathrm{in}}=0.05$ the rightmost pair is
-$-0.123205\pm0.157796\,\mathrm{i}$ under nodal fixation with
-$k$ unused, under the integral datum with $k$ unused, and under the integral
-datum with $k=0$. The three base states agree in $Ca_b$ to $5.0\times10^{-14}$.
-Angular eigensolving remains refused under fixation; the class default is
-unchanged.
-S18 labels the same twenty-five states at $k=3$. There is no sign change
-to bracket. Twenty-four production rows are stable. The production row at
-$Ca_{\mathrm{in}}=5$ ($Ca_b=12.30$) is untested: two shift-invert sets
-disagree on the imaginary part of the rightmost eigenvalue, while both
-remain damped. The doubled-film state at that station, and a pad-doubled
-window, are stable. Production rows at $Ca_{\mathrm{in}}=4$, $3$ and
-$2.5$ failed on a downward climb from $Ca_{\mathrm{in}}=6$ and were
-re-solved from the $Ca_{\mathrm{in}}=0.7$ seed; those three are stable.
-Spurious-mode checks at $Ca_{\mathrm{in}}=0.05$, $0.5$ and $6$ find no
-near-zero $k=3$ eigenvalue.
-
-\begin{figure}[t]
-  \centering
-  \includegraphics[width=0.82\textwidth]{azimuthal-growth.pdf}
-  \caption{Scaled growth rate of the rightmost eigenvalue against $Ca_b$ for
-  azimuthal wavenumbers $k=0,1,2,3$. Filled markers are the production film
-  resolution; open markers at $Ca_b\ge2.3$ are the doubled-film check.
-  The $k=3$ production row at $Ca_b=12.30$ is omitted (untested).
-  At $Ca_b\lesssim10^{-2}$ the $k=3$ rate lies below the frame and remains
-  negative. The tabulated data are supplied in
-  \nolinkurl{data/s14-azimuthal-growth.csv}.}
-  \label{fig:azimuthal}
-\end{figure}
+S16 checks that the two pressure datums agree on the rightmost axisymmetric
+eigenvalue at $Ca_{\mathrm{in}}=0.05$. The pair is
+$-0.123205\pm0.157796\,\mathrm{i}$ under nodal fixation and under the
+integral datum; the base states agree in $Ca_b$ to $5.0\times10^{-14}$.
 
 \section{The Bretherton limit}
 \label{sec:limit}
@@ -668,9 +622,7 @@ The following are established by the evidence above. The solver reproduces
 Poiseuille flow, the static Laplace pressure, and window and mesh independence
 at the stated tolerances. The computed state is an attractor under time
 evolution, not merely a fixed point. Its curve does not depend on the route
-taken to compute it. Every reported Stokes state is linearly stable to
-azimuthal wavenumbers $k=0,1,2$, and to $k=3$ except for one untested
-production row at $Ca_{\mathrm{in}}=5$. In the thin-film limit it recovers Bretherton's film
+taken to compute it. In the thin-film limit it recovers Bretherton's film
 coefficient to $0.03$--$0.04\%$ and his front-meniscus pressure coefficient to
 $0.4\%$, both by extrapolation and neither given to the solver. Over $0.3\le Ca_b\le10$ it
 agrees with an independent published axisymmetric computation to about one per
@@ -719,12 +671,6 @@ $We=La\,Ca_b^2$ is a different group; at the top of the sweep it is $21.5$.
 Nothing here
 addresses drops, for which a true void cannot stand in for the interior phase
 and a second meshed phase is required.
-
-The twenty-five Stokes states have been labelled for azimuthal wavenumbers
-$k=0,1,2$ and $k=3$. All labelled rows are stable; S14 and S18 report no
-crossing to bracket. The production row at $Ca_{\mathrm{in}}=5$ remains
-untested at $k=3$. The eigenproblem cannot distinguish breakup from another
-axisymmetric state, and the labels are not a bifurcation study.
 
 \section*{Data}
 
