@@ -91,6 +91,7 @@ def build_stability_problem(
     laplace: float = 0.0,
     azimuthal_stability: bool = True,
     lip_elements: float | None = None,
+    lip_floor_divisor: float = 16.0,
 ) -> VoidBubbleProblem:
     if pressure_datum == "fixation" and azimuthal_stability:
         raise ValueError(
@@ -102,7 +103,7 @@ def build_stability_problem(
     problem = VoidBubbleProblem(
         geometry=geom, ca_in=ca_in, laplace=laplace,
         film_elements=film_elements, lip_elements=lip_elements,
-        bulk_resolution=bulk_resolution,
+        lip_floor_divisor=lip_floor_divisor, bulk_resolution=bulk_resolution,
         closure="centroid", outlet="poiseuille",
         pressure_datum=pressure_datum, remesh=remesh,
     )
