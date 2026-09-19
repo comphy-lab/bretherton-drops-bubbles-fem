@@ -27,7 +27,7 @@ becomes a solved unknown.
 The far field is not an approximation. In a circular tube the fully developed
 solution *is* Poiseuille, so imposing it at both ends is the infinite-tube
 condition, and `verification/s0_poiseuille.py` confirms it reproduces the
-analytic pressure drop to 3e-14 and the flux to 2e-16 in the bare tube. What
+analytic pressure drop to 5.0e-14 and the flux to 4.4e-16 in the bare tube. What
 remains to be measured is how much pad the caps need, which is what
 `verification/s5_window.py` does.
 

@@ -78,6 +78,7 @@ def main(argv: list[str] | None = None) -> int:
     stations = []
     last_ok = args.seed
     failure = None
+    failure_ca_in = None
     ca = args.seed
     while ca + args.step / 2.0 < args.target:
         nxt = min(round(ca + args.step, 10), args.target)
@@ -105,6 +106,9 @@ def main(argv: list[str] | None = None) -> int:
                 "last_ok_ca_in": last_ok,
                 "failed": f"{type(exc).__name__}: {exc}",
             }
+            # The live parameter at death, which is where the branch actually
+            # ends; the target is only where the step was aiming.
+            failure_ca_in = problem.current_ca_in()
             print(f"  FAIL at Ca_in->{nxt:g} after {last_ok:.6g}: {exc}",
                   flush=True)
             break
@@ -131,6 +135,8 @@ def main(argv: list[str] | None = None) -> int:
         "stations": stations,
         "last_ok_ca_in": last_ok,
         "failure": failure,
+        "failure_ca_in": failure_ca_in,
+        "ndof_constant_on_climb": len({s["ndof"] for s in stations}) <= 1,
         "passed_barrier": passed_barrier,
     }
     args.out.parent.mkdir(parents=True, exist_ok=True)

@@ -89,7 +89,8 @@ d6 = np.array([float(r["indentation_n6"]) for r in onset])
 # Taylor's transition: on the axis far from the bubble the liquid changes
 # direction in the bubble frame when Ca_b/Ca_in = 2, i.e. m = 1/2.
 m = np.array([float(r["m"]) for r in sweep])
-cross = np.interp(0.5, m, np.log(ca_s))
+order = np.argsort(m)  # np.interp needs increasing abscissae
+cross = np.interp(0.5, m[order], np.log(ca_s)[order])
 ind.axvline(np.exp(cross), color="#D55E00", lw=1.8, ls="--", zorder=2)
 ind.text(np.exp(cross) * 0.90, 2e-3, r"$m=\tfrac12$", rotation=90,
          ha="right", va="center", fontsize=FS_TICK, color="#D55E00")
