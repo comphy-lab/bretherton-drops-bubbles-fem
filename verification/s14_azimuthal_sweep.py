@@ -283,7 +283,7 @@ def crossings(rows: list[dict], modes: list[int]) -> list[dict]:
             if {a, b} == {"stable", "unstable"}:
                 fine = [
                     r for r in rows
-                    if r.get("role") == "fine"
+                    if r.get("role") == "fine" and "ca_b" in r
                     and r["ca_in"] in {left["ca_in"], right["ca_in"]}
                 ]
                 found.append({

@@ -28,7 +28,7 @@ different route to the same state, or a limit in which the answer is known.
 Stage numbering has gaps because S2 to S4 were folded into the production path
 during development rather than kept as separate scripts.
 
-Three stages deserve a note on what they do *not* establish.
+Five stages deserve a note on what they do *not* establish.
 
 **S9** marches the converged state forward. Persistence alone is weak evidence:
 a stationary solution is an exact fixed point of the implicit time
