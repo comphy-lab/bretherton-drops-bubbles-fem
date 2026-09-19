@@ -125,6 +125,32 @@ class LiquidAnnulusMesh(GmshTemplate):
         the resolution that matters.
         """
         pts = [tuple(p) for p in polyline]
+        # pyoomph's projection of gmsh's nodes onto the spline stops when the
+        # parameter update falls below 1e-12 * (N - 1), N being the number of
+        # polyline points, with one parameter unit per point. Where the lip
+        # nodes are 1e-6 apart at z ~ 13 that is 1e-15 in position, below the
+        # rounding of the coordinates themselves, so the iteration cannot
+        # converge and the 15.625 remesh failed even though the spacing ratio
+        # was 1.28. The tolerance scales with N, so the polyline is densified
+        # with evenly spaced chord points until the parameter tolerance
+        # exceeds the coordinate rounding at the shortest segment by a safe
+        # margin. Chord error at the lip is ds^2 / (8 R), below 1e-3 of R.
+        a = np.asarray(pts, dtype=float)
+        seg = np.hypot(np.diff(a[:, 0]), np.diff(a[:, 1]))
+        if len(seg) and seg.min() > 0:
+            rounding = 4.0 * 2.2e-16 * float(np.abs(a).max())
+            needed = 8.0 * rounding / (float(seg.min()) * 1e-12 * max(1.0, len(pts) - 1.0))
+            k = int(min(8, max(1, np.ceil(needed))))
+            if k > 1:
+                dense = [pts[0]]
+                for i in range(1, len(pts)):
+                    x0, y0 = pts[i - 1]
+                    x1, y1 = pts[i]
+                    for j in range(1, k):
+                        f = j / k
+                        dense.append((x0 + f * (x1 - x0), y0 + f * (y1 - y0)))
+                    dense.append(pts[i])
+                pts = dense
         changed = True
         guard = 0
         while changed and guard < 60:
