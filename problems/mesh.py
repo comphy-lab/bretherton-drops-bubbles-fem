@@ -56,6 +56,7 @@ class LiquidAnnulusMesh(GmshTemplate):
         # number of elements demanded across one local radius of curvature; None
         # restores the pure distance grading that every earlier result used.
         self._lip_elements = getattr(problem, "lip_elements", None)
+        self._lip_floor_divisor = float(getattr(problem, "lip_floor_divisor", 16.0))
         self._point_size = self._interface_point_sizes()
 
         floor = float(np.min(self._point_size))
@@ -149,7 +150,10 @@ class LiquidAnnulusMesh(GmshTemplate):
 
         # Never demand a size the solver cannot pay for, and never let one noisy
         # node dictate the whole mesh: the floor is a fixed fraction of the film.
-        return np.maximum(size, self._film_size / 16.0)
+        # The fraction is a knob because the lip keeps sharpening with Ca and a
+        # fixed floor becomes the resolution limit; whether the measured lip
+        # radius is physical or floor-limited is decided by lowering it.
+        return np.maximum(size, self._film_size / self._lip_floor_divisor)
 
     def _graded_size(self, dim, tag, x, y, z, *_ignored_lc):
         """Element size at ``(x, y)``, graded by distance to the interface.
