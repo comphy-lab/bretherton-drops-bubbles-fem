@@ -146,6 +146,8 @@ class VoidBubbleProblem(Problem):
         film_elements: float = 3.0,
         lip_elements: float | None = None,
         lip_floor_divisor: float = 16.0,
+        lip_patch_radii: float = 10.0,
+        lip_gradation: float = 0.25,
         bulk_resolution: float = 0.08,
         closure: str = "centroid",
         outlet: str = "poiseuille",
@@ -181,6 +183,11 @@ class VoidBubbleProblem(Problem):
         # Smallest interface element the curvature grading may demand, as a
         # fraction of the film element size: film_element_size / lip_floor_divisor.
         self.lip_floor_divisor = lip_floor_divisor
+        # Width of the refined patch around the sharpest interface node, in lip
+        # radii of arclength, and the fastest the interface element size may
+        # grow away from it, per unit arclength. Only used with lip_elements.
+        self.lip_patch_radii = lip_patch_radii
+        self.lip_gradation = lip_gradation
         self.bulk_resolution = bulk_resolution
         self.closure = closure
         self.outlet = outlet

@@ -57,6 +57,8 @@ class LiquidAnnulusMesh(GmshTemplate):
         # restores the pure distance grading that every earlier result used.
         self._lip_elements = getattr(problem, "lip_elements", None)
         self._lip_floor_divisor = float(getattr(problem, "lip_floor_divisor", 16.0))
+        self._lip_patch_radii = float(getattr(problem, "lip_patch_radii", 10.0))
+        self._lip_gradation = float(getattr(problem, "lip_gradation", 0.25))
         self._point_size = self._interface_point_sizes()
 
         floor = float(np.min(self._point_size))
@@ -147,6 +149,23 @@ class LiquidAnnulusMesh(GmshTemplate):
         with np.errstate(divide="ignore"):
             radius = np.where(curvature > 0, 1.0 / curvature, np.inf)
         size = np.minimum(size, radius / float(self._lip_elements))
+
+        # The refined patch must be wider than the lip. Sizes are attached to
+        # nodes and relaxed by distance to the *nearest* node, so refining only
+        # the few nodes at the corner gives a patch a few radii wide, and the
+        # corner slides along the interface by tens of radii per continuation
+        # station at high Ca: measured on lip8_adapt near Ca_in = 14.5, the
+        # pre-remesh R_lip/ds fell from ~15 to ~6 within 0.03 in Ca_in, and
+        # the plain resolve failed once it was below ~6. Hold the lip size over
+        # lip_patch_radii radii of arclength either side of the sharpest node,
+        # then let it grow at most lip_gradation per unit arclength.
+        sharpest = int(np.argmin(size))
+        if np.isfinite(radius[sharpest]) and self._lip_patch_radii > 0:
+            half_width = self._lip_patch_radii * float(radius[sharpest])
+            inside = np.abs(s - s[sharpest]) <= half_width
+            size[inside] = np.minimum(size[inside], size[sharpest])
+        if self._lip_gradation > 0:
+            size = np.min(size[None, :] + self._lip_gradation * np.abs(s[:, None] - s[None, :]), axis=1)
 
         # Never demand a size the solver cannot pay for, and never let one noisy
         # node dictate the whole mesh: the floor is a fixed fraction of the film.
