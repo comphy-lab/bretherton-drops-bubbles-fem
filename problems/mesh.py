@@ -43,7 +43,8 @@ class LiquidAnnulusMesh(GmshTemplate):
 
         if self.is_remeshing():
             segments = self.get_boundary_coordinates("liquid/interface", sort_along_axis="y+")
-            polyline = [(float(x), float(y)) for x, y in segments[0]]
+            polyline = self._regularize_spacing(
+                [(float(x), float(y)) for x, y in segments[0]])
         else:
             polyline = geom.interface_polyline()
 
@@ -107,6 +108,41 @@ class LiquidAnnulusMesh(GmshTemplate):
         self.circle_arc(
             p_rear_shoulder, p_rear, center=(0.0, geom.rear_centre_z), name="interface"
         )
+
+    @staticmethod
+    def _regularize_spacing(polyline, max_ratio: float = 2.0):
+        """Split long segments next to short ones until neighbours differ by at most ``max_ratio``.
+
+        The remeshed interface is a Catmull-Rom spline through the old nodes
+        with a uniform parameter per node. Where a refined lip patch (nodes
+        ~1e-6 apart) meets the film (nodes ~1e-2 apart) the parametrization
+        speed jumps by four orders of magnitude across one node, the spline
+        wiggles there, and pyoomph's projection of gmsh's nodes back onto it
+        fails to converge: ``Cannot invert spline`` at Ca_in = 15.625 with a
+        minimum spacing of 1.06e-6. Inserting chord midpoints into the longer
+        segment until the ratio is bounded keeps the parametrization smooth;
+        the chords sit on the nearly straight film, where they are exact to
+        the resolution that matters.
+        """
+        pts = [tuple(p) for p in polyline]
+        changed = True
+        guard = 0
+        while changed and guard < 60:
+            changed = False
+            guard += 1
+            out = [pts[0]]
+            for i in range(1, len(pts)):
+                a, b = pts[i - 1], pts[i]
+                seg = np.hypot(b[0] - a[0], b[1] - a[1])
+                prev = np.hypot(a[0] - out[-2][0], a[1] - out[-2][1]) if len(out) > 1 else None
+                nxt = np.hypot(pts[i + 1][0] - b[0], pts[i + 1][1] - b[1]) if i + 1 < len(pts) else None
+                short = min(v for v in (prev, nxt) if v is not None) if (prev or nxt) else seg
+                if seg > max_ratio * short and seg > 0:
+                    out.append(((a[0] + b[0]) / 2, (a[1] + b[1]) / 2))
+                    changed = True
+                out.append(b)
+            pts = out
+        return pts
 
     def _interface_point_sizes(self) -> np.ndarray:
         """Target size at each interface node: the film size, floored by curvature.
