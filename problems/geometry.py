@@ -35,6 +35,18 @@ class CapsuleGeometry:
     r_body: float
     z_rear: float
     l_domain: float
+    z_inlet: float = 0.0
+    """Axial coordinate of the inlet. Zero by default; every earlier result used that.
+
+    Made a field so the window can be placed with the bubble near the origin.
+    At high Ca the re-entrant rear lip is resolved with elements ~1e-6 wide,
+    and both gmsh's geometric tolerance and pyoomph's spline projection
+    (which stops at ~1e-12 of a segment) run into the rounding of coordinates
+    of size ~13: measured, a station's remesh failed with 'Cannot invert
+    spline' at a node spacing of 1.06e-6 near z = 13.2. With the lip near
+    z = 0 the rounding is two orders of magnitude smaller. Physics is
+    translation-invariant here; only pads and diagnostics reference the inlet.
+    """
 
     def __post_init__(self) -> None:
         if min(self.r0, self.r_tube, self.r_body, self.l_domain) <= 0:
@@ -43,7 +55,7 @@ class CapsuleGeometry:
             raise ValueError("capsule radius must lie strictly inside the tube")
         if self.r_body > self.r0:
             raise ValueError("capsule radius cannot exceed the volume-equivalent radius")
-        if self.z_rear <= 0:
+        if self.z_rear <= self.z_inlet:
             raise ValueError("rear tip collides with the inlet")
         if self.z_front >= self.l_domain:
             raise ValueError("front tip collides with the outlet")
@@ -100,6 +112,7 @@ class CapsuleGeometry:
         pad_rear: float = 3.0,
         pad_front: float = 3.0,
         seed_from_bubble_speed: bool = False,
+        z_inlet: float = 0.0,
     ) -> CapsuleGeometry:
         """Seed the capsule with the Aussillous-Quere film gap for this ``Ca``.
 
@@ -115,7 +128,7 @@ class CapsuleGeometry:
                 f"the Aussillous-Quere film at Ca={seed_ca} is not a fraction of R_tube"
             )
         r_body = r_tube * (1.0 - aussillous_quere(seed_ca))
-        z_rear = pad_rear * r_tube
+        z_rear = z_inlet + pad_rear * r_tube
         z_front = z_rear + cls.bubble_length(r0, r_body)
         return cls(
             r0=r0,
@@ -123,17 +136,19 @@ class CapsuleGeometry:
             r_body=r_body,
             z_rear=z_rear,
             l_domain=z_front + pad_front * r_tube,
+            z_inlet=z_inlet,
         )
 
     def with_pads(self, *, pad_rear: float, pad_front: float) -> CapsuleGeometry:
         """Same bubble, different window. The quantity a window study varies."""
-        z_rear = pad_rear * self.r_tube
+        z_rear = self.z_inlet + pad_rear * self.r_tube
         z_front = z_rear + self.bubble_length(self.r0, self.r_body)
         return CapsuleGeometry(
             r0=self.r0,
             r_tube=self.r_tube,
             r_body=self.r_body,
             z_rear=z_rear,
+            z_inlet=self.z_inlet,
             l_domain=z_front + pad_front * self.r_tube,
         )
 
@@ -183,7 +198,7 @@ class CapsuleGeometry:
     @property
     def pad_rear(self) -> float:
         """Liquid length behind the bubble, in tube radii."""
-        return self.z_rear / self.r_tube
+        return (self.z_rear - self.z_inlet) / self.r_tube
 
     @property
     def pad_front(self) -> float:

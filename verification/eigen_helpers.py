@@ -94,6 +94,7 @@ def build_stability_problem(
     lip_floor_divisor: float = 16.0,
     lip_patch_radii: float = 10.0,
     lip_gradation: float = 0.25,
+    z_inlet: float = 0.0,
 ) -> VoidBubbleProblem:
     if pressure_datum == "fixation" and azimuthal_stability:
         raise ValueError(
@@ -101,7 +102,8 @@ def build_stability_problem(
             "pass 'integral' as an argument, do not change the class default"
         )
     geom = CapsuleGeometry.for_capillary_number(
-        ca_in, pad_rear=pad_rear, pad_front=pad_front, seed_from_bubble_speed=True)
+        ca_in, pad_rear=pad_rear, pad_front=pad_front, seed_from_bubble_speed=True,
+        z_inlet=z_inlet)
     problem = VoidBubbleProblem(
         geometry=geom, ca_in=ca_in, laplace=laplace,
         film_elements=film_elements, lip_elements=lip_elements,
