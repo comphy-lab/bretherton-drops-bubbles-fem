@@ -64,12 +64,15 @@ class LiquidAnnulusMesh(GmshTemplate):
 
         floor = float(np.min(self._point_size))
         self.gmsh_options["Mesh.MeshSizeMin"] = 0.5 * floor
+        # gmsh's geometric tolerance is absolute (1e-8 by default); keep it well
+        # below the smallest element the lip grading asks for.
+        self.gmsh_options["Geometry.Tolerance"] = min(1e-8, 1e-3 * floor)
         self.gmsh_options["Mesh.MeshSizeMax"] = 2.0 * problem.bulk_resolution
 
         # The window corners. The outer boundary is rigid in the co-moving frame,
         # so these are fixed points, unlike the interface.
-        p_in_axis = self.point(0.0, 0.0)
-        p_in_wall = self.point(geom.r_tube, 0.0)
+        p_in_axis = self.point(0.0, geom.z_inlet)
+        p_in_wall = self.point(geom.r_tube, geom.z_inlet)
         p_out_wall = self.point(geom.r_tube, geom.l_domain)
         p_out_axis = self.point(0.0, geom.l_domain)
 
