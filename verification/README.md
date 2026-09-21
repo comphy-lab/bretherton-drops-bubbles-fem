@@ -59,3 +59,70 @@ solve that dies on the doubled window is recorded, not fatal.
 **S19** is the named La grid that S15 deliberately was not. It reuses
 S15 cells, fills La=0.1 and La=10 at the thin-film and mid stations, and
 records pad-doubled windows at La>0. It does not build h(Ca_b, La).
+
+## Linear stability: the pencil, the reduction, and the verdict
+
+The stability stages (`s12`, `s13`, `s14`, `s18`) share `eigen_helpers.py`.
+The convention throughout is pyoomph's: with `matJ = -dR/dU` and
+`matM = dR/d(dU/dt)` as `GenericEigenSolver.get_J_M_n_and_type()` returns them,
+the pencil is `matJ v = lambda matM v` and a perturbation evolves as
+`exp(lambda t)`, so `Re(lambda) > 0` is growth.
+
+**The mass matrix is nearly all zero.** For the void-bubble problem `M` carries
+entries only on the interface kinematic-condition rows, against the interface
+mesh-position columns: 923 rows of 412815 unknowns at `Ca_in = 14` on the lip-8
+station. Its row and column supports are *disjoint*. Two consequences run
+through everything below.
+
+**`finite_spectrum` computes the whole finite spectrum exactly.** Because
+`rank(M) = nR << n`, the pencil has at most `nR` finite eigenvalues and
+everything else is the M-nullspace at infinity. With `E` the `n x nR` injection
+of the mass rows and `M_R = M[rows, :]`, the substitution `w = M_R v` turns the
+pencil into `w = lambda G w` with `G = M_R J^{-1} E`, a dense `nR x nR` matrix,
+so the finite spectrum is `1/eig(G)` and the eigenvectors are `v = J^{-1} E w`.
+There is no shift and no Krylov space, and the M-nullspace -- which is what
+floods a shift-invert subspace near zero -- is projected out by construction
+rather than filtered afterwards.
+
+`J^{-1}` is applied by `BorderedLU`. SuperLU on the whole `J` dies in memory
+expansion because a few rows and columns are dense (the pressure-datum
+Lagrange multiplier has `O(n)` entries, and `globals/U` and `globals/P` couple
+to everything); those go into a small dense border, and the sparse core
+factorises in seconds after row/column equilibration. Deleting them leaves the
+core with a one-dimensional pressure nullspace, which is regularised by one
+diagonal bump carried as an extra border unknown (Woodbury), and iterative
+refinement recovers the decades the ill-conditioned border Schur complement
+costs. For `azimuthal_k >= 1` the three global rows decouple and the border is
+empty, the pencil is complex, and it is slightly larger than `problem.ndof()`
+(415193 against 412815 at `Ca_in = 14`) because pyoomph releases the strong
+axis conditions and imposes them by matrix manipulation instead. The extra
+unknowns are those released axis dofs.
+
+**The verdict is a residual, not a dof-support pattern.** `is_physical(J, M,
+lam, v)` accepts an eigenpair when `M` acts on it at all and the scale-free
+residual `||J v - lambda M v|| / ||lambda M v||` is below tolerance. That is
+what `rightmost_sample` records and what `s14`/`s18` label on.
+
+**Earlier "spurious" verdicts based on dof support are void.** The screen that
+`eigen_helpers` used before rejected any mode whose amplitude sat on pressure
+or global dofs. Since `M` touches only the kinematic rows and the interface
+positions, every genuine eigenvector of this pencil is pressure-dominated --
+its interface components are about `1e-6` of its pressure amplitude -- so that
+screen rejected the physics. Any receipt carrying
+`label_reason = "eigenvector_on_pressure_or_globals"`, and the Ca_in 20.11
+leading eigenvalue `+48.8` recorded as spurious, must be re-read: those are not
+evidence of a spurious mode. `eigenvector_support` remains available as a
+diagnostic, now reporting the released-axis tail instead of erroring on
+`m != 0` vectors, but it is no longer a verdict anywhere.
+
+The measured check: at `Ca_in = 14` (lip-8 oa station) the reduced pencil gives
+`+12.1990` and `+0.4771` as the only two `k = 0` eigenvalues with positive real
+part, at scale-free residual `~5e-9`, and `+1.0525` as the rightmost `k = 1`
+eigenvalue; seeding the steady state with `+-eps v` and marching reproduces
+`12.199` after BDF2 inversion.
+
+**Shift-invert controls need a start vector in the range of the operator.**
+`v0 = M r` is annihilated by `OP = (J - sigma M)^{-1} M` -- the row and column
+supports of `M` are disjoint, so `M (M r) = 0` identically -- and ARPACK
+answers "error -9: starting vector is zero". `shift_invert_start_vector` draws
+`r` on `M`'s column support and returns `OP r` instead.
