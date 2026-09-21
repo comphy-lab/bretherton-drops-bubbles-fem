@@ -10,6 +10,16 @@ The companion Basilisk two-phase solver lives in a separate repository. This
 codebase is the free-surface counterpart, and the two are set up to be compared
 point by point rather than only in shape.
 
+## Literature validation
+
+The [Herrada–Yu–Stone benchmark](validation/stone_figure2/) reproduces the
+gravity-free film profiles in figure 2 of Herrada, Yu & Stone (2023) at
+`Ca_l = -0.001` and `-0.02`. The
+[validation report](docs/validation/stone_figure2.tex) compares the
+finite-element profiles with digitized reference curves and records the
+quantitative film agreement and the model assumptions. Its
+[build instructions](docs/validation/README.md) generate a standalone PDF.
+
 ## Why a co-moving frame
 
 A lab-frame calculation has to give the bubble somewhere to travel, so its
@@ -219,8 +229,10 @@ equilibrium, so the tube is widened rather than the flow switched off.
 problems/       equations, mesh template, capsule geometry
 cases/          portable pyoomph-case-v2 documents
 verification/   staged checks against analytic answers
+validation/     executable benchmarks against published results
 runners/        case driver and Ca sweep
 postprocess/    deposited-film extraction and reference laws
+docs/validation/ LaTeX validation reports, references and figures
 receipts/       JSON receipts written by the drivers and checks
 ```
 

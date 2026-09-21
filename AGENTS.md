@@ -150,6 +150,10 @@ These were established by the checks in `verification/`; do not rediscover them.
 - `verification/` holds staged checks against analytic answers; each is a
   script that exits non-zero on failure and writes a JSON receipt.
 - `runners/` holds case drivers and sweeps.
+- `validation/` holds literature benchmarks with their own drivers and case
+  definitions. `validation/stone_figure2/` uses `pyoomph-case-v1` and the
+  reference paper's tube-radius normalization.
+- `docs/validation/` holds authored LaTeX reports, bibliographies and figures.
 - `tests/` must keep at least one path that imports no pyoomph.
 - `runs/` is attempt/restart custody, never source.
 - Component `AGENTS.md` is public-candidate. Private operational history stays

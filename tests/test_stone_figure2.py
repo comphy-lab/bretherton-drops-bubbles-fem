@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 
 from problems.geometry import geometry_from_case
-from simulations.stone_figure2.driver import (
+from validation.stone_figure2.driver import (
     RT,
     acceptance_errors,
     paper_coordinates,
@@ -18,7 +18,7 @@ from simulations.stone_figure2.driver import (
     validate_case,
 )
 
-CASES = Path(__file__).parents[1] / "simulations" / "stone_figure2" / "cases"
+CASES = Path(__file__).parents[1] / "validation" / "stone_figure2" / "cases"
 
 
 @pytest.mark.parametrize("path", sorted(CASES.glob("*.json")))

@@ -6,8 +6,8 @@ in figure 2 of Herrada, Yu & Stone, *J. Fluid Mech.* **958**, A45 (2023), DOI
 complete `pyoomph-case-v1` document and each invocation runs exactly one case:
 
 ```bash
-<environment>/bin/python simulations/stone_figure2/driver.py run \
-  --case simulations/stone_figure2/cases/cal_m0p001_baseline.json \
+<environment>/bin/python validation/stone_figure2/driver.py run \
+  --case validation/stone_figure2/cases/cal_m0p001_baseline.json \
   --output-dir /path/to/run/stone-figure2/cal_m0p001_baseline
 ```
 
@@ -32,10 +32,16 @@ The liquid domain is an axisymmetric sharp-interface void approximation: the
 gas is represented by a fixed-volume pressure constraint rather than a meshed
 gas phase. The primary cases impose fully developed Poiseuille flow at both
 ends. This differs from the paper's prescribed upper inlet and static-pressure
-lower outlet; the repository's traction-free switch is the closer outlet
-analogue, but is deliberately not used here because its finite-window pressure
-error is measured whereas the two-ended Poiseuille condition is exact for the
-solver's far field.
+lower outlet. The model and boundary-condition differences are stated in the
+[validation report](../../docs/validation/stone_figure2.tex), which includes
+the comparison with digitized profiles from the paper.
+
+The two cases reproduce the nearly uniform film and the capillary depression
+near the tail. At the higher imposed speed, the deposited film is thinner than
+Bretherton's small-capillary-number prediction and close to the
+Aussillous–Quéré expression. See the report for the quantitative comparison
+and the scope of this result. The `refined` cases provide a separate mesh
+comparison; the reported overlay uses the two `baseline` cases.
 
 Successful runs write `progress.jsonl`, `status.json`, `summary.json`,
 `interface.csv`, `state.dump`, and profile plots as PDF and PNG. `summary.json`
@@ -48,7 +54,7 @@ for the collection command.
 Combine completed cases without rerunning them:
 
 ```bash
-<environment>/bin/python simulations/stone_figure2/driver.py collect \
+<environment>/bin/python validation/stone_figure2/driver.py collect \
   --results /path/to/run/stone-figure2/* \
   --output-dir /path/to/run/stone-figure2-combined
 ```

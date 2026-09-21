@@ -1,9 +1,16 @@
 # Validation
 
-Physical validation is against the classical Bretherton film law and against
-the companion Basilisk two-phase campaign. Comparison plots of `h(Ca)` use
-only the deposited central-film thickness, encoded as `h/R0` versus `Ca`, with
-mesh spacing marked as `Δ/R0`.
+This directory contains executable comparisons with published results.
 
-This folder is empty of comparison data until a verified FEM film measurement
-exists.
+- [`stone_figure2/`](stone_figure2/): the gravity-free, axisymmetric bubble
+  profiles of Herrada, Yu & Stone (2023), at imposed capillary numbers
+  `Ca_l = -0.001` and `-0.02`. The comparison reproduces the thin deposited
+  film and its departure from Bretherton's small-capillary-number law at the
+  higher imposed speed, within the stated void-interior approximation.
+  The [LaTeX report](../docs/validation/stone_figure2.tex) contains the
+  digitized profile overlay and quantitative film comparison.
+
+The benchmark uses the paper's tube-radius normalization, `b/R`, and compares
+film laws at the solved bubble speed. Each benchmark documents its own scales
+and model assumptions. Analytic equation checks belong in
+[`verification/`](../verification/).
