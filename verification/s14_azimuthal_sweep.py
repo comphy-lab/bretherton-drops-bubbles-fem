@@ -103,15 +103,28 @@ def public_eigen(result: dict) -> dict:
 
 
 def finalise_mode(entry: dict, rate: float, problem: VoidBubbleProblem) -> dict:
+    """Label a mode, screening the winning eigenpair on its residual.
+
+    The screen is ``is_physical``: M has to act on the vector at all, and
+    ``||J v - lambda M v|| / ||lambda M v||`` has to be small. The earlier
+    screen asked instead where the eigenvector's amplitude sat and rejected
+    anything living on pressure or the global multipliers. For this pencil M is
+    nonzero only on the kinematic-condition rows against the interface
+    mesh-position columns, so every genuine mode is pressure-dominated and that
+    screen rejected the physics; see verification/README.md.
+    """
     winner = entry.pop("_winner", None)
     if entry["rightmost_real"] is None:
         return entry
     label, reason = label_from_growth(entry["rightmost_real"], rate)
-    if winner is not None and (reason == "neutral_within_resolution" or entry["rightmost_real"] > 0.0):
+    if winner is not None:
+        screen = winner.get("residual_screen")
+        entry["residual_screen"] = screen
+        entry["physical"] = winner.get("physical")
+        # Support stays in the receipt as a diagnostic, never as a verdict.
         entry["support"] = eigenvector_support(problem, winner["vector"])
-        pressureish = entry["support"].get("pressure", 0.0) + entry["support"].get("globals", 0.0)
-        if pressureish > 0.85 and reason != "negative_growth":
-            label, reason = "untested", "eigenvector_on_pressure_or_globals"
+        if winner.get("physical") is False:
+            label, reason = "untested", "eigenpair_residual_too_large"
     entry["label"] = label
     entry["label_reason"] = reason
     entry["growth_over_rate"] = entry["rightmost_real"] / max(rate, 1e-12)
