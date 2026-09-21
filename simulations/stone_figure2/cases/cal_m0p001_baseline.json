@@ -7,7 +7,7 @@
   "boundaries": {"inlet": "poiseuille", "outlet": "poiseuille"},
   "closure": {"frame_speed": "tip"},
   "tolerances": {"newton": 1e-8, "temporal_error": 1e-4},
-  "mesh": {"film_elements": 3.0, "bulk_resolution": 0.08, "remeshing": true},
+  "mesh": {"template": "LiquidAnnulusMesh", "film_elements": 3.0, "bulk_resolution": 0.08, "remeshing": true},
   "solve": {"mode": "steady", "relax_time": 20.0, "start_step": 0.0001, "temporal_error": 0.0001},
   "output": {"cadence": 2.5, "write_states": true},
   "completion": {"kind": "steady", "value": "stationary_polish"},
