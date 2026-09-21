@@ -19,6 +19,16 @@ and a rear capillary ripple, not the capsule it started as. Grading on a stored
 analytic capsule would coarsen exactly where the solution has developed
 structure. The callback therefore grades on distance to whatever polyline the
 current ``define_geometry`` call used.
+
+**Curvature is not the only small length on the interface.** When the rear cap
+folds into a skirt, two sheets of the *same* interface chain approach each
+other. The liquid between them is a film whose thickness is nowhere written on
+the local curvature, so the curvature grading happily leaves one element
+spanning it. ``gap_elements`` demands a number of elements across that gap.
+
+The size rules themselves live in :mod:`problems.interface_sizing`, which is
+pure geometry and imports no pyoomph, so they can be unit-tested on synthetic
+interfaces.
 """
 
 from __future__ import annotations
@@ -27,6 +37,7 @@ import numpy as np
 from pyoomph.meshes.gmsh import GmshTemplate
 
 from .geometry import CapsuleGeometry
+from .interface_sizing import interface_point_sizes
 
 BOUNDARY_NAMES = ("inlet", "wall", "outlet", "axis_front", "interface", "axis_rear")
 """Every boundary, in both branches. Interpolation across a remesh depends on this."""
@@ -60,7 +71,15 @@ class LiquidAnnulusMesh(GmshTemplate):
         self._lip_floor_divisor = float(getattr(problem, "lip_floor_divisor", 16.0))
         self._lip_patch_radii = float(getattr(problem, "lip_patch_radii", 10.0))
         self._lip_gradation = float(getattr(problem, "lip_gradation", 0.25))
-        self._point_size = self._interface_point_sizes()
+
+        # Proximity floor: elements demanded across a gap between two sheets of
+        # the interface. None (the default) leaves the sizes bit-for-bit as the
+        # curvature grading alone produced them.
+        self._gap_elements = getattr(problem, "gap_elements", None)
+        self._gap_min_chain = float(getattr(problem, "gap_min_chain", 0.05))
+        self._gap_max_range = float(getattr(problem, "gap_max_range", 0.5))
+        self._gap_chain_ratio = float(getattr(problem, "gap_chain_ratio", 4.0))
+        self._point_size, self._min_gap = self._interface_point_sizes()
 
         floor = float(np.min(self._point_size))
         self.gmsh_options["Mesh.MeshSizeMin"] = 0.5 * floor
@@ -147,71 +166,23 @@ class LiquidAnnulusMesh(GmshTemplate):
             pts = out
         return pts
 
-    def _interface_point_sizes(self) -> np.ndarray:
-        """Target size at each interface node: the film size, floored by curvature.
+    def _interface_point_sizes(self):
+        """Target size at each interface node, and the smallest gap measured.
 
-        Distance grading alone sets one length on the interface, the film size,
-        and that is the wrong length wherever the interface is more sharply
-        curved than the film is thin. At high ``Ca`` the rear cap of a confined
-        bubble becomes re-entrant and the liquid tongue turns through a lip whose
-        radius of curvature is *smaller* than the deposited film thickness:
-        measured on the frozen ``N_film = 6`` mesh, ``R_lip`` is 0.023 to 0.030
-        while ``film_element_size`` is 0.036, so the feature that carries the
-        whole rear-cap force balance was spanned by about one element, and by
-        ``Ca_in = 14`` the nodes there had stretched to 0.098, i.e. ``R_lip/ds``
-        of 0.31. That under-resolution is invisible in ``h/R0`` and in ``Ca_b``,
-        because both are set by the flat film, which is why it survived a window
-        and bulk-resolution convergence study.
-
-        ``lip_elements`` demands that many elements per local radius of
-        curvature. Curvature is taken from the live polyline by finite
-        differences on its own arclength, so it follows the solution rather than
-        the seeded capsule, exactly as the distance grading does.
+        A thin adapter: everything it decides lives in
+        :func:`problems.interface_sizing.interface_point_sizes`.
         """
-        pts = self._grading_points
-        size = np.full(len(pts), self._film_size, dtype=float)
-        if not self._lip_elements or len(pts) < 5:
-            return size
-
-        z, r = pts[:, 0], pts[:, 1]
-        s = np.concatenate([[0.0], np.cumsum(np.hypot(np.diff(z), np.diff(r)))])
-        # A duplicated node would make the arclength non-monotone and the
-        # gradients infinite; drop that case rather than emit NaN sizes.
-        if not np.all(np.diff(s) > 0):
-            return size
-
-        dz, dr = np.gradient(z, s), np.gradient(r, s)
-        d2z, d2r = np.gradient(dz, s), np.gradient(dr, s)
-        speed = (dz**2 + dr**2) ** 1.5
-        curvature = np.abs(dz * d2r - dr * d2z) / np.maximum(speed, 1e-300)
-
-        with np.errstate(divide="ignore"):
-            radius = np.where(curvature > 0, 1.0 / curvature, np.inf)
-        size = np.minimum(size, radius / float(self._lip_elements))
-
-        # The refined patch must be wider than the lip. Sizes are attached to
-        # nodes and relaxed by distance to the *nearest* node, so refining only
-        # the few nodes at the corner gives a patch a few radii wide, and the
-        # corner slides along the interface by tens of radii per continuation
-        # station at high Ca: measured on lip8_adapt near Ca_in = 14.5, the
-        # pre-remesh R_lip/ds fell from ~15 to ~6 within 0.03 in Ca_in, and
-        # the plain resolve failed once it was below ~6. Hold the lip size over
-        # lip_patch_radii radii of arclength either side of the sharpest node,
-        # then let it grow at most lip_gradation per unit arclength.
-        sharpest = int(np.argmin(size))
-        if np.isfinite(radius[sharpest]) and self._lip_patch_radii > 0:
-            half_width = self._lip_patch_radii * float(radius[sharpest])
-            inside = np.abs(s - s[sharpest]) <= half_width
-            size[inside] = np.minimum(size[inside], size[sharpest])
-        if self._lip_gradation > 0:
-            size = np.min(size[None, :] + self._lip_gradation * np.abs(s[:, None] - s[None, :]), axis=1)
-
-        # Never demand a size the solver cannot pay for, and never let one noisy
-        # node dictate the whole mesh: the floor is a fixed fraction of the film.
-        # The fraction is a knob because the lip keeps sharpening with Ca and a
-        # fixed floor becomes the resolution limit; whether the measured lip
-        # radius is physical or floor-limited is decided by lowering it.
-        return np.maximum(size, self._film_size / self._lip_floor_divisor)
+        return interface_point_sizes(
+            self._grading_points, film_size=self._film_size,
+            lip_elements=self._lip_elements,
+            lip_floor_divisor=self._lip_floor_divisor,
+            lip_patch_radii=self._lip_patch_radii,
+            lip_gradation=self._lip_gradation,
+            gap_elements=self._gap_elements,
+            gap_min_chain=self._gap_min_chain,
+            gap_max_range=self._gap_max_range,
+            gap_chain_ratio=self._gap_chain_ratio,
+            with_min_gap=True)
 
     def _graded_size(self, dim, tag, x, y, z, *_ignored_lc):
         """Element size at ``(x, y)``, graded by distance to the interface.
@@ -225,7 +196,8 @@ class LiquidAnnulusMesh(GmshTemplate):
         and the wall are all at the fine size rather than only those hugging the
         interface. Where ``lip_elements`` has lowered the target at a sharply
         curved node, that lower value is what this relaxes from, so a re-entrant
-        lip keeps its own length scale over its own neighbourhood.
+        lip keeps its own length scale over its own neighbourhood, and the same
+        holds for a node inside a thin skirt refined by ``gap_elements``.
         """
         pts = self._grading_points
         distance = np.hypot(pts[:, 0] - x, pts[:, 1] - y)
