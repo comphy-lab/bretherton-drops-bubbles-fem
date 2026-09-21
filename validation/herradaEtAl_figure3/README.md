@@ -7,6 +7,12 @@ $Re=0$, $Bo=1.56$, $\widehat V=3.3$ and $H/R=15$. The upper bubble tip is fixed
 at solver coordinate $z=10R$, giving the paper coordinate
 $\widehat z=z/R-10$.
 
+The plotted length is the meridional interface arc length defined in equation
+(2.3), $L_b=\int_0^1\sqrt{(\partial_s G_b)^2+(\partial_s F_b)^2}\,ds$.
+The driver integrates the quadratic interface elements in curve order and
+reports `bubble_length_over_r`; `axial_span_over_r` separately records the
+axial extent. The arc-length integral has no axisymmetric surface-area factor.
+
 The calculation uses the repository's sharp-interface void approximation and
 fully developed Poiseuille conditions at both ends. It therefore tests the
 branch structure under a stated model approximation; agreement with the paper
@@ -48,6 +54,20 @@ checkpoint, only the checkpointed prefix is resumed; the source run is kept.
 Archive the parent runs and referenced mesh files as well as the latest
 segment. Reaching the step budget returns `incomplete`, not a reproduction
 claim. The full step budget is retained across resumes.
+
+Restart descriptors use version 2, which separates meridional length from axial
+extent. Version 1 runs retain their original tables and checkpoints. Recover
+their comparison table from the saved profiles into a fresh directory:
+
+```sh
+uv run --no-sync python -m validation.herradaEtAl_figure3.remeasure \
+  --branches /path/to/run/branches.csv --profiles /path/to/run/profiles \
+  --output-dir /path/to/fresh/comparison
+```
+
+This records input hashes and quadrature checks; it does not convert restart
+descriptors or alter the original run. Use the original source version if a
+version 1 continuation must be resumed.
 
 `case.json` is copied into each output directory, and `progress.jsonl` and
 `status.json` report progress and termination. A nonempty output directory is

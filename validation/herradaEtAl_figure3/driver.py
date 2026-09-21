@@ -21,7 +21,7 @@ BENCHMARK_SCHEMA = "herrada-figure3-v1"
 DOI = "10.1017/jfm.2023.123"
 BRANCH_FIELDS = (
     "station", "bond", "ca", "bubble_length_over_r", "signed_ca_b",
-    "volume_error", "flux_error", "min_gap",
+    "volume_error", "flux_error", "min_gap", "axial_span_over_r",
 )
 
 
@@ -174,8 +174,8 @@ def trace_outcome(rows: list[dict], *, stop_ca: float, min_turns: int,
 
 
 def validate_resume(restart: dict, case: dict) -> None:
-    if restart.get("schema") != "herrada-figure3-restart-v1":
-        raise ValueError("resume file is not a figure 3 restart document")
+    if restart.get("schema") != "herrada-figure3-restart-v2":
+        raise ValueError("resume requires figure 3 restart v2 (meridional length); keep legacy runs separate")
     if restart.get("case_sha256") != case_digest(case):
         raise ValueError("resume case hash does not match the selected case")
     if restart.get("phase") != "trace":
@@ -276,6 +276,25 @@ def build_problem(case: dict, *, ca: float, bond: float):
     return problem
 
 
+def meridional_length(z, r, *, quadrature_order: int = 16) -> float:
+    """Integrate equation (2.3) along ordered quadratic interface elements.
+
+    Coordinates alternate endpoint, midpoint, endpoint, as returned by
+    ``interface_polyline``. This is a planar arc length, without the
+    axisymmetric surface-area factor. Re-entrant portions retain curve order.
+    """
+    import numpy as np
+
+    points = np.column_stack((z, r)).astype(float)
+    if len(points) < 3 or len(points) % 2 != 1 or not np.isfinite(points).all():
+        raise ValueError("length requires finite ordered quadratic interface nodes")
+    xi, weights = np.polynomial.legendre.leggauss(quadrature_order)
+    a, middle, b = points[:-2:2], points[1:-1:2], points[2::2]
+    derivative = (xi[:, None, None] * (a - 2 * middle + b)[None, :, :]
+                  + 0.5 * (b - a)[None, :, :])
+    return float(np.sum(weights[:, None] * np.linalg.norm(derivative, axis=2)))
+
+
 def extract_row(problem, station: int, acceptance: dict) -> tuple[dict, tuple[list, list]]:
     z, r = problem.interface_polyline()
     z_values, r_values = list(map(float, z)), list(map(float, r))
@@ -288,7 +307,8 @@ def extract_row(problem, station: int, acceptance: dict) -> tuple[dict, tuple[li
         "station": station,
         "bond": problem.current_bond(),
         "ca": problem.current_ca_in(),
-        "bubble_length_over_r": (max(z_values) - min(z_values)) / geom.r_tube,
+        "bubble_length_over_r": meridional_length(z_values, r_values) / geom.r_tube,
+        "axial_span_over_r": (max(z_values) - min(z_values)) / geom.r_tube,
         "signed_ca_b": problem.frame_speed(),
         "volume_error": volume / geom.volume - 1.0,
         "flux_error": (outlet - inlet) / flux_scale,
@@ -331,6 +351,8 @@ def write_branches(path: Path, rows: list[dict]) -> None:
 def read_branches(path: Path) -> list[dict]:
     with path.open(newline="", encoding="utf-8") as stream:
         rows = list(csv.DictReader(stream))
+    if rows and "axial_span_over_r" not in rows[0]:
+        raise ValueError("legacy axial-length table: remeasure saved profiles before plotting or resuming")
     if [int(row["station"]) for row in rows] != list(range(len(rows))):
         raise ValueError("resume branches are not in chronological station order")
     return rows
@@ -343,7 +365,7 @@ def checkpoint(problem, output: Path, case: dict, rows: list[dict], next_ds: flo
     state.parent.mkdir(parents=True, exist_ok=True)
     problem.save_state(str(state), quiet=True)
     atomic_json(output / "restart.json", {
-        "schema": "herrada-figure3-restart-v1", "case_sha256": case_digest(case),
+        "schema": "herrada-figure3-restart-v2", "case_sha256": case_digest(case),
         "phase": "trace", "station": station, "next_ds": next_ds,
         "state_path": str(state.relative_to(output)), "branches_path": "branches.csv",
         "state_sha256": file_digest(state), "branches_prefix_sha256": branch_digest(rows),

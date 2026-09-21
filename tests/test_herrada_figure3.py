@@ -11,7 +11,10 @@ import pytest
 from validation.herradaEtAl_figure3.driver import (
     branch_digest,
     case_digest,
+    extract_row,
+    meridional_length,
     prepare_output,
+    read_branches,
     read_case,
     trace_complete,
     trace_outcome,
@@ -93,7 +96,7 @@ def test_exhausted_budget_is_incomplete_not_complete():
 def test_resume_refuses_a_different_case_hash():
     case = read_case(HERE / "case.json", "run")
     restart = {
-        "schema": "herrada-figure3-restart-v1",
+        "schema": "herrada-figure3-restart-v2",
         "case_sha256": case_digest(case),
         "phase": "trace",
         "station": 0,
@@ -115,7 +118,7 @@ def test_resume_refuses_a_different_case_hash():
 def test_branch_digest_survives_csv_conversion_but_detects_changed_data():
     row = {"station": 0, "bond": 1.56, "ca": 0.02, "bubble_length_over_r": 7.8,
            "signed_ca_b": 0.1, "volume_error": 1e-12, "flux_error": 0,
-           "min_gap": 0.03}
+           "min_gap": 0.03, "axial_span_over_r": 6.8}
     strings = {key: str(value) for key, value in row.items()}
     assert branch_digest([row]) == branch_digest([strings])
     strings["ca"] = "0.01"
@@ -128,3 +131,76 @@ def test_attempt_output_is_claimed_once(tmp_path):
     prepare_output(runtime)
     with pytest.raises(ValueError, match="not empty"):
         prepare_output(runtime)
+
+
+def test_meridional_length_matches_analytic_parabola_in_both_directions():
+    import math
+
+    # z=t, r=t² on [-1,1]: curved length differs from the axial span of 2.
+    exact = math.sqrt(5) + math.asinh(2) / 2
+    for z, r in [([-1, 0, 1], [1, 0, 1]), ([1, 0, -1], [1, 0, 1])]:
+        assert meridional_length(z, r, quadrature_order=32) == pytest.approx(exact, abs=1e-12)
+        assert meridional_length(z, r) > 2
+
+
+def test_meridional_length_converges_to_semicircle_not_diameter():
+    import math
+
+    errors = []
+    for elements in (8, 16, 32):
+        theta = [math.pi * i / (2 * elements) for i in range(2 * elements + 1)]
+        value = meridional_length([math.cos(t) for t in theta],
+                                  [math.sin(t) for t in theta])
+        errors.append(abs(value - math.pi))
+    assert errors[2] < errors[1] / 10 < errors[0] / 100
+    assert errors[2] < 4e-7
+
+
+def test_legacy_axial_table_and_restart_are_rejected(tmp_path):
+    table = tmp_path / "branches.csv"
+    table.write_text("station,bubble_length_over_r\n0,7.0\n")
+    with pytest.raises(ValueError, match="legacy axial-length"):
+        read_branches(table)
+    with pytest.raises(ValueError, match="meridional length"):
+        validate_resume({"schema": "herrada-figure3-restart-v1"}, {})
+
+
+def test_extract_row_uses_arc_length_for_paper_observable():
+    from types import SimpleNamespace
+
+    problem = SimpleNamespace(
+        interface_polyline=lambda: ([1, 2, 3], [0, 1, 0]),
+        geometry=SimpleNamespace(r_tube=2, volume=1, l_domain=5),
+        observable=lambda *args: 1,
+        current_bond=lambda: 1.56,
+        current_ca_in=lambda: 0.02,
+        frame_speed=lambda: 0.03,
+    )
+    row, _ = extract_row(problem, 0, {"max_volume_error": 1e-5,
+                                    "max_flux_error": 1e-5,
+                                    "containment_epsilon": 1e-8})
+    assert row["axial_span_over_r"] == 1
+    assert row["bubble_length_over_r"] == pytest.approx(1.4789428575446)
+
+
+def test_remeasure_preserves_source_and_rejects_mismatched_profile(tmp_path):
+    from validation.herradaEtAl_figure3.remeasure import remeasure
+
+    branches = tmp_path / "old.csv"
+    original = ("station,bond,ca,bubble_length_over_r,signed_ca_b,volume_error,flux_error,min_gap\n"
+                "0,1.56,0.02,2,0.03,0,0,0.1\n")
+    branches.write_text(original)
+    profiles = tmp_path / "profiles"
+    profiles.mkdir()
+    profile = profiles / "station_00000.csv"
+    profile.write_text("z_paper,gap_over_r\n-1,1\n0,0\n1,1\n")
+    output = tmp_path / "corrected"
+    remeasure(branches, profiles, output)
+    assert branches.read_text() == original
+    row = read_branches(output / "branches.csv")[0]
+    assert float(row["bubble_length_over_r"]) == pytest.approx(2.957885715089)
+    assert float(row["axial_span_over_r"]) == 2
+    assert json.loads((output / "remeasure.json").read_text())["restart_modified"] is False
+    profile.write_text("z_paper,gap_over_r\n-1,1\n0,0\n2,1\n")
+    with pytest.raises(ValueError, match="axial-span mismatch"):
+        remeasure(branches, profiles, tmp_path / "bad")
