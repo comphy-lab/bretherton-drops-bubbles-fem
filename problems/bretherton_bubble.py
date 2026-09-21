@@ -14,6 +14,12 @@ changing. That term is fed in through the ``gravity`` argument, which pyoomph
 multiplies by ``mass_density`` internally. On a stationary solve pyoomph zeroes
 time derivatives, so it vanishes without special casing.
 
+Physical gravity is a separate bulk force, ``-Bo/R_tube**2 e_z``, with
+``Bo = rho_l g R_tube**2 / sigma`` and the axial coordinate positive upwards.
+It remains present in the Stokes limit and is not multiplied by ``La``.
+Signed imposed flow is enabled explicitly with ``allow_signed_flow=True``;
+the default retains the positive-flow, zero-gravity configuration.
+
 The consequence Vatsal is after: the bubble does not translate through the mesh,
 so the window has to be long enough only for the cap disturbance to decay to the
 fully developed profile - not long enough to contain a trajectory. The parent
@@ -77,6 +83,7 @@ from pyoomph.meshes.zeta import (
 )
 from pyoomph.output.generic import IntegralObservableOutput
 
+from .forcing import validate_bond_number, validate_capillary_number
 from .geometry import CapsuleGeometry
 from .mesh import LiquidAnnulusMesh, PlainTubeMesh
 
@@ -123,6 +130,9 @@ class Consistency:
     wrong. A residual larger than the mesh-convergence estimate is real physics -
     a film that is not stagnant - not an error, which is why it is reported
     rather than asserted.
+
+    With nonzero Bond number the stagnant-film identity is not an acceptance
+    condition. Its reported residual is undefined (NaN) at zero imposed flow.
     """
 
     volume_error: float
@@ -143,6 +153,8 @@ class VoidBubbleProblem(Problem):
         geometry: CapsuleGeometry,
         ca_in: float,
         laplace: float = 0.0,
+        bond: float = 0.0,
+        allow_signed_flow: bool = False,
         film_elements: float = 3.0,
         bulk_resolution: float = 0.08,
         closure: str = "centroid",
@@ -152,14 +164,14 @@ class VoidBubbleProblem(Problem):
         newton_tolerance: float = 1e-8,
     ):
         super().__init__()
-        if ca_in <= 0:
-            raise ValueError("Ca_in must be positive")
+        validate_capillary_number(ca_in, allow_signed=allow_signed_flow)
+        validate_bond_number(bond)
         if laplace < 0:
             raise ValueError("La must be non-negative")
         if film_elements < 1 or bulk_resolution <= 0:
             raise ValueError("need at least one element across the film, and a positive bulk size")
-        if closure not in ("centroid", "tip"):
-            raise ValueError("closure must be 'centroid' or 'tip'")
+        if closure not in ("centroid", "tip", "front_tip"):
+            raise ValueError("closure must be 'centroid', 'tip' or 'front_tip'")
         if outlet not in ("poiseuille", "traction_free"):
             raise ValueError("outlet must be 'poiseuille' or 'traction_free'")
         if pressure_datum not in ("fixation", "integral", "none"):
@@ -167,6 +179,8 @@ class VoidBubbleProblem(Problem):
         self.geometry = geometry
         self.ca_in = ca_in
         self.laplace = laplace
+        self.bond = bond
+        self.allow_signed_flow = allow_signed_flow
         self.film_elements = film_elements
         self.bulk_resolution = bulk_resolution
         self.closure = closure
@@ -205,6 +219,8 @@ class VoidBubbleProblem(Problem):
         geom = self.geometry
         ca = self.define_global_parameter(Ca_in=self.ca_in)
         la = self.define_global_parameter(La=self.laplace)
+        bo = self.define_global_parameter(Bo=self.bond)
+        bulkforce = vector(0, -bo / geom.r_tube**2)
 
         # U: the bubble speed, i.e. Ca_b. Seeded from the stagnant-film identity,
         # which is a far better guess than Ca_in and matters for Newton. Its own
@@ -223,15 +239,19 @@ class VoidBubbleProblem(Problem):
         # La = 0 is the Stokes limit and must use StokesEquations, not a zero
         # density: the continuity residual carries partial_t(rho)/rho, so
         # mass_density=0 is a division by zero at code-generation time. With no
-        # inertia there is also no frame-acceleration force, so gravity is
-        # omitted rather than multiplied by zero.
+        # inertia there is also no frame-acceleration force, so pyoomph's
+        # density-scaled gravity term is omitted rather than multiplied by zero.
+        # The physical Bond force remains as a density-independent bulk force.
         if self.laplace > 0:
             flow = NavierStokesEquations(
                 mass_density=la, dynamic_viscosity=1, mode="TH",
                 gravity=vector(0, -1) * partial_t(speed),
+                bulkforce=bulkforce,
             )
         else:
-            flow = StokesEquations(mass_density=1, dynamic_viscosity=1, mode="TH")
+            flow = StokesEquations(
+                mass_density=1, dynamic_viscosity=1, mode="TH", bulkforce=bulkforce
+            )
         # With Poiseuille at both ends every boundary carries a prescribed normal
         # velocity, and (p, P, inlet/outlet multipliers) -> (p+c, P+c, ...) is an
         # exact null vector: the free surface does NOT supply a datum once P is
@@ -279,13 +299,22 @@ class VoidBubbleProblem(Problem):
             # between both ends as Ca varies, and survives remeshing to
             # interpolation error. Preferred over the point pin.
             eqs += WeakContribution(void_moment, speed_test) @ "interface"
-        else:
+        elif self.closure == "tip":
             # Point pin on the rear tip. The axisymmetric measure carries 2*pi*r
             # and the tip sits at r = 0, so this row would be identically zero
             # without the cartesian measure. Kept as a debugging alternative.
             eqs += WeakContribution(
                 var("mesh_y") - geom.z_rear, speed_test, coordsys=cartesian
             ) @ "interface/axis_rear"
+        else:
+            # Pin the upper/front tip at its seeded axial coordinate. As for the
+            # rear-tip pin, this needs a cartesian measure because the
+            # axisymmetric measure vanishes on the axis.
+            eqs += WeakContribution(
+                var("mesh_y") - geom.z_front,
+                speed_test,
+                coordsys=cartesian,
+            ) @ "interface/axis_front"
 
         # Boundary conditions, in the bubble frame. The wall moves at -U and the
         # inflow is Poiseuille shifted by -U, so both depend on the unknown U and
@@ -440,6 +469,15 @@ class VoidBubbleProblem(Problem):
         except Exception:  # noqa: BLE001 - before the parameter exists, fall back
             return float(self.ca_in)
 
+    def current_bond(self) -> float:
+        """The tube-radius Bond number now, including continuation updates."""
+        if "Bo" not in self.get_global_parameter_names():
+            return float(self.bond)
+        try:
+            return float(self.get_global_parameter("Bo").value)
+        except Exception:  # noqa: BLE001 - before the parameter exists, fall back
+            return float(self.bond)
+
     def frame_speed(self) -> float:
         """``U``, which in this nondimensionalisation *is* ``Ca_b``.
 
@@ -587,16 +625,22 @@ class VoidBubbleProblem(Problem):
         scale = max(abs(inlet_flux), abs(outlet_flux), 1e-300)
 
         stagnant = (geom.r_tube / (geom.r_tube - film.h_flat)) ** 2
+        stagnant_film_error = (
+            (speed / ca_in) / stagnant - 1.0 if ca_in != 0 else float("nan")
+        )
         gauge = self.bubble_pressure() - self.outlet_mean_pressure()
-        # Poiseuille drop from the measured front tip to the outlet, which the
-        # raw gauge contains and which has nothing to do with the bubble.
+        # Viscous and hydrostatic pressure drops from the measured front tip to
+        # the outlet, which the raw gauge contains and which have nothing to do
+        # with the bubble.
         front_pad_drop = (
-            8.0 * ca_in * (geom.l_domain - film.z_front) / geom.r_tube**2
+            (8.0 * ca_in + self.current_bond())
+            * (geom.l_domain - film.z_front)
+            / geom.r_tube**2
         )
         return Consistency(
             volume_error=void_volume / geom.volume - 1.0,
             flux_error=(outlet_flux - inlet_flux) / scale,
-            stagnant_film_error=(speed / ca_in) / stagnant - 1.0,
+            stagnant_film_error=stagnant_film_error,
             h_flat=film.h_flat,
             frame_speed=speed,
             bubble_pressure=gauge,

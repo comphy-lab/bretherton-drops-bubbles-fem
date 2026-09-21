@@ -265,7 +265,7 @@ def collect(results: list[Path], output_dir: Path) -> int:
     if not rows:
         raise ValueError("--results requires at least one accepted result directory")
     output_dir.mkdir(parents=True, exist_ok=False)
-    plots = plot_profiles(rows, output_dir, "stone_figure2")
+    plots = plot_profiles(rows, output_dir, "herradaEtAl_figure2")
     baseline = {abs(float(s["cal_paper"])): s for s, _ in rows if s["resolution"] == "baseline"}
     observations: dict[str, dict] = {}
     if 0.001 in baseline:

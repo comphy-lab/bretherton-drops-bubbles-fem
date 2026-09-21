@@ -12,10 +12,10 @@ point by point rather than only in shape.
 
 ## Literature validation
 
-The [Herrada–Yu–Stone benchmark](validation/stone_figure2/) reproduces the
+The [Herrada–Yu–Stone benchmark](validation/herradaEtAl_figure2/) reproduces the
 gravity-free film profiles in figure 2 of Herrada, Yu & Stone (2023) at
 `Ca_l = -0.001` and `-0.02`. The
-[validation report](docs/validation/stone_figure2.tex) compares the
+[Newtonian validation report](docs/validation/newtonian-validation.tex) compares the
 finite-element profiles with digitized reference curves and records the
 quantitative film agreement and the model assumptions. Its
 [build instructions](docs/validation/README.md) generate a standalone PDF.

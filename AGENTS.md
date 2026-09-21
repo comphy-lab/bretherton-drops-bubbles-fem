@@ -20,6 +20,12 @@ Do not silently change any of these.
 
 - Nondimensionalisation is `sigma = mu = R0 = 1`. `Ca_in` is the imposed mean
   inlet speed; `La = rho`; `Oh = 1/sqrt(La)`.
+- `bond` is based on the tube radius. Positive `Bo` gives the axial bulk force
+  `-Bo/R_tube**2`, independently of `La`; the axial coordinate points upwards.
+  `allow_signed_flow=True` permits negative or zero `Ca_in`. Do not apply the
+  zero-gravity reflection used for figure 2 to the gravity-driven figure 3 case.
+- `front_tip` fixes the upper interface tip at its seeded coordinate. The
+  Herrada figure 3 geometry puts that tip at `10 R_tube` in a `15 R_tube` domain.
 - The bubble interior is a void. Do not mesh a gas domain or reintroduce a
   second fluid to match the Basilisk VoF companion.
 - **The bubble volume is held fixed at `4/3 pi R0^3`, and the void pressure is
@@ -151,7 +157,7 @@ These were established by the checks in `verification/`; do not rediscover them.
   script that exits non-zero on failure and writes a JSON receipt.
 - `runners/` holds case drivers and sweeps.
 - `validation/` holds literature benchmarks with their own drivers and case
-  definitions. `validation/stone_figure2/` uses `pyoomph-case-v1` and the
+  definitions. `validation/herradaEtAl_figure2/` uses `pyoomph-case-v1` and the
   reference paper's tube-radius normalization.
 - `docs/validation/` holds authored LaTeX reports, bibliographies and figures.
 - `tests/` must keep at least one path that imports no pyoomph.

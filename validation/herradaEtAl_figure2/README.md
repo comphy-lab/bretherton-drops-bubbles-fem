@@ -6,9 +6,9 @@ in figure 2 of Herrada, Yu & Stone, *J. Fluid Mech.* **958**, A45 (2023), DOI
 complete `pyoomph-case-v1` document and each invocation runs exactly one case:
 
 ```bash
-<environment>/bin/python validation/stone_figure2/driver.py run \
-  --case validation/stone_figure2/cases/cal_m0p001_baseline.json \
-  --output-dir /path/to/run/stone-figure2/cal_m0p001_baseline
+<environment>/bin/python validation/herradaEtAl_figure2/driver.py run \
+  --case validation/herradaEtAl_figure2/cases/cal_m0p001_baseline.json \
+  --output-dir /path/to/run/herrada-figure2/cal_m0p001_baseline
 ```
 
 The paper uses negative external capillary numbers because its imposed liquid
@@ -33,7 +33,7 @@ gas is represented by a fixed-volume pressure constraint rather than a meshed
 gas phase. The primary cases impose fully developed Poiseuille flow at both
 ends. This differs from the paper's prescribed upper inlet and static-pressure
 lower outlet. The model and boundary-condition differences are stated in the
-[validation report](../../docs/validation/stone_figure2.tex), which includes
+[Newtonian validation report](../../docs/validation/newtonian-validation.tex), which includes
 the comparison with digitized profiles from the paper.
 
 The two cases reproduce the nearly uniform film and the capillary depression
@@ -54,9 +54,9 @@ for the collection command.
 Combine completed cases without rerunning them:
 
 ```bash
-<environment>/bin/python validation/stone_figure2/driver.py collect \
-  --results /path/to/run/stone-figure2/* \
-  --output-dir /path/to/run/stone-figure2-combined
+<environment>/bin/python validation/herradaEtAl_figure2/driver.py collect \
+  --results /path/to/run/herrada-figure2/* \
+  --output-dir /path/to/run/herrada-figure2-combined
 ```
 
 The combined receipt reports two numerical observations, when the requisite
@@ -64,3 +64,7 @@ accepted baselines are present: whether the small-`Ca` film is near
 Bretherton's law and whether the larger-`Ca` film lies below Bretherton and is
 closer to Aussillous–Quéré. These are checks of the produced results, not
 assumptions used to accept a solve.
+
+New combined plots are named `herradaEtAl_figure2.pdf` and
+`herradaEtAl_figure2.png`. The original case identifiers are retained so
+existing result receipts remain readable.
