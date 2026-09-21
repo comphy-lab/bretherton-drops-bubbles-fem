@@ -1,0 +1,16 @@
+{
+  "schema": "pyoomph-case-v1",
+  "case_id": "stone_fig2_cal_m0p001_refined",
+  "geometry": {"kind": "axisymmetric", "coordinates": ["r", "z"], "frame": "co-moving"},
+  "nondimensionalization": {"surface_tension": 1.0, "liquid_viscosity": 1.0, "volume_equivalent_radius": 1.0},
+  "physics": {"bond": 0.0, "reynolds": 0.0, "laplace": 0.0, "vhat": 3.3, "cal_paper": -0.001, "ca_in": 0.001, "r0": 1.0, "r_tube": 0.6716793862139855, "rb0_frac": 0.9870343492985002, "z_rear": 3.3583969310699273, "l_domain": 10.075190793209782, "interior": "void"},
+  "boundaries": {"inlet": "poiseuille", "outlet": "poiseuille"},
+  "closure": {"frame_speed": "tip"},
+  "tolerances": {"newton": 5e-9, "temporal_error": 5e-5},
+  "mesh": {"film_elements": 5.0, "bulk_resolution": 0.05, "remeshing": true},
+  "solve": {"mode": "steady", "relax_time": 20.0, "start_step": 0.00005, "temporal_error": 0.00005},
+  "output": {"cadence": 2.5, "write_states": true},
+  "completion": {"kind": "steady", "value": "stationary_polish"},
+  "acceptance": {"max_volume_error": 1e-6, "max_flux_error": 1e-6, "max_film_flatness": 0.03, "min_central_nodes": 8},
+  "reproduction": {"source_doi": "10.1017/jfm.2023.123", "figure": 2, "resolution": "refined"}
+}
