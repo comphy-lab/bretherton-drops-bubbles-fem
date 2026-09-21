@@ -187,7 +187,13 @@ def plot_profiles(rows: list[tuple[dict, Path]], output_dir: Path, name: str) ->
 
 
 def run_case(case_path: Path, output_dir: Path) -> int:
-    output_dir.mkdir(parents=True, exist_ok=False)
+    # Production attempts pre-create an empty runtime directory. Refuse any
+    # populated destination, and claim the empty directory exactly once.
+    if output_dir.exists() and any(output_dir.iterdir()):
+        raise ValueError(f"output directory is not empty: {output_dir}")
+    output_dir.mkdir(parents=True, exist_ok=True)
+    with (output_dir / ".started").open("x", encoding="utf-8") as stream:
+        stream.write("single-case attempt\n")
     progress = output_dir / "progress.jsonl"
     case: dict = {}
     try:
@@ -199,6 +205,7 @@ def run_case(case_path: Path, output_dir: Path) -> int:
 
         problem = build({**case, "schema": "pyoomph-case-v2"})
         problem.set_linear_solver("superlu")
+        problem.set_c_compiler("system")
         problem.set_output_directory(str(output_dir / "solver"))
         problem.initialise()
         audit = problem.audit_constraints()

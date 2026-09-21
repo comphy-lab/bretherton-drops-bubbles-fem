@@ -14,6 +14,7 @@ from simulations.stone_figure2.driver import (
     acceptance_errors,
     paper_coordinates,
     read_case,
+    run_case,
     validate_case,
 )
 
@@ -78,3 +79,14 @@ def test_case_validator_rejects_wrong_window_even_if_schema_shape_is_valid():
 
     with pytest.raises(ValueError, match="H/R=15"):
         validate_case(case)
+
+
+def test_precreated_runtime_is_accepted_once_and_failed_attempt_is_preserved(tmp_path):
+    runtime = tmp_path / "runtime"
+    runtime.mkdir()
+    invalid_case = tmp_path / "invalid.json"
+    invalid_case.write_text("{}")
+    assert run_case(invalid_case, runtime) == 1
+    assert json.loads((runtime / "status.json").read_text())["status"] == "failed"
+    with pytest.raises(ValueError, match="not empty"):
+        run_case(invalid_case, runtime)
