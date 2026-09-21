@@ -244,6 +244,8 @@ def spurious_check(problem: VoidBubbleProblem, modes: list[int], n: int = 20) ->
             "rightmost_imag": sample["imag"],
             "positive_count": sample["positive_count"],
             "near_zero_count": sample["near_zero_count"],
+            "physical": sample["physical"],
+            "residual_screen": sample["residual_screen"],
             "spectrum": sample["spectrum"],
         })
     return {
