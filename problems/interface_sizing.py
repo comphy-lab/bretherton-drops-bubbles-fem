@@ -64,8 +64,8 @@ def facing_pairs(points, s, *, min_chain: float = 0.05, max_range: float = 0.5,
     ``chain_ratio = 4`` also leaves the rear lip's own U-turn to
     ``lip_elements``, the length scale that belongs to it. Measured on the
     ``Ca_in = 14`` state at ``t = 25``: the lip U-turn has a chain-to-gap ratio
-    of 1.02, and the skirt, whose two sheets are 8.9e-3 apart, has one of order
-    1e3.
+    of 1.02, while the skirt, whose two sheets are 8.9e-3 apart across a chain
+    separation of 0.54, has one of 60.
 
     ``max_range`` is the search radius. Nothing further apart than that can set
     an element size worth refining for, and bounding it keeps the neighbour
