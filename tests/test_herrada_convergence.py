@@ -67,11 +67,11 @@ def test_comparison_preserves_order_and_ignores_internal_turns(tmp_path):
 
     report = compare_runs(reference, candidate, TOLERANCES)
 
-    assert report["status"] == "pass"
+    assert report["status"] == "inconclusive"
     assert report["branch_partition"]["reference_turns"] == [2, 3, 4, 5]
     assert report["branch_partition"]["reference_internal_turns"] == [3, 4]
     assert report["curves"]["I"]["method"] == "branch-local interpolation at matched Ca"
-    assert report["curves"]["II"]["method"].startswith("ordered-curve")
+    assert report["curves"]["II"]["method"].startswith("matched length")
     assert report["curves"]["III"]["max_abs_length_error"] == pytest.approx(0.001)
 
 
@@ -157,3 +157,54 @@ def test_incomplete_runs_and_legacy_tables_are_refused(tmp_path):
     (candidate / "branches.csv").write_text("station,ca,bubble_length_over_r\n0,0,1\n")
     with pytest.raises(ValueError, match="corrected figure 3 fields"):
         compare_runs(reference, candidate, TOLERANCES)
+
+
+def test_unequal_three_grid_order_uses_signed_same_observable():
+    import math
+
+    from validation.herradaEtAl_figure3.convergence import three_grid_order
+
+    h = [0.08, 0.08 * 2 / 3, 0.04]
+    q = [1 + 3 * x**2 for x in h]
+    result = three_grid_order(h, q)
+    assert result["order"] == pytest.approx(2)
+    misleading_slope = math.log((q[0] - q[2]) / (q[1] - q[2])) / math.log(h[0] / h[1])
+    assert misleading_slope == pytest.approx(3.33, abs=0.01)
+    assert three_grid_order(h, [1, 2, 1.5])["order"] is None
+    assert three_grid_order(h, [1, 1, 1])["order"] is None
+    assert three_grid_order(h, [3, 2, 0])["order"] is None
+
+
+def test_matched_length_ignores_endpoint_chord_phase():
+    from validation.herradaEtAl_figure3.convergence import matched_length_diagnostic
+
+    # Same exact straight curve, with different ranges and station spacing.
+    reference = [{"length": x, "ca": 0.01 * x} for x in [1, 2, 3, 4]]
+    candidate = [{"length": x, "ca": 0.01 * x} for x in [1.5, 2.2, 3.5]]
+    result = matched_length_diagnostic(reference, candidate)
+    assert result["max_abs_ca_error"] == pytest.approx(0, abs=1e-15)
+    assert result["pchip_max_abs_ca_error"] == pytest.approx(0, abs=1e-15)
+    assert result["length_overlap"] == [1.5, 3.5]
+    assert result["status"] == "inconclusive"
+
+
+def test_length_reversal_is_explicit_or_refused():
+    from validation.herradaEtAl_figure3.convergence import matched_length_diagnostic
+
+    rows = [{"length": x, "ca": 0.01 * x} for x in [3.9, 4, 3, 2, 1]]
+    result = matched_length_diagnostic(rows, rows)
+    assert result["reference_segment"]["excluded_endpoint_rows"] == [1, 0]
+    assert result["length_overlap"] == [1, 4]
+    rows = [{"length": x, "ca": 0.01 * x} for x in [4, 2, 3, 1]]
+    with pytest.raises(ValueError, match="not single-valued"):
+        matched_length_diagnostic(rows, rows)
+
+
+def test_interpolation_sensitivity_is_reported_without_claiming_spatial_error():
+    from validation.herradaEtAl_figure3.convergence import matched_length_diagnostic
+
+    ref = [{"length": x, "ca": x**2} for x in [1, 1.5, 2, 2.5, 3]]
+    cand = [{"length": x, "ca": x**2} for x in [1, 2, 3]]
+    result = matched_length_diagnostic(ref, cand)
+    assert result["interpolation_method_sensitivity"] > 0.1
+    assert result["status"] == "inconclusive"

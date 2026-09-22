@@ -149,18 +149,6 @@ def _outer_branch_error(reference: list[dict], candidate: list[dict]) -> dict:
     }
 
 
-def _ordered_coordinates(rows: list[dict]) -> list[tuple[float, float, float]]:
-    distances = [0.0]
-    for left, right in pairwise(rows):
-        distances.append(distances[-1] + math.hypot(
-            right["ca"] - left["ca"], right["length"] - left["length"]
-        ))
-    if distances[-1] == 0:
-        raise ValueError("ordered branch II has zero extent")
-    return [(distance / distances[-1], row["ca"], row["length"])
-            for distance, row in zip(distances, rows, strict=True)]
-
-
 def _ordered_interpolate(points: list[tuple[float, float, float]], s: float) -> tuple[float, float]:
     for left, right in pairwise(points):
         if s <= right[0]:
@@ -170,23 +158,96 @@ def _ordered_interpolate(points: list[tuple[float, float, float]], s: float) -> 
     return points[-1][1:]
 
 
-def _middle_branch_error(reference: list[dict], candidate: list[dict], samples: int = 101) -> dict:
-    ref, cand = _ordered_coordinates(reference), _ordered_coordinates(candidate)
-    ca_errors, length_errors = [], []
-    for index in range(samples):
-        s = index / (samples - 1)
-        ref_ca, ref_length = _ordered_interpolate(ref, s)
-        cand_ca, cand_length = _ordered_interpolate(cand, s)
-        ca_errors.append(abs(ref_ca - cand_ca))
-        length_errors.append(abs(ref_length - cand_length))
+def three_grid_order(h: Iterable[float], q: Iterable[float]) -> dict:
+    """Fit Q(h)=Q*+C h**p for the same fixed observable on three grids.
+
+    This algebraic fit does not establish asymptotic or sampling convergence.
+    """
+    h, q = list(h), list(q)
+    if len(h) != 3 or len(q) != 3:
+        raise ValueError("exactly three spacings and observable values are required")
+    if not all(math.isfinite(x) for x in h + q) or not h[0] > h[1] > h[2] > 0:
+        raise ValueError("finite values and strictly decreasing positive spacings required")
+    d01, d12 = q[0] - q[1], q[1] - q[2]
+    result = {"spacings": h, "values": q, "signed_differences": [d01, d12],
+              "status": "inconclusive", "order": None}
+    if d01 * d12 <= 0:
+        return {**result, "reason": "successive differences are zero or change sign"}
+    a, b = math.log(h[0] / h[1]), math.log(h[1] / h[2])
+    ratio = d01 / d12
+    if ratio <= a / b:
+        return {**result, "reason": "no positive-order power-law solution"}
+
+    def predicted(p: float) -> float:
+        try:
+            return math.expm1(a * p) / (-math.expm1(-b * p))
+        except OverflowError:
+            return math.inf
+
+    lower, upper = 0.0, 1.0
+    while predicted(upper) < ratio:
+        upper *= 2
+    for _ in range(100):
+        middle = (lower + upper) / 2
+        if predicted(middle) < ratio:
+            lower = middle
+        else:
+            upper = middle
+    return {**result, "status": "estimated", "order": (lower + upper) / 2,
+            "reason": "three-grid fit; sampling and asymptotic validity require separate checks"}
+
+
+def _monotone_length_segment(rows: list[dict]) -> tuple[list[tuple[float, float]], dict]:
+    """Select the interval between length extrema; refuse internal reversals."""
+    lengths = [row["length"] for row in rows]
+    first, last = sorted((lengths.index(min(lengths)), lengths.index(max(lengths))))
+    segment = rows[first:last + 1]
+    changes = [right["length"] - left["length"] for left, right in pairwise(segment)]
+    if not changes or not (all(x > 0 for x in changes) or all(x < 0 for x in changes)):
+        raise ValueError("Ca(L) is not single-valued between length extrema")
+    points = sorted((row["length"], row["ca"]) for row in segment)
+    return points, {"first_row": first, "last_row": last,
+                    "excluded_endpoint_rows": [first, len(rows) - last - 1],
+                    "length_range": [points[0][0], points[-1][0]]}
+
+
+def matched_length_diagnostic(reference: list[dict], candidate: list[dict],
+                              samples: int = 1001) -> dict:
+    """Compare Ca(L) on an explicit monotone overlap with linear and PCHIP.
+
+    Interpolation sensitivity is not an error bound or a sampling-control test.
+    """
+    from scipy.interpolate import PchipInterpolator
+
+    if samples < 3:
+        raise ValueError("at least three interpolation samples are required")
+    ref, ref_segment = _monotone_length_segment(reference)
+    cand, cand_segment = _monotone_length_segment(candidate)
+    low, high = max(ref[0][0], cand[0][0]), min(ref[-1][0], cand[-1][0])
+    if low >= high:
+        raise ValueError("branches have no finite monotone length overlap")
+    xs = sorted({low + (high - low) * i / (samples + 1) for i in range(1, samples + 1)}
+                | {x for x, _ in ref + cand if low < x < high})
+    ref_cubic = PchipInterpolator(*zip(*ref, strict=True))
+    cand_cubic = PchipInterpolator(*zip(*cand, strict=True))
+    linear = [_linear(ref, x) - _linear(cand, x) for x in xs]
+    cubic = [float(ref_cubic(x) - cand_cubic(x)) for x in xs]
+    sensitivity = max(abs(a - b) for a, b in zip(linear, cubic, strict=True))
     return {
-        "method": "ordered-curve interpolation by normalised chord length",
-        "samples": samples,
-        "max_abs_ca_error": max(ca_errors),
-        "rms_ca_error": _rms(ca_errors),
-        "max_abs_length_error": max(length_errors),
-        "rms_length_error": _rms(length_errors),
+        "method": "matched length Ca(L), linear and shape-preserving cubic interpolation",
+        "length_overlap": [low, high], "overlap_endpoints_included": False,
+        "reference_segment": ref_segment, "candidate_segment": cand_segment,
+        "samples": len(xs), "max_abs_ca_error": max(map(abs, linear)),
+        "rms_ca_error": _rms(linear),
+        "pchip_max_abs_ca_error": max(map(abs, cubic)),
+        "interpolation_method_sensitivity": sensitivity,
+        "status": "inconclusive",
+        "sampling_note": "Fixed-mesh continuation refinement is required; method agreement is not an error bound.",
     }
+
+
+def _middle_branch_error(reference: list[dict], candidate: list[dict], samples: int = 1001) -> dict:
+    return matched_length_diagnostic(reference, candidate, samples)
 
 
 def _fold(rows: list[dict], index: int) -> dict:
@@ -326,14 +387,19 @@ def compare_runs(reference_dir: Path, candidate_dir: Path,
         "II": _middle_branch_error(reference["branches"]["II"], candidate["branches"]["II"]),
         "I": _outer_branch_error(reference["branches"]["I"], candidate["branches"]["I"]),
     }
-    curves["III"]["status"] = ("pass" if curves["III"]["max_abs_length_error"]
-                                  <= tolerances.max_length_error else "fail")
-    curves["I"]["status"] = ("pass" if curves["I"]["max_abs_length_error"]
-                                <= tolerances.max_length_error else "fail")
-    curves["II"]["status"] = ("pass" if (
-        curves["II"]["max_abs_length_error"] <= tolerances.max_length_error
-        and curves["II"]["max_abs_ca_error"] <= tolerances.max_ca_error_branch_ii
-    ) else "fail")
+    for branch in ("I", "III"):
+        curves[branch]["diagnostic_within_tolerance"] = (
+            curves[branch]["max_abs_length_error"] <= tolerances.max_length_error)
+        curves[branch]["status"] = "inconclusive"
+        curves[branch]["sampling_note"] = (
+            "Matched-Ca interpolation is ill-conditioned near folds. Fixed-mesh "
+            "continuation refinement is required before attributing differences to mesh error.")
+    middle = curves["II"]
+    middle["diagnostic_within_tolerance"] = (
+        max(middle["max_abs_ca_error"], middle["pchip_max_abs_ca_error"])
+        <= tolerances.max_ca_error_branch_ii)
+    middle["interpolation_sensitivity_exceeds_gate"] = (
+        middle["interpolation_method_sensitivity"] > tolerances.max_ca_error_branch_ii)
     folds = {
         "III_II": _compare_fold(
             _fold(reference["rows"], reference["physical_folds"][0]),
@@ -350,7 +416,7 @@ def compare_runs(reference_dir: Path, candidate_dir: Path,
         "inconclusive" if "inconclusive" in statuses and "fail" not in statuses else "fail"
     )
     return {
-        "schema": "herrada-figure3-convergence-v1",
+        "schema": "herrada-figure3-convergence-v2",
         "inputs": {
             "reference": {
                 "path": reference["path"],
