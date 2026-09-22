@@ -19,6 +19,31 @@ if str(ROOT) not in sys.path:
 SCHEMA = "pyoomph-case-v1"
 BENCHMARK_SCHEMA = "herrada-figure3-v1"
 DOI = "10.1017/jfm.2023.123"
+BASE_CASE_ID = "herradaEtAl_figure3_bo1p56"
+BASE_DOMAIN = {"domain_over_r": 15.0, "upper_tip_over_r": 10.0}
+BASE_MESH = {"film_elements": 4.0, "bulk_resolution": 0.08}
+CONVERGENCE_VARIANTS = {
+    "mesh-medium": {
+        "case_id": f"{BASE_CASE_ID}_mesh_medium",
+        "domain": BASE_DOMAIN,
+        "mesh": {"film_elements": 6.0, "bulk_resolution": 0.08 * 4.0 / 6.0},
+    },
+    "mesh-fine": {
+        "case_id": f"{BASE_CASE_ID}_mesh_fine",
+        "domain": BASE_DOMAIN,
+        "mesh": {"film_elements": 8.0, "bulk_resolution": 0.04},
+    },
+    "domain20-fine": {
+        "case_id": f"{BASE_CASE_ID}_domain20_fine",
+        "domain": {"domain_over_r": 20.0, "upper_tip_over_r": 12.5},
+        "mesh": {"film_elements": 8.0, "bulk_resolution": 0.04},
+    },
+    "domain25-fine": {
+        "case_id": f"{BASE_CASE_ID}_domain25_fine",
+        "domain": {"domain_over_r": 25.0, "upper_tip_over_r": 15.0},
+        "mesh": {"film_elements": 8.0, "bulk_resolution": 0.04},
+    },
+}
 BRANCH_FIELDS = (
     "station", "bond", "ca", "bubble_length_over_r", "signed_ca_b",
     "volume_error", "flux_error", "min_gap", "axial_span_over_r",
@@ -76,7 +101,7 @@ def validate_case(case: dict, expected_mode: str | None = None) -> None:
     p = case["physics"]
     expected = {
         "reynolds": 0.0, "laplace": 0.0, "bond": 1.56, "vhat": 3.3, "r0": 1.0,
-        "domain_over_r": 15.0, "upper_tip_over_r": 10.0, "seed_ca": 0.02,
+        "seed_ca": 0.02,
     }
     for name, value in expected.items():
         if not math.isclose(float(p.get(name, math.nan)), value, rel_tol=1e-12,
@@ -93,9 +118,10 @@ def validate_case(case: dict, expected_mode: str | None = None) -> None:
         raise ValueError("the paper coordinate requires the front-tip closure")
     if case["mesh"].get("template") != "LiquidAnnulusMesh":
         raise ValueError("mesh template must be LiquidAnnulusMesh")
-    if finite(case["mesh"], "film_elements", positive=True) < 1:
+    film_elements = finite(case["mesh"], "film_elements", positive=True)
+    if film_elements < 1:
         raise ValueError("film_elements must be at least one")
-    finite(case["mesh"], "bulk_resolution", positive=True)
+    bulk_resolution = finite(case["mesh"], "bulk_resolution", positive=True)
     if not isinstance(case["mesh"].get("remeshing"), bool):
         raise TypeError("remeshing must be boolean")
     finite(case["tolerances"], "newton", positive=True)
@@ -107,6 +133,39 @@ def validate_case(case: dict, expected_mode: str | None = None) -> None:
         finite(case["acceptance"], name, positive=True)
 
     if case["benchmark_mode"] == "run":
+        convergence = case.get("convergence")
+        if convergence is None:
+            variant = {
+                "case_id": BASE_CASE_ID,
+                "domain": BASE_DOMAIN,
+                "mesh": BASE_MESH,
+            }
+        else:
+            if not isinstance(convergence, dict) or set(convergence) != {
+                "study", "baseline_case_id", "variant"
+            }:
+                raise ValueError("convergence metadata must declare study, baseline_case_id and variant")
+            if convergence["study"] != "figure3_numerical_convergence":
+                raise ValueError("convergence study must be figure3_numerical_convergence")
+            if convergence["baseline_case_id"] != BASE_CASE_ID:
+                raise ValueError(f"convergence baseline_case_id must be {BASE_CASE_ID!r}")
+            try:
+                variant = CONVERGENCE_VARIANTS[convergence["variant"]]
+            except (KeyError, TypeError) as exc:
+                raise ValueError("convergence variant is not a declared figure 3 variant") from exc
+
+        if case["case_id"] != variant["case_id"]:
+            raise ValueError(f"case_id must be {variant['case_id']!r} for this figure 3 variant")
+        for name, value in variant["domain"].items():
+            if not math.isclose(float(p.get(name, math.nan)), value,
+                                rel_tol=1e-12, abs_tol=1e-12):
+                raise ValueError(f"{name} must be {value!r} for this figure 3 variant")
+        for name, actual in (("film_elements", film_elements),
+                             ("bulk_resolution", bulk_resolution)):
+            value = variant["mesh"][name]
+            if not math.isclose(actual, value, rel_tol=1e-12, abs_tol=1e-12):
+                raise ValueError(f"{name} must be {value!r} for this figure 3 variant")
+
         cont = case.get("continuation", {})
         if not finite(cont, "initial_ds") < 0:
             raise ValueError("initial_ds must point towards decreasing signed Ca")
@@ -134,6 +193,12 @@ def validate_case(case: dict, expected_mode: str | None = None) -> None:
         }:
             raise ValueError("production completion event is not explicit")
     else:
+        if "convergence" in case:
+            raise ValueError("smoke cases cannot declare production convergence variants")
+        for name, value in BASE_DOMAIN.items():
+            if not math.isclose(float(p.get(name, math.nan)), value,
+                                rel_tol=1e-12, abs_tol=1e-12):
+                raise ValueError(f"{name} must be {value!r} for the figure 3 smoke mapping")
         smoke = case.get("smoke", {})
         if finite(smoke, "ca") >= 0 or not isinstance(smoke.get("steps"), int) or smoke["steps"] <= 0:
             raise ValueError("smoke requires a negative Ca and a positive step count")
@@ -326,10 +391,11 @@ def extract_row(problem, station: int, acceptance: dict) -> tuple[dict, tuple[li
     return row, (z_values, r_values)
 
 
-def write_profile(output: Path, station: int, problem, profile: tuple[list, list]) -> None:
+def write_profile(output: Path, station: int, problem, profile: tuple[list, list],
+                  case: dict) -> None:
     z_values, r_values = profile
     rt = problem.geometry.r_tube
-    tip = 10.0
+    tip = float(case["physics"]["upper_tip_over_r"])
     path = output / "profiles" / f"station_{station:05d}.csv"
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", newline="", encoding="utf-8") as stream:
@@ -406,7 +472,7 @@ def run_trace(case: dict, output: Path, resume_path: Path | None) -> int:
                                 max_step=float(cont["bond_step"]))
             row, profile = extract_row(problem, 0, case["acceptance"])
             rows = [row]
-            write_profile(output, 0, problem, profile)
+            write_profile(output, 0, problem, profile, case)
             write_branches(output / "branches.csv", rows)
             problem.reset_arc_length_parameters()
             problem.set_arclength_inner_product("ndof")
@@ -453,7 +519,7 @@ def run_trace(case: dict, output: Path, resume_path: Path | None) -> int:
             station = int(rows[-1]["station"]) + 1
             row, profile = extract_row(problem, station, case["acceptance"])
             candidate_rows = [*rows, row]
-            write_profile(output, station, problem, profile)
+            write_profile(output, station, problem, profile, case)
             write_branches(output / "branches.csv", candidate_rows)
             checkpoint(problem, output, case, candidate_rows, next_ds, parent_run)
             rows = candidate_rows
@@ -501,7 +567,7 @@ def run_smoke(case: dict, output: Path, max_steps: int | None) -> int:
         problem.run(steps * dt, startstep=dt, maxstep=dt, outstep=steps * dt,
                     temporal_error=float(smoke["temporal_error"]))
         row, profile = extract_row(problem, 0, case["acceptance"])
-        write_profile(output, 0, problem, profile)
+        write_profile(output, 0, problem, profile, case)
         write_branches(output / "branches.csv", [row])
         progress.append({"time_unix": time.time(), "stage": "complete", "steps": steps})
         atomic_jsonl(output / "progress.jsonl", progress)

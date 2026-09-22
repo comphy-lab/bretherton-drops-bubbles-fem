@@ -16,14 +16,22 @@ from validation.herradaEtAl_figure3.driver import (
     prepare_output,
     read_branches,
     read_case,
+    seed_geometry,
     trace_complete,
     trace_outcome,
     turning_candidates,
     validate_case,
     validate_resume,
+    write_profile,
 )
 
 HERE = Path(__file__).parents[1] / "validation" / "herradaEtAl_figure3"
+CONVERGENCE_CASES = {
+    "mesh-medium.json": ("mesh-medium", 15.0, 10.0, 6.0, 0.08 * 4 / 6),
+    "mesh-fine.json": ("mesh-fine", 15.0, 10.0, 8.0, 0.04),
+    "domain20-fine.json": ("domain20-fine", 20.0, 12.5, 8.0, 0.04),
+    "domain25-fine.json": ("domain25-fine", 25.0, 15.0, 8.0, 0.04),
+}
 
 
 @pytest.mark.parametrize(("name", "mode"), [("case.json", "run"), ("smoke.json", "smoke")])
@@ -44,6 +52,90 @@ def test_cases_encode_signed_figure3_scaling(name, mode):
     else:
         assert case["continuation"]["initial_ds"] < 0
         assert case["continuation"]["stop_ca"] < 0
+
+
+@pytest.mark.parametrize(("name", "expected"), CONVERGENCE_CASES.items())
+def test_declared_convergence_cases_are_exact_named_variants(name, expected):
+    variant, domain, tip, film_elements, bulk_resolution = expected
+    case = read_case(HERE / "cases" / name, "run")
+
+    assert case["convergence"] == {
+        "study": "figure3_numerical_convergence",
+        "baseline_case_id": "herradaEtAl_figure3_bo1p56",
+        "variant": variant,
+    }
+    assert case["physics"]["domain_over_r"] == domain
+    assert case["physics"]["upper_tip_over_r"] == tip
+    assert case["mesh"]["film_elements"] == film_elements
+    assert case["mesh"]["bulk_resolution"] == pytest.approx(bulk_resolution)
+
+
+def test_production_geometry_or_mesh_cannot_drift_without_a_declared_variant():
+    baseline = json.loads((HERE / "case.json").read_text())
+    for section, name, value in (
+        ("physics", "domain_over_r", 20.0),
+        ("physics", "upper_tip_over_r", 12.5),
+        ("mesh", "film_elements", 8.0),
+        ("mesh", "bulk_resolution", 0.04),
+    ):
+        changed = copy.deepcopy(baseline)
+        changed[section][name] = value
+        with pytest.raises(ValueError, match=name):
+            validate_case(changed, "run")
+
+
+def test_declared_variant_cannot_bless_an_unlisted_geometry():
+    case = json.loads((HERE / "cases" / "domain20-fine.json").read_text())
+    case["physics"]["upper_tip_over_r"] = 12.0
+
+    with pytest.raises(ValueError, match="upper_tip_over_r"):
+        validate_case(case, "run")
+
+
+def test_mesh_levels_refine_film_and_bulk_by_the_same_factor():
+    baseline = read_case(HERE / "case.json", "run")
+    medium = read_case(HERE / "cases" / "mesh-medium.json", "run")
+    fine = read_case(HERE / "cases" / "mesh-fine.json", "run")
+    gap = seed_geometry(baseline).seed_gap
+
+    baseline_sizes = (gap / baseline["mesh"]["film_elements"],
+                      baseline["mesh"]["bulk_resolution"])
+    medium_sizes = (gap / medium["mesh"]["film_elements"],
+                    medium["mesh"]["bulk_resolution"])
+    fine_sizes = (gap / fine["mesh"]["film_elements"],
+                  fine["mesh"]["bulk_resolution"])
+    assert medium_sizes[0] / baseline_sizes[0] == pytest.approx(2 / 3)
+    assert medium_sizes[1] / baseline_sizes[1] == pytest.approx(2 / 3)
+    assert fine_sizes[0] / baseline_sizes[0] == pytest.approx(1 / 2)
+    assert fine_sizes[1] / baseline_sizes[1] == pytest.approx(1 / 2)
+
+
+def test_domain_variants_add_equal_padding_at_both_ends():
+    cases = [read_case(HERE / "case.json", "run"),
+             read_case(HERE / "cases" / "domain20-fine.json", "run"),
+             read_case(HERE / "cases" / "domain25-fine.json", "run")]
+    geometries = [seed_geometry(case) for case in cases]
+    base = geometries[0]
+
+    for case, geometry, added_each_end in zip(cases, geometries, (0.0, 2.5, 5.0), strict=True):
+        rt = geometry.r_tube
+        assert geometry.l_domain / rt == pytest.approx(case["physics"]["domain_over_r"])
+        assert geometry.z_front / rt == pytest.approx(case["physics"]["upper_tip_over_r"])
+        assert geometry.pad_rear - base.pad_rear == pytest.approx(added_each_end)
+        assert geometry.pad_front - base.pad_front == pytest.approx(added_each_end)
+
+
+def test_profile_coordinate_follows_translated_pinned_tip(tmp_path):
+    from types import SimpleNamespace
+
+    case = read_case(HERE / "cases" / "domain20-fine.json", "run")
+    problem = SimpleNamespace(geometry=SimpleNamespace(r_tube=2.0))
+    write_profile(tmp_path, 0, problem, ([24.0, 25.0], [1.0, 0.0]), case)
+
+    lines = (tmp_path / "profiles" / "station_00000.csv").read_text().splitlines()
+    assert lines[0] == "z_solver,r_solver,z_paper,gap_over_r"
+    assert lines[1].split(",")[2] == "-0.5"
+    assert lines[2].split(",")[2] == "0.0"
 
 
 @pytest.mark.parametrize(
