@@ -296,3 +296,147 @@ def test_remeasure_preserves_source_and_rejects_mismatched_profile(tmp_path):
     profile.write_text("z_paper,gap_over_r\n-1,1\n0,0\n2,1\n")
     with pytest.raises(ValueError, match="axial-span mismatch"):
         remeasure(branches, profiles, tmp_path / "bad")
+
+
+@pytest.fixture
+def sampling_seed(tmp_path):
+    from validation.herradaEtAl_figure3.driver import file_digest, write_branches
+
+    source = read_case(HERE / "cases" / "mesh-fine.json", "run")
+    (tmp_path / "case.json").write_text(json.dumps(source))
+    (tmp_path / "state.dump").write_bytes(b"test checkpoint")
+    rows = [{"station": i, "bond": 1.56, "ca": ca, "bubble_length_over_r": 7.0,
+                 "signed_ca_b": 0.1, "volume_error": 0, "flux_error": 0,
+                 "min_gap": 0.03, "axial_span_over_r": 6.0}
+            for i, ca in enumerate([0.02, 0.01, 0.005, 0.008, -0.02])]
+    write_branches(tmp_path / "branches.csv", rows)
+    (tmp_path / "progress.jsonl").write_text(json.dumps({
+        "stage": "station_accepted", "station": 1, "next_ds": -0.02, "ca": 0.01,
+    }) + "\n")
+    seed = {"schema": "herrada-figure3-sampling-seed-v1",
+                "run_directory": str(tmp_path), "case_path": "case.json",
+                "case_sha256": case_digest(source), "branches_path": "branches.csv",
+                "branches_sha256": file_digest(tmp_path / "branches.csv"),
+                "state_path": "state.dump", "state_sha256": file_digest(tmp_path / "state.dump"),
+                "station": 1, "next_ds": -0.02, "progress_path": "progress.jsonl",
+                "progress_sha256": file_digest(tmp_path / "progress.jsonl")}
+    return seed
+
+
+@pytest.mark.parametrize("variant", ["sampling-half", "sampling-quarter"])
+def test_sampling_seed_allows_only_declared_step_cap(variant, sampling_seed):
+    from validation.herradaEtAl_figure3.driver import validate_sampling_seed
+
+    case = read_case(HERE / "cases" / f"{variant}.json", "run")
+    _, rows, state = validate_sampling_seed(sampling_seed, case)
+    assert len(rows) == 5
+    assert state.name == "state.dump"
+    changed = copy.deepcopy(case)
+    changed["tolerances"]["newton"] *= 10
+    with pytest.raises(ValueError, match="only case identity"):
+        validate_sampling_seed(sampling_seed, changed)
+    changed = copy.deepcopy(case)
+    changed["mesh"]["remeshing"] = False
+    with pytest.raises(ValueError, match="only case identity"):
+        validate_sampling_seed(sampling_seed, changed)
+
+
+@pytest.mark.parametrize("field", ["case_sha256", "branches_sha256", "state_sha256", "progress_sha256"])
+def test_sampling_seed_refuses_missing_hash(field, sampling_seed):
+    from validation.herradaEtAl_figure3.driver import validate_sampling_seed
+
+    del sampling_seed[field]
+    with pytest.raises(ValueError, match="SHA-256"):
+        validate_sampling_seed(sampling_seed, read_case(HERE / "cases/sampling-half.json"))
+
+
+@pytest.mark.parametrize("station", [0, 2, 3, 100])
+def test_sampling_seed_refuses_fold_or_later_station(station, sampling_seed):
+    from validation.herradaEtAl_figure3.driver import validate_sampling_seed
+
+    sampling_seed["station"] = station
+    with pytest.raises(ValueError, match="precede the first reversal"):
+        validate_sampling_seed(sampling_seed, read_case(HERE / "cases/sampling-half.json"))
+
+
+def test_sampling_seed_refuses_changed_source_bytes(sampling_seed):
+    from validation.herradaEtAl_figure3.driver import validate_sampling_seed
+
+    (Path(sampling_seed["run_directory"]) / "state.dump").write_bytes(b"changed")
+    with pytest.raises(ValueError, match="state hash"):
+        validate_sampling_seed(sampling_seed, read_case(HERE / "cases/sampling-half.json"))
+
+
+def test_loaded_sampling_seed_checks_physical_state():
+    from validation.herradaEtAl_figure3.driver import validate_loaded_seed
+
+    row = {"bond": 1.56, "ca": 0.001, "bubble_length_over_r": 7.0, "volume_error": 1e-12}
+    validate_loaded_seed(row, {key: str(value) for key, value in row.items()})
+    for key in row:
+        changed = dict(row)
+        changed[key] += 1e-5
+        with pytest.raises(ValueError, match=key):
+            validate_loaded_seed(changed, row)
+
+
+def test_refine_loads_seed_without_fresh_solve_and_clamps_signed_step(tmp_path, sampling_seed,
+                                                                   monkeypatch):
+    from validation.herradaEtAl_figure3 import driver
+
+    case = read_case(HERE / "cases/sampling-quarter.json")
+    seed_path = tmp_path / "seed.json"
+    sampling_seed["next_ds"] = 0.02  # native orientation can differ from parameter direction
+    progress_path = tmp_path / "progress.jsonl"
+    progress = json.loads(progress_path.read_text())
+    progress["next_ds"] = 0.02
+    progress_path.write_text(json.dumps(progress) + "\n")
+    sampling_seed["progress_sha256"] = driver.file_digest(progress_path)
+    seed_path.write_text(json.dumps(sampling_seed))
+    source_row = driver.read_branches(tmp_path / "branches.csv")[1]
+    calls = []
+
+    class Problem:
+        def ndof(self):
+            return 120966
+
+        def set_output_directory(self, path):
+            calls.append(("output", path))
+
+        def initialise(self):
+            calls.append(("initialise",))
+
+        def load_state(self, path, quiet):
+            calls.append(("load", path))
+
+        def arclength_continuation(self, parameter, ds, **kwargs):
+            calls.append(("step", parameter, ds, kwargs))
+            raise RuntimeError("bounded test stop")
+
+    monkeypatch.setattr(driver, "_require_one_rank", lambda: None)
+    monkeypatch.setattr(driver, "build_problem", lambda *args, **kwargs: Problem())
+    monkeypatch.setattr(driver, "extract_row", lambda *args: (dict(source_row, station=0), ([], [])))
+    monkeypatch.setattr(driver, "write_profile", lambda *args: None)
+    monkeypatch.setattr(driver, "checkpoint", lambda *args: None)
+    output = tmp_path / "refinement"
+    assert driver.run_trace(case, output, None, seed_path) == 2
+    step = next(call for call in calls if call[0] == "step")
+    assert step[1:3] == ("Ca_in", 0.005)
+    assert step[3]["max_ds"] == 0.005
+    assert int(driver.read_branches(output / "branches.csv")[0]["station"]) == 0
+    assert json.loads((output / "sampling-seed.json").read_text()) == sampling_seed
+
+
+@pytest.mark.parametrize("mutation", ["next_ds", "ca", "duplicate"])
+def test_sampling_seed_requires_original_progress_station(sampling_seed, mutation):
+    from validation.herradaEtAl_figure3.driver import file_digest, validate_sampling_seed
+
+    path = Path(sampling_seed["run_directory"]) / "progress.jsonl"
+    event = json.loads(path.read_text())
+    if mutation == "duplicate":
+        path.write_text(json.dumps(event) + "\n" + json.dumps(event) + "\n")
+    else:
+        event[mutation] *= -1
+        path.write_text(json.dumps(event) + "\n")
+    sampling_seed["progress_sha256"] = file_digest(path)
+    with pytest.raises(ValueError, match="unique accepted progress station"):
+        validate_sampling_seed(sampling_seed, read_case(HERE / "cases/sampling-half.json"))

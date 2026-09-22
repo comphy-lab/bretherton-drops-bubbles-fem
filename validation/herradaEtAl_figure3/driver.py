@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import csv
 import hashlib
 import json
@@ -44,6 +45,7 @@ CONVERGENCE_VARIANTS = {
         "mesh": {"film_elements": 8.0, "bulk_resolution": 0.04},
     },
 }
+SAMPLING_CAPS = {"sampling-half": 0.01, "sampling-quarter": 0.005}
 BRANCH_FIELDS = (
     "station", "bond", "ca", "bubble_length_over_r", "signed_ca_b",
     "volume_error", "flux_error", "min_gap", "axial_span_over_r",
@@ -154,6 +156,19 @@ def validate_case(case: dict, expected_mode: str | None = None) -> None:
             except (KeyError, TypeError) as exc:
                 raise ValueError("convergence variant is not a declared figure 3 variant") from exc
 
+        sampling = case.get("sampling")
+        if sampling is not None:
+            if convergence is None or convergence["variant"] != "mesh-fine":
+                raise ValueError("sampling refinement requires the mesh-fine variant")
+            if not isinstance(sampling, dict) or sampling != {
+                "study": "figure3_continuation_sampling",
+                "baseline_case_id": CONVERGENCE_VARIANTS["mesh-fine"]["case_id"],
+                "variant": sampling.get("variant"),
+            } or sampling["variant"] not in SAMPLING_CAPS:
+                raise ValueError("sampling metadata must name a declared refinement")
+            variant = dict(variant, case_id=f"{BASE_CASE_ID}_{sampling['variant'].replace('-', '_')}")
+            if case["continuation"]["max_ds"] != SAMPLING_CAPS[sampling["variant"]]:
+                raise ValueError("sampling max_ds does not match its declared cap")
         if case["case_id"] != variant["case_id"]:
             raise ValueError(f"case_id must be {variant['case_id']!r} for this figure 3 variant")
         for name, value in variant["domain"].items():
@@ -276,6 +291,66 @@ def branch_digest(rows: list[dict]) -> str:
     normalized = [{key: int(row[key]) if key == "station" else float(row[key])
                    for key in BRANCH_FIELDS} for row in rows]
     return hashlib.sha256(json.dumps(normalized, sort_keys=True, allow_nan=False).encode()).hexdigest()
+
+
+def validate_sampling_seed(seed: dict, case: dict) -> tuple[dict, list[dict], Path]:
+    """Authenticate a pre-fold fine-mesh checkpoint for a distinct sampling study."""
+    validate_case(case, "run")
+    if "sampling" not in case or seed.get("schema") != "herrada-figure3-sampling-seed-v1":
+        raise ValueError("refine requires a sampling case and sampling seed v1")
+    for name in ("run_directory", "case_path", "branches_path", "state_path", "progress_path"):
+        if not isinstance(seed.get(name), str) or not seed[name]:
+            raise ValueError(f"seed {name} must be a non-empty path")
+    for name in ("case_sha256", "branches_sha256", "state_sha256", "progress_sha256"):
+        value = seed.get(name, "")
+        if not isinstance(value, str) or len(value) != 64 or any(
+            c not in "0123456789abcdef" for c in value
+        ):
+            raise ValueError(f"seed {name} must be a SHA-256 digest")
+    source = Path(seed["run_directory"])
+    source_case = read_case(source / seed["case_path"], "run")
+    accepted_case = read_case(HERE / "cases" / "mesh-fine.json", "run")
+    if source_case != accepted_case or case_digest(source_case) != seed["case_sha256"]:
+        raise ValueError("seed source case must match the accepted mesh-fine case and hash")
+    normalized = copy.deepcopy(case)
+    normalized.pop("sampling")
+    normalized["case_id"] = source_case["case_id"]
+    normalized["continuation"]["max_ds"] = source_case["continuation"]["max_ds"]
+    if normalized != source_case:
+        raise ValueError("sampling may change only case identity, metadata and max_ds")
+    state, branches = source / seed["state_path"], source / seed["branches_path"]
+    if file_digest(state) != seed["state_sha256"]:
+        raise ValueError("seed state hash mismatch")
+    if file_digest(branches) != seed["branches_sha256"]:
+        raise ValueError("seed branch table hash mismatch")
+    rows = read_branches(branches)
+    station = seed.get("station")
+    turns = turning_candidates([float(row["ca"]) for row in rows])
+    if (type(station) is not int or station < 1 or station >= len(rows)
+            or not turns or station >= turns[0]["station"]):
+        raise ValueError("seed must precede the first reversal on branch III")
+    next_ds = float(seed.get("next_ds", math.nan))
+    if not math.isfinite(next_ds) or next_ds == 0:
+        raise ValueError("seed next_ds must be finite and non-zero")
+    progress_path = source / seed["progress_path"]
+    if file_digest(progress_path) != seed["progress_sha256"]:
+        raise ValueError("seed progress hash mismatch")
+    progress = [json.loads(line) for line in progress_path.read_text(encoding="utf-8").splitlines()
+                if line.strip()]
+    matching = [event for event in progress if event.get("stage") == "station_accepted"
+                and event.get("station") == station]
+    if (len(matching) != 1 or float(matching[0].get("next_ds", math.nan)) != next_ds
+            or float(matching[0].get("ca", math.nan)) != float(rows[station]["ca"])):
+        raise ValueError("seed next_ds and ca must match the unique accepted progress station")
+    return source_case, rows, state
+
+
+def validate_loaded_seed(row: dict, source_row: dict) -> None:
+    """Reject a state that does not reproduce the recorded physical observables."""
+    for name in ("bond", "ca", "bubble_length_over_r", "volume_error"):
+        if not math.isclose(float(row[name]), float(source_row[name]),
+                            rel_tol=1e-9, abs_tol=1e-10):
+            raise ValueError(f"loaded seed {name} disagrees with its source station")
 
 
 def atomic_json(path: Path, payload: dict | list) -> None:
@@ -439,7 +514,12 @@ def checkpoint(problem, output: Path, case: dict, rows: list[dict], next_ds: flo
     })
 
 
-def run_trace(case: dict, output: Path, resume_path: Path | None) -> int:
+def run_trace(case: dict, output: Path, resume_path: Path | None,
+              seed_path: Path | None = None) -> int:
+    if resume_path is not None and seed_path is not None:
+        raise ValueError("resume and a new sampling study are distinct operations")
+    if "sampling" in case and resume_path is None and seed_path is None:
+        raise ValueError("sampling cases require refine --seed or an exact-case resume")
     prepare_output(output)
     atomic_json(output / "case.json", case)
     progress: list[dict] = []
@@ -456,7 +536,27 @@ def run_trace(case: dict, output: Path, resume_path: Path | None) -> int:
     event("initialising", resume=None if resume_path is None else str(resume_path))
     try:
         _require_one_rank()
-        if resume_path is None:
+        if seed_path is not None:
+            seed = json.loads(seed_path.read_text(encoding="utf-8"))
+            _, source_rows, state = validate_sampling_seed(seed, case)
+            parent_run = str(Path(seed["run_directory"]).resolve())
+            atomic_json(output / "sampling-seed.json", seed)
+            problem = build_problem(case, ca=float(case["physics"]["seed_ca"]), bond=0.0)
+            problem.set_output_directory(str(output / "solver"))
+            problem.initialise()
+            problem.load_state(str(state), quiet=True)
+            row, profile = extract_row(problem, 0, case["acceptance"])
+            validate_loaded_seed(row, source_rows[seed["station"]])
+            rows = [row]
+            next_ds = math.copysign(min(abs(float(seed["next_ds"])),
+                                        float(cont["max_ds"])), float(seed["next_ds"]))
+            write_profile(output, 0, problem, profile, case)
+            write_branches(output / "branches.csv", rows)
+            checkpoint(problem, output, case, rows, next_ds, parent_run)
+            event("sampling_started", station=0, source_station=seed["station"],
+                  parent_run=parent_run, next_ds=next_ds,
+                  degrees_of_freedom=problem.ndof())
+        elif resume_path is None:
             problem = build_problem(case, ca=float(case["physics"]["seed_ca"]), bond=0.0)
             problem.set_output_directory(str(output / "solver"))
             problem.initialise()
@@ -524,7 +624,8 @@ def run_trace(case: dict, output: Path, resume_path: Path | None) -> int:
             checkpoint(problem, output, case, candidate_rows, next_ds, parent_run)
             rows = candidate_rows
             steps_taken += 1
-            event("station_accepted", station=station, ca=row["ca"], next_ds=next_ds)
+            event("station_accepted", station=station, ca=row["ca"], next_ds=next_ds,
+                  degrees_of_freedom=problem.ndof())
     except Exception as exc:  # noqa: BLE001 - preserve the last accepted checkpoint
         failure = f"{type(exc).__name__}: {exc}"
         event("step_failed", error=failure)
@@ -619,12 +720,14 @@ def plot_branch(case: dict, output: Path) -> int:
 def parser() -> argparse.ArgumentParser:
     root = argparse.ArgumentParser(description=__doc__)
     commands = root.add_subparsers(dest="command", required=True)
-    for name in ("run", "smoke", "plot"):
+    for name in ("run", "refine", "smoke", "plot"):
         command = commands.add_parser(name)
         command.add_argument("--case", required=True, type=Path)
         command.add_argument("--output-dir", required=True, type=Path)
         if name == "run":
             command.add_argument("--resume", type=Path)
+        if name == "refine":
+            command.add_argument("--seed", required=True, type=Path)
         if name == "smoke":
             command.add_argument("--max-steps", type=int)
     return root
@@ -633,10 +736,12 @@ def parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = parser().parse_args(argv)
     args.output_dir = args.output_dir.resolve()
-    case = read_case(args.case, "run" if args.command == "run" else
+    case = read_case(args.case, "run" if args.command in ("run", "refine") else
                      "smoke" if args.command == "smoke" else None)
     if args.command == "run":
         return run_trace(case, args.output_dir, args.resume)
+    if args.command == "refine":
+        return run_trace(case, args.output_dir, None, args.seed)
     if args.command == "smoke":
         return run_smoke(case, args.output_dir, args.max_steps)
     return plot_branch(case, args.output_dir)
