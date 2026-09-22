@@ -24,8 +24,10 @@ At `Ca_l=0.02`, the meridional length is `L_b/R=7.9897`, compared with
 approximately `8.00` in the published figure; at `Ca_l=-0.02`, it is `6.6209`,
 compared with approximately `6.61`. The
 [Newtonian validation report](../../docs/validation/newtonian-validation.tex)
-contains the comparison and the model assumptions. This validates the steady
-branch geometry; stability and transient branch switching remain separate tests.
+contains the comparison and the model assumptions. The agreement concerns
+steady branch geometry. The report's mesh and sampling diagnostic does not
+yet establish full-branch mesh or domain-length convergence. Stability and
+transient branch switching remain separate tests.
 
 The production case first obtains a stationary seed at $Bo=0$ and
 $Ca_l=0.02$, continues in Bond number to 1.56 at fixed capillary number, and

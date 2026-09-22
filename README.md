@@ -21,7 +21,9 @@ relation between imposed flow and meridional interface length. The
 [Newtonian validation report](docs/validation/newtonian-validation.tex) compares the
 finite-element profiles with digitized reference curves and records the
 quantitative agreement in film thickness and interface length, together with
-the model assumptions. Stability and transient branch switching are separate
+the model assumptions. The report also separates mesh differences from
+continuation sampling; full-branch mesh and domain convergence remains
+unestablished. Stability and transient branch switching are separate
 validation targets. Its
 [build instructions](docs/validation/README.md) generate a standalone PDF.
 
