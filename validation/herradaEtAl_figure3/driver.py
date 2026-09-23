@@ -45,7 +45,10 @@ CONVERGENCE_VARIANTS = {
         "mesh": {"film_elements": 8.0, "bulk_resolution": 0.04},
     },
 }
-SAMPLING_CAPS = {"sampling-half": 0.01, "sampling-quarter": 0.005}
+SAMPLING_CAPS = {"sampling-half": 0.01, "sampling-quarter": 0.005,
+                 "sampling-eighth-hook": 0.0025}
+LOCAL_COMPLETION = {"kind": "event",
+                    "value": "first_ca_reversal_plus_10_stations_and_descending_l_b_le_6p84"}
 BRANCH_FIELDS = (
     "station", "bond", "ca", "bubble_length_over_r", "signed_ca_b",
     "volume_error", "flux_error", "min_gap", "axial_span_over_r",
@@ -194,6 +197,9 @@ def validate_case(case: dict, expected_mode: str | None = None) -> None:
             raise ValueError("max_steps and min_turns must be integers")
         if cont["max_steps"] <= 0 or cont["min_turns"] < 2:
             raise ValueError("continuation needs a finite positive budget and at least two turns")
+        if (sampling is not None and sampling["variant"] == "sampling-eighth-hook"
+                and cont["max_steps"] != 200):
+            raise ValueError("local sampling max_steps must be 200")
         if not math.isclose(finite(cont, "stop_ca"), -0.02, rel_tol=0, abs_tol=1e-12):
             raise ValueError("stop_ca must be -0.02 for the declared completion event")
         finite(cont, "bond_step", positive=True)
@@ -203,9 +209,11 @@ def validate_case(case: dict, expected_mode: str | None = None) -> None:
             finite(case["solve"], name, positive=True)
         if case["solve"].get("mode") != "continuation":
             raise ValueError("production solve mode must be continuation")
-        if case["completion"] != {
+        expected_completion = LOCAL_COMPLETION if sampling is not None and sampling[
+            "variant"] == "sampling-eighth-hook" else {
             "kind": "event", "value": "ca_le_-0p02_and_at_least_2_turns"
-        }:
+        }
+        if case["completion"] != expected_completion:
             raise ValueError("production completion event is not explicit")
     else:
         if "convergence" in case:
@@ -242,11 +250,32 @@ def trace_complete(rows: list[dict], stop_ca: float, min_turns: int) -> bool:
     ) >= min_turns
 
 
+def local_trace_complete(rows: list[dict]) -> bool:
+    if len(rows) < 12:
+        return False
+    turns = turning_candidates([float(row["ca"]) for row in rows])
+    if not turns or int(rows[-1]["station"]) - turns[0]["station"] < 10:
+        return False
+    last_length = float(rows[-1]["bubble_length_over_r"])
+    previous_length = float(rows[-2]["bubble_length_over_r"])
+    return math.isfinite(last_length) and last_length <= 6.84 and last_length < previous_length
+
+
+def case_trace_complete(rows: list[dict], case: dict) -> bool:
+    if case["completion"] == LOCAL_COMPLETION:
+        return local_trace_complete(rows)
+    cont = case["continuation"]
+    return trace_complete(rows, float(cont["stop_ca"]), int(cont["min_turns"]))
+
+
 def trace_outcome(rows: list[dict], *, stop_ca: float, min_turns: int,
-                  steps_taken: int, max_steps: int, failure: str | None = None) -> str:
+                  steps_taken: int, max_steps: int, failure: str | None = None,
+                  case: dict | None = None) -> str:
     if failure is not None:
         return "failed"
-    if trace_complete(rows, stop_ca, min_turns):
+    complete = (case_trace_complete(rows, case) if case is not None
+                else trace_complete(rows, stop_ca, min_turns))
+    if complete:
         return "complete"
     if steps_taken >= max_steps:
         return "incomplete"
@@ -316,8 +345,12 @@ def validate_sampling_seed(seed: dict, case: dict) -> tuple[dict, list[dict], Pa
     normalized.pop("sampling")
     normalized["case_id"] = source_case["case_id"]
     normalized["continuation"]["max_ds"] = source_case["continuation"]["max_ds"]
+    if case["completion"] == LOCAL_COMPLETION:
+        normalized["completion"] = source_case["completion"]
+        normalized["continuation"]["initial_ds"] = source_case["continuation"]["initial_ds"]
+        normalized["continuation"]["max_steps"] = source_case["continuation"]["max_steps"]
     if normalized != source_case:
-        raise ValueError("sampling may change only case identity, metadata and max_ds")
+        raise ValueError("sampling may change only case identity, metadata, step cap and local endpoint")
     state, branches = source / seed["state_path"], source / seed["branches_path"]
     if file_digest(state) != seed["state_sha256"]:
         raise ValueError("seed state hash mismatch")
@@ -329,6 +362,10 @@ def validate_sampling_seed(seed: dict, case: dict) -> tuple[dict, list[dict], Pa
     if (type(station) is not int or station < 1 or station >= len(rows)
             or not turns or station >= turns[0]["station"]):
         raise ValueError("seed must precede the first reversal on branch III")
+    if case["completion"] == LOCAL_COMPLETION and station != 80:
+        raise ValueError("local sampling seed must use saved fine station 80")
+    if seed["state_path"] != f"checkpoints/station_{station:05d}.dump":
+        raise ValueError("seed state must be the saved checkpoint for its station")
     next_ds = float(seed.get("next_ds", math.nan))
     if not math.isfinite(next_ds) or next_ds == 0:
         raise ValueError("seed next_ds must be finite and non-zero")
@@ -608,9 +645,7 @@ def run_trace(case: dict, output: Path, resume_path: Path | None,
             steps_taken = station
             event("resumed", station=station, parent_run=parent_run)
 
-        while steps_taken < int(cont["max_steps"]) and not trace_complete(
-            rows, float(cont["stop_ca"]), int(cont["min_turns"])
-        ):
+        while steps_taken < int(cont["max_steps"]) and not case_trace_complete(rows, case):
             next_ds = problem.arclength_continuation(
                 "Ca_in", next_ds, max_ds=float(cont["max_ds"]),
                 min_ds=float(cont["min_ds"]),
@@ -633,12 +668,20 @@ def run_trace(case: dict, output: Path, resume_path: Path | None,
     outcome = trace_outcome(rows, stop_ca=float(cont["stop_ca"]),
                             min_turns=int(cont["min_turns"]),
                             steps_taken=steps_taken, max_steps=int(cont["max_steps"]),
-                            failure=failure)
+                            failure=failure, case=case)
     status = {
         "status": outcome, "case_id": case["case_id"], "accepted_steps": steps_taken,
         "last_station": int(rows[-1]["station"]) if rows else None,
         "last_ca": float(rows[-1]["ca"]) if rows else None,
+        "last_bubble_length_over_r": (float(rows[-1]["bubble_length_over_r"])
+                                      if rows else None),
         "candidate_turns": turning_candidates([float(row["ca"]) for row in rows]),
+        "completion_scope": ("local_first_ca_fold" if case["completion"] == LOCAL_COMPLETION
+                             else "full_figure3_branch"),
+        "candidate_length_turns": ([
+            {"station": turn["station"], "bubble_length_over_r": turn["ca"]}
+            for turn in turning_candidates([float(row["bubble_length_over_r"]) for row in rows])]
+            if case["completion"] == LOCAL_COMPLETION else None),
         "error": failure,
         "restart": "restart.json" if (output / "restart.json").is_file() else None,
         "parent_run": parent_run,

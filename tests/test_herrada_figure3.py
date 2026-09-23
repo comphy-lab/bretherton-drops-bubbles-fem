@@ -12,6 +12,7 @@ from validation.herradaEtAl_figure3.driver import (
     branch_digest,
     case_digest,
     extract_row,
+    local_trace_complete,
     meridional_length,
     prepare_output,
     read_branches,
@@ -185,6 +186,44 @@ def test_exhausted_budget_is_incomplete_not_complete():
                          steps_taken=1, max_steps=1) == "incomplete"
 
 
+def test_local_endpoint_requires_first_ca_reversal_ten_later_stations_and_descending_length():
+    case = read_case(HERE / "cases/sampling-eighth-hook.json", "run")
+    ca = [0.02, 0.01, 0.011, *[0.012 + 0.001 * i for i in range(10)]]
+    rows = [{"station": i, "ca": value, "bubble_length_over_r": 7.075 - 0.02 * i}
+            for i, value in enumerate(ca)]
+    assert not local_trace_complete(rows[:-1])
+    assert not local_trace_complete([*rows[:10],
+                                     dict(rows[10], bubble_length_over_r=6.83)])
+    assert local_trace_complete(rows)
+    assert trace_outcome(rows, stop_ca=-0.02, min_turns=2, steps_taken=12,
+                         max_steps=200, case=case) == "complete"
+    for changed in (
+        [dict(row, ca=0.02 + i * 0.001) for i, row in enumerate(rows)],
+        [*rows[:-1], dict(rows[-1], bubble_length_over_r=6.85)],
+        [*rows[:-1], dict(rows[-1], bubble_length_over_r=rows[-2]["bubble_length_over_r"])],
+    ):
+        assert not local_trace_complete(changed)
+    assert trace_outcome(rows[:-1], stop_ca=-0.02, min_turns=2, steps_taken=200,
+                         max_steps=200, case=case) == "incomplete"
+
+
+def test_local_sampling_manifest_is_exact_and_has_finite_budget():
+    case = read_case(HERE / "cases/sampling-eighth-hook.json", "run")
+    assert case["mesh"]["film_elements"] == 8
+    assert case["mesh"]["bulk_resolution"] == 0.04
+    assert case["continuation"]["max_ds"] == 0.0025
+    assert case["continuation"]["max_steps"] == 200
+    for section, key, value in (
+        ("continuation", "max_steps", 2000),
+        ("completion", "value", "ca_le_-0p02_and_at_least_2_turns"),
+        ("sampling", "variant", "sampling-quarter"),
+    ):
+        changed = copy.deepcopy(case)
+        changed[section][key] = value
+        with pytest.raises(ValueError):
+            validate_case(changed, "run")
+
+
 def test_resume_refuses_a_different_case_hash():
     case = read_case(HERE / "case.json", "run")
     restart = {
@@ -304,7 +343,8 @@ def sampling_seed(tmp_path):
 
     source = read_case(HERE / "cases" / "mesh-fine.json", "run")
     (tmp_path / "case.json").write_text(json.dumps(source))
-    (tmp_path / "state.dump").write_bytes(b"test checkpoint")
+    (tmp_path / "checkpoints").mkdir()
+    (tmp_path / "checkpoints/station_00001.dump").write_bytes(b"test checkpoint")
     rows = [{"station": i, "bond": 1.56, "ca": ca, "bubble_length_over_r": 7.0,
                  "signed_ca_b": 0.1, "volume_error": 0, "flux_error": 0,
                  "min_gap": 0.03, "axial_span_over_r": 6.0}
@@ -317,7 +357,8 @@ def sampling_seed(tmp_path):
                 "run_directory": str(tmp_path), "case_path": "case.json",
                 "case_sha256": case_digest(source), "branches_path": "branches.csv",
                 "branches_sha256": file_digest(tmp_path / "branches.csv"),
-                "state_path": "state.dump", "state_sha256": file_digest(tmp_path / "state.dump"),
+                "state_path": "checkpoints/station_00001.dump",
+                "state_sha256": file_digest(tmp_path / "checkpoints/station_00001.dump"),
                 "station": 1, "next_ds": -0.02, "progress_path": "progress.jsonl",
                 "progress_sha256": file_digest(tmp_path / "progress.jsonl")}
     return seed
@@ -330,7 +371,7 @@ def test_sampling_seed_allows_only_declared_step_cap(variant, sampling_seed):
     case = read_case(HERE / "cases" / f"{variant}.json", "run")
     _, rows, state = validate_sampling_seed(sampling_seed, case)
     assert len(rows) == 5
-    assert state.name == "state.dump"
+    assert state.name == "station_00001.dump"
     changed = copy.deepcopy(case)
     changed["tolerances"]["newton"] *= 10
     with pytest.raises(ValueError, match="only case identity"):
@@ -362,7 +403,7 @@ def test_sampling_seed_refuses_fold_or_later_station(station, sampling_seed):
 def test_sampling_seed_refuses_changed_source_bytes(sampling_seed):
     from validation.herradaEtAl_figure3.driver import validate_sampling_seed
 
-    (Path(sampling_seed["run_directory"]) / "state.dump").write_bytes(b"changed")
+    (Path(sampling_seed["run_directory"]) / sampling_seed["state_path"]).write_bytes(b"changed")
     with pytest.raises(ValueError, match="state hash"):
         validate_sampling_seed(sampling_seed, read_case(HERE / "cases/sampling-half.json"))
 
@@ -377,6 +418,57 @@ def test_loaded_sampling_seed_checks_physical_state():
         changed[key] += 1e-5
         with pytest.raises(ValueError, match=key):
             validate_loaded_seed(changed, row)
+
+
+def test_sampling_seed_refuses_other_source_case_and_transient_state(sampling_seed):
+    from validation.herradaEtAl_figure3.driver import file_digest, validate_sampling_seed
+
+    case = read_case(HERE / "cases/sampling-quarter.json", "run")
+    source = Path(sampling_seed["run_directory"])
+    other = read_case(HERE / "cases/mesh-medium.json", "run")
+    (source / "case.json").write_text(json.dumps(other))
+    sampling_seed["case_sha256"] = case_digest(other)
+    with pytest.raises(ValueError, match="accepted mesh-fine case"):
+        validate_sampling_seed(sampling_seed, case)
+
+    fine = read_case(HERE / "cases/mesh-fine.json", "run")
+    (source / "case.json").write_text(json.dumps(fine))
+    sampling_seed["case_sha256"] = case_digest(fine)
+    (source / "transient.dump").write_bytes(b"test checkpoint")
+    sampling_seed["state_path"] = "transient.dump"
+    sampling_seed["state_sha256"] = file_digest(source / "transient.dump")
+    with pytest.raises(ValueError, match="saved checkpoint"):
+        validate_sampling_seed(sampling_seed, case)
+
+
+def test_local_sampling_requires_fine_station_80(sampling_seed):
+    from validation.herradaEtAl_figure3.driver import (
+        file_digest,
+        validate_sampling_seed,
+        write_branches,
+    )
+
+    case = read_case(HERE / "cases/sampling-eighth-hook.json", "run")
+    with pytest.raises(ValueError, match="station 80"):
+        validate_sampling_seed(sampling_seed, case)
+    source = Path(sampling_seed["run_directory"])
+    template = read_branches(source / "branches.csv")[0]
+    ca = [0.02 - 0.0001 * i for i in range(82)] + [0.012]
+    rows = [dict(template, station=i, ca=value) for i, value in enumerate(ca)]
+    write_branches(source / "branches.csv", rows)
+    sampling_seed["branches_sha256"] = file_digest(source / "branches.csv")
+    sampling_seed["station"] = 80
+    sampling_seed["state_path"] = "checkpoints/station_00080.dump"
+    (source / sampling_seed["state_path"]).write_bytes(b"saved fine station 80")
+    sampling_seed["state_sha256"] = file_digest(source / sampling_seed["state_path"])
+    (source / "progress.jsonl").write_text(json.dumps({
+        "stage": "station_accepted", "station": 80, "next_ds": -0.02,
+        "ca": rows[80]["ca"],
+    }) + "\n")
+    sampling_seed["progress_sha256"] = file_digest(source / "progress.jsonl")
+    _, source_rows, state = validate_sampling_seed(sampling_seed, case)
+    assert len(source_rows) == 83
+    assert state.name == "station_00080.dump"
 
 
 def test_refine_loads_seed_without_fresh_solve_and_clamps_signed_step(tmp_path, sampling_seed,

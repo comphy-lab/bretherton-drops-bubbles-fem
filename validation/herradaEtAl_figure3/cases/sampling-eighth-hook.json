@@ -1,0 +1,91 @@
+{
+  "schema": "pyoomph-case-v1",
+  "benchmark_schema": "herrada-figure3-v1",
+  "benchmark_mode": "run",
+  "case_id": "herradaEtAl_figure3_bo1p56_sampling_eighth_hook",
+  "convergence": {
+    "study": "figure3_numerical_convergence",
+    "baseline_case_id": "herradaEtAl_figure3_bo1p56",
+    "variant": "mesh-fine"
+  },
+  "source": {
+    "doi": "10.1017/jfm.2023.123",
+    "figure": 3
+  },
+  "geometry": {
+    "kind": "axisymmetric",
+    "coordinates": [
+      "r",
+      "z"
+    ],
+    "frame": "co-moving"
+  },
+  "nondimensionalization": {
+    "surface_tension": 1.0,
+    "liquid_viscosity": 1.0,
+    "volume_equivalent_radius": 1.0
+  },
+  "physics": {
+    "reynolds": 0.0,
+    "laplace": 0.0,
+    "bond": 1.56,
+    "vhat": 3.3,
+    "r0": 1.0,
+    "r_tube": 0.6716793862139855,
+    "domain_over_r": 15.0,
+    "upper_tip_over_r": 10.0,
+    "seed_ca": 0.02,
+    "interior": "void",
+    "allow_signed_flow": true
+  },
+  "boundaries": {
+    "inlet": "poiseuille",
+    "outlet": "poiseuille"
+  },
+  "closure": {
+    "frame_speed": "front_tip"
+  },
+  "tolerances": {
+    "newton": 1e-08,
+    "temporal_error": 0.0001
+  },
+  "mesh": {
+    "template": "LiquidAnnulusMesh",
+    "film_elements": 8.0,
+    "bulk_resolution": 0.04,
+    "remeshing": true
+  },
+  "solve": {
+    "mode": "continuation",
+    "relax_time": 8.0,
+    "start_step": 0.0001
+  },
+  "continuation": {
+    "bond_step": 0.1,
+    "initial_ds": -0.0025,
+    "min_ds": 1e-07,
+    "max_ds": 0.0025,
+    "max_newton_iterations": 40,
+    "max_steps": 200,
+    "stop_ca": -0.02,
+    "min_turns": 2
+  },
+  "output": {
+    "cadence": 1.0,
+    "write_states": true
+  },
+  "completion": {
+    "kind": "event",
+    "value": "first_ca_reversal_plus_10_stations_and_descending_l_b_le_6p84"
+  },
+  "acceptance": {
+    "max_volume_error": 5e-05,
+    "max_flux_error": 5e-05,
+    "containment_epsilon": 1e-08
+  },
+  "sampling": {
+    "study": "figure3_continuation_sampling",
+    "baseline_case_id": "herradaEtAl_figure3_bo1p56_mesh_fine",
+    "variant": "sampling-eighth-hook"
+  }
+}
