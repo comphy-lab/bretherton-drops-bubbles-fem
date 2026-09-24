@@ -103,15 +103,38 @@ def public_eigen(result: dict) -> dict:
 
 
 def finalise_mode(entry: dict, rate: float, problem: VoidBubbleProblem) -> dict:
+    """Label a mode, screening the winning eigenpair on its residual.
+
+    The screen is ``is_physical``: M has to act on the vector at all, and
+    ``||J v - lambda M v|| / ||lambda M v||`` has to be small. The earlier
+    screen asked instead where the eigenvector's amplitude sat and rejected
+    anything living on pressure or the global multipliers. For this pencil M is
+    nonzero only on the kinematic-condition rows against the interface
+    mesh-position columns, so every genuine mode is pressure-dominated and that
+    screen rejected the physics; see verification/README.md.
+
+    A winner with no residual verdict at all (``physical is None``: the pencil
+    was not captured, or its size did not match the vector) is ``untested``.
+    Growth alone is the unscreened acceptance this screen exists to remove.
+    """
     winner = entry.pop("_winner", None)
     if entry["rightmost_real"] is None:
         return entry
     label, reason = label_from_growth(entry["rightmost_real"], rate)
-    if winner is not None and (reason == "neutral_within_resolution" or entry["rightmost_real"] > 0.0):
-        entry["support"] = eigenvector_support(problem, winner["vector"])
-        pressureish = entry["support"].get("pressure", 0.0) + entry["support"].get("globals", 0.0)
-        if pressureish > 0.85 and reason != "negative_growth":
-            label, reason = "untested", "eigenvector_on_pressure_or_globals"
+    physical = winner.get("physical") if winner is not None else None
+    if winner is not None:
+        screen = winner.get("residual_screen")
+        entry["residual_screen"] = screen
+        entry["physical"] = physical
+        # Support stays in the receipt as a diagnostic, never as a verdict.
+        # The live pencil's description matches the vector's numbering.
+        entry["support"] = eigenvector_support(
+            problem, winner["vector"],
+            dof_description=winner.get("dof_description"))
+    if physical is False:
+        label, reason = "untested", "eigenpair_residual_too_large"
+    elif physical is None:
+        label, reason = "untested", "residual_screen_unavailable"
     entry["label"] = label
     entry["label_reason"] = reason
     entry["growth_over_rate"] = entry["rightmost_real"] / max(rate, 1e-12)
@@ -231,6 +254,8 @@ def spurious_check(problem: VoidBubbleProblem, modes: list[int], n: int = 20) ->
             "rightmost_imag": sample["imag"],
             "positive_count": sample["positive_count"],
             "near_zero_count": sample["near_zero_count"],
+            "physical": sample["physical"],
+            "residual_screen": sample["residual_screen"],
             "spectrum": sample["spectrum"],
         })
     return {

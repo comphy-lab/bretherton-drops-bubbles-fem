@@ -3,16 +3,41 @@
 Kept out of the problem class because these are campaign checks, not physics.
 The wavenumber is ``azimuthal_k`` everywhere in receipts: the report already
 uses ``m`` for the deposited-liquid fraction.
+
+Two things in here are worth reading before use.
+
+``finite_spectrum`` computes the *whole* finite spectrum of the void-bubble
+pencil by an exact reduction rather than by a Krylov shift-invert. The mass
+matrix carries entries only on the interface kinematic-condition rows against
+the interface mesh-position columns, so its rank is a few hundred out of a few
+hundred thousand and the pencil has that many finite eigenvalues; everything
+else is the M-nullspace, which is what floods an ARPACK subspace near zero.
+
+``is_physical`` is the verdict. A mode is accepted when M acts on it at all and
+the scale-free residual ``||J v - lambda M v|| / ||lambda M v||`` is small.
+The older support-by-dof screen is kept only as a diagnostic: see the note on
+``eigenvector_support``.
 """
 
 from __future__ import annotations
 
+import contextlib
+import time
+from dataclasses import dataclass, field
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import numpy as np
+import scipy.linalg as sla
+import scipy.sparse as sp
+import scipy.sparse.linalg as spla
 
-from problems.bretherton_bubble import VoidBubbleProblem
 from problems.geometry import CapsuleGeometry
+
+if TYPE_CHECKING:
+    # problems.bretherton_bubble imports pyoomph; the pencil algebra below does
+    # not need it, and the contract tests run without it.
+    from problems.bretherton_bubble import VoidBubbleProblem
 
 
 SWEEP_CA = (
@@ -96,6 +121,8 @@ def build_stability_problem(
     lip_gradation: float = 0.25,
     z_inlet: float = 0.0,
 ) -> VoidBubbleProblem:
+    from problems.bretherton_bubble import VoidBubbleProblem
+
     if pressure_datum == "fixation" and azimuthal_stability:
         raise ValueError(
             "azimuthal eigensolving is refused with pressure_datum='fixation'; "
@@ -139,11 +166,33 @@ def shift_sets(rate: float) -> tuple[list[float], list[float]]:
 
 
 def rightmost_sample(problem: VoidBubbleProblem, azimuthal_k: int | None, n: int,
-                     shift: float) -> dict:
-    values, vectors = problem.solve_eigenproblem(n, azimuthal_m=azimuthal_k, shift=shift)
+                     shift: float, *, residual_tol: float = 1e-6) -> dict:
+    """One shift-invert sample, with the physical screen applied on the spot.
+
+    The eigensolver already assembles (J, M) and ``capture_pencil`` keeps them,
+    so the residual screen of ``is_physical`` costs one matrix-vector product
+    and no second assembly. The matrices are dropped again before returning:
+    only the screen's numbers and the dof description of the numbering the
+    solve ran under travel with the sample. That description is what
+    ``eigenvector_support`` needs for an ``azimuthal_k >= 1`` vector, which is
+    longer than ``problem.ndof()`` once the solve has returned.
+    """
+    with capture_pencil(problem) as box:
+        values, vectors = problem.solve_eigenproblem(
+            n, azimuthal_m=azimuthal_k, shift=shift)
     index = int(max(range(len(values)), key=lambda i: values[i].real))
     lam = complex(values[index])
+    screen = None
+    physical = None
+    pencil = box.get("pencil")
+    if pencil is not None and pencil.J.shape[1] == np.asarray(vectors[index]).size:
+        screen = eigenpair_residual(pencil.J, pencil.M, lam, vectors[index])
+        physical = bool(screen["mass_action"] > 0.0
+                        and screen["residual_scale_free"] < residual_tol)
     return {
+        "residual_screen": screen,
+        "physical": physical,
+        "dof_description": pencil.dof_description if pencil is not None else None,
         "azimuthal_k": azimuthal_k,
         "n": n,
         "shift": float(shift),
@@ -232,50 +281,626 @@ def two_set_rightmost(
 
 
 def _public_sample(sample: dict) -> dict:
-    return {k: sample[k] for k in (
+    out = {k: sample[k] for k in (
         "azimuthal_k", "n", "shift", "real", "imag", "index",
-        "n_returned", "positive_count", "near_zero_count",
+        "n_returned", "positive_count", "near_zero_count", "physical",
     )}
+    screen = sample.get("residual_screen")
+    if screen is not None:
+        out["residual_scale_free"] = screen["residual_scale_free"]
+        out["mass_action_over_v"] = screen["mass_action_over_v"]
+    return out
 
 
 def _strip_none(value):
     return value
 
 
-def eigenvector_support(problem: VoidBubbleProblem, vector) -> dict:
-    """Where the eigenvector lives, for the numerically-neutral check.
+# ---------------------------------------------------------------------------
+# The pencil: assembly, exact reduction, and the residual verdict
+# ---------------------------------------------------------------------------
 
-    AGENTS.md records a near-null Jacobian mode on pressure dofs under
-    fixation. A candidate crossing whose amplitude sits on pressure or the
-    global multipliers is not a physical instability.
+DOF_KINDS = ("pressure", "globals", "mesh", "velocity", "other")
+
+
+def classify_dof_name(name: str) -> str:
+    """Bucket a pyoomph dof name. Diagnostic only; never a verdict."""
+    low = str(name).lower()
+    if low.endswith("/u") or low.endswith("/p") or "globals" in low:
+        return "globals"
+    if "pressure" in low:
+        return "pressure"
+    if "mesh" in low:
+        return "mesh"
+    if "velocity" in low:
+        return "velocity"
+    return "other"
+
+
+@dataclass
+class Pencil:
+    """The matrices pyoomph's own eigensolver would have been handed.
+
+    ``J`` and ``M`` are exactly ``GenericEigenSolver.get_J_M_n_and_type()``:
+    ``matJ = -dR/dU`` and ``matM = dR/d(dU/dt)``, and the convention is
+    ``matJ v = lambda matM v`` with growth ``exp(lambda t)``.
+
+    ``types``/``names`` are the dof description **of this mode's numbering**.
+    For ``azimuthal_k >= 1`` pyoomph releases the strong axis conditions and
+    imposes them by matrix manipulation, so the pencil is complex and slightly
+    larger than ``problem.ndof()``; the description has to be read while that
+    numbering is live, which is why it is captured here and not afterwards.
     """
-    types, names = problem.get_dof_description()
-    amp = np.abs(np.asarray(vector).ravel())
-    if amp.size != len(types):
-        return {"error": f"eigenvector length {amp.size} != ndof {len(types)}"}
-    total = float(np.dot(amp, amp)) or 1.0
-    buckets = {
-        "pressure": 0.0,
-        "globals": 0.0,
-        "mesh": 0.0,
-        "velocity": 0.0,
-        "other": 0.0,
-    }
-    for index, kind in enumerate(types):
-        name = names[int(kind)]
-        lower = name.lower()
-        weight = float(amp[index] * amp[index])
-        if lower.endswith("/u") or lower.endswith("/p") or "globals" in lower:
-            buckets["globals"] += weight
-        elif "pressure" in lower:
-            buckets["pressure"] += weight
-        elif "mesh" in lower:
-            buckets["mesh"] += weight
-        elif "velocity" in lower:
-            buckets["velocity"] += weight
+
+    J: sp.spmatrix
+    M: sp.spmatrix
+    n: int
+    is_complex: bool
+    types: np.ndarray
+    names: list
+    azimuthal_k: int | None = None
+    kind: np.ndarray = field(default=None, repr=False)
+
+    def __post_init__(self):
+        if self.kind is None:
+            self.kind = np.array(
+                [classify_dof_name(self.names[int(t)]) for t in self.types])
+
+    @property
+    def dof_description(self) -> tuple:
+        return self.types, self.names
+
+
+class _PencilCaptured(Exception):
+    """Raised out of the eigensolver once the matrices are in hand."""
+
+
+@contextlib.contextmanager
+def _steady_restored(problem):
+    """Undo whatever ``solve_eigenproblem`` made steady on the way out."""
+    nts = problem.ntime_stepper()
+    was_steady = [problem.time_stepper_pt(i).is_steady() for i in range(nts)]
+    try:
+        yield
+    finally:
+        for i in range(nts):
+            ts = problem.time_stepper_pt(i)
+            if (not was_steady[i]) and ts.is_steady():
+                ts.undo_make_steady()
+
+
+def assemble_pencil(problem: VoidBubbleProblem, azimuthal_k: int | None = None) -> Pencil:
+    """Assemble (J, M) for one azimuthal mode without solving anything.
+
+    Takes the same route as ``problem.solve_eigenproblem``: the eigensolver is
+    entered so that the renumbering and the normal-mode setup happen exactly as
+    they would, and the matrices are taken from ``get_J_M_n_and_type()`` before
+    the Krylov solver is ever reached.
+    """
+    es = problem.get_eigen_solver()
+    cap: dict = {}
+    original = es.solve
+
+    def _capture(*args, **kwargs):
+        J, M, n, is_complex = es.get_J_M_n_and_type()
+        types, names = problem.get_dof_description()
+        cap.update(J=J, M=M, n=n, is_complex=is_complex, types=types, names=names)
+        raise _PencilCaptured()
+
+    # Raising out of es.solve skips only what pyoomph does *after* the solver
+    # returns: storing the results and undo_make_steady(), which
+    # _steady_restored does here. The mode parameter is put back by pyoomph's
+    # own finally. Axis release, renumbering, matrix contributions and the
+    # zero-dof manipulator are all set up before es.solve is entered and are
+    # not undone on a normal return either; the next solve re-establishes them.
+    es.solve = _capture
+    try:
+        with _steady_restored(problem):
+            try:
+                problem.solve_eigenproblem(2, azimuthal_m=azimuthal_k, shift=1.0, quiet=True)
+            except _PencilCaptured:
+                pass
+    finally:
+        es.solve = original
+    if "J" not in cap:
+        raise RuntimeError("the eigensolver was never entered; no pencil to capture")
+    return Pencil(
+        J=cap["J"].tocsr(), M=cap["M"].tocsr(), n=int(cap["n"]),
+        is_complex=bool(cap["is_complex"]),
+        types=np.asarray(cap["types"]), names=list(cap["names"]),
+        azimuthal_k=azimuthal_k,
+    )
+
+
+@contextlib.contextmanager
+def capture_pencil(problem: VoidBubbleProblem):
+    """Record the pencil a real ``solve_eigenproblem`` call uses, for free.
+
+    ``eigen_solver.solve()`` already returns ``(values, vectors, J, M)`` and
+    ``Problem._solve_eigenproblem_helper`` throws the matrices away. Wrapping
+    the solver keeps them, together with the dof description of the numbering
+    that call ran under, so a residual screen costs no second assembly.
+
+    Yields a dict that holds a ``Pencil`` under ``"pencil"`` afterwards.
+    """
+    es = problem.get_eigen_solver()
+    box: dict = {"pencil": None}
+    original = es.solve
+
+    def _wrapped(*args, **kwargs):
+        types, names = problem.get_dof_description()
+        out = original(*args, **kwargs)
+        try:
+            J, M = out[2], out[3]
+            box["pencil"] = Pencil(
+                J=sp.csr_matrix(J), M=sp.csr_matrix(M), n=int(J.shape[1]),
+                is_complex=bool(np.iscomplexobj(J) or np.iscomplexobj(M)),
+                types=np.asarray(types), names=list(names),
+            )
+        except Exception:  # noqa: BLE001 - a missing pencil is not a failed solve
+            box["pencil"] = None
+        return out
+
+    es.solve = _wrapped
+    try:
+        yield box
+    finally:
+        es.solve = original
+
+
+class BorderedLU:
+    """Apply ``J^{-1}`` when a handful of dense rows/columns block a sparse LU.
+
+    The pressure-datum Lagrange multiplier has O(n) entries and the two global
+    dofs ``globals/U`` and ``globals/P`` couple to everything, so SuperLU on the
+    whole matrix dies in memory expansion while the core block factorises in
+    seconds. Those rows and columns go into a small dense border.
+
+    Deleting them leaves a core with a one-dimensional pressure nullspace (the
+    integral datum was what fixed the pressure constant), so the core is
+    regularised by one diagonal bump on a pressure dof and that rank-1 change is
+    carried as one extra border unknown (Woodbury). Solving is then one core
+    back-solve per right-hand side plus a tiny dense border solve, and iterative
+    refinement recovers the decades the ill-conditioned border Schur complement
+    costs.
+
+    Complex matrices go through unchanged: every dense workspace takes the
+    dtype of ``J``, which is what the ``azimuthal_k >= 1`` pencils need.
+    """
+
+    def __init__(self, J, kind=None, *, dense_threshold: int = 1000,
+                 permc_spec: str = "COLAMD", bump: float | None = None,
+                 equilibrate: bool = True, verbose: bool = False):
+        J = sp.csr_matrix(J)
+        n = J.shape[0]
+        if J.shape[0] != J.shape[1]:
+            raise ValueError(f"BorderedLU needs a square matrix, got {J.shape}")
+        self.dtype = np.complex128 if np.iscomplexobj(J.data) else np.float64
+        J = J.astype(self.dtype)
+        # Equilibrate first: the datum-multiplier row and the two global dofs sit
+        # about ten decades away from the FEM rows, which is what gave the border
+        # Schur complement condition 1e23 and cost four refinement steps per solve.
+        self.Dr = np.ones(n)
+        self.Dc = np.ones(n)
+        if equilibrate:
+            X = J
+            for _ in range(4):
+                rm = np.asarray(abs(X).max(axis=1).todense()).ravel()
+                rm[rm == 0] = 1.0
+                X = sp.diags(1.0 / rm) @ X
+                self.Dr /= rm
+                cm = np.asarray(abs(X).max(axis=0).todense()).ravel()
+                cm[cm == 0] = 1.0
+                X = X @ sp.diags(1.0 / cm)
+                self.Dc /= cm
+            J = X.tocsr()
+        self.Jeq = J
+        row_counts = np.diff(J.indptr)
+        col_counts = np.diff(J.tocsc().indptr)
+        self.border = np.flatnonzero((row_counts > dense_threshold)
+                                     | (col_counts > dense_threshold))
+        self.core = np.setdiff1d(np.arange(n), self.border)
+        nb = int(self.border.size)
+        m = int(self.core.size)
+        self.n = n
+        self.m = m
+        self.nb = nb
+        A = J[self.core, :][:, self.core].tocsr()
+        F = np.asarray(J[self.core, :][:, self.border].todense(), dtype=self.dtype)
+        self.G = np.asarray(J[self.border, :][:, self.core].todense(), dtype=self.dtype)
+        H = np.asarray(J[self.border, :][:, self.border].todense(), dtype=self.dtype)
+        # rank-1 regularisation of the core's pressure nullspace, when there is one
+        self.p = None
+        self.bump = 0.0
+        if kind is not None:
+            pressure = np.flatnonzero(np.asarray(kind)[self.core] == "pressure")
+            if pressure.size:
+                self.p = int(pressure[0])
+                self.bump = float(np.abs(A.data).max()) if bump is None else float(bump)
+        nr = 1 if self.p is not None else 0
+        self.nr = nr
+        if nr:
+            A = (A + sp.coo_matrix(([self.bump], ([self.p], [self.p])),
+                                   shape=(m, m))).tocsr()
+        started = time.time()
+        self.lu = spla.splu(A.tocsc(), permc_spec=permc_spec)
+        self.lu_seconds = time.time() - started
+        self.lu_nnz = int(self.lu.L.nnz + self.lu.U.nnz)
+        if verbose:
+            print(f"[bordered] core {m} border {nb} dtype {self.dtype}: "
+                  f"LU {self.lu_seconds:.1f}s nnz={self.lu_nnz:.4g}", flush=True)
+        U = np.zeros((m, nb + nr), dtype=self.dtype)
+        U[:, :nb] = F
+        if nr:
+            U[self.p, nb] = -self.bump
+        self.D = np.zeros((nb + nr, nb + nr), dtype=self.dtype)
+        self.D[:nb, :nb] = H
+        if nr:
+            self.D[nb, nb] = -1.0
+        self.Y = self._core_solve(U)
+        blocks = [self.G @ self.Y]
+        if nr:
+            blocks.append(self.Y[self.p, :][None, :])
+        self.S = self.D - (np.vstack(blocks) if blocks and (nb + nr)
+                           else np.zeros((0, 0), dtype=self.dtype))
+        self.S_cond = float(np.linalg.cond(self.S)) if self.S.size else 1.0
+
+    def _core_solve(self, B):
+        return self.lu.solve(np.asarray(B, dtype=self.dtype))
+
+    def solve(self, b, refine: int = 3):
+        """Solve ``J x = b`` for one or several right-hand sides.
+
+        One pass through the ill-conditioned border gives only a few digits;
+        each refinement step costs one more core back-solve.
+        """
+        b = np.asarray(b)
+        if np.iscomplexobj(b) and self.dtype != np.complex128:
+            # A real factorisation would cast a complex right-hand side to
+            # real and silently drop its imaginary part; J is real, so the
+            # two parts solve independently.
+            return (self.solve(b.real, refine=refine)
+                    + 1j * self.solve(b.imag, refine=refine))
+        single = b.ndim == 1
+        if single:
+            b = b[:, None]
+        be = self.Dr[:, None] * b
+        y = self._solve_once(be)
+        for _ in range(int(refine)):
+            y = y + self._solve_once(be - self.Jeq @ y)
+        x = self.Dc[:, None] * y
+        return x[:, 0] if single else x
+
+    def _solve_once(self, b):
+        b = np.asarray(b, dtype=self.dtype)
+        bc = b[self.core, :]
+        bb = b[self.border, :]
+        xb = self._core_solve(bc)
+        if self.nb + self.nr:
+            blocks = [bb - self.G @ xb]
+            if self.nr:
+                blocks.append(-xb[self.p, :][None, :])
+            Z = np.linalg.solve(self.S, np.vstack(blocks))
+            xc = xb - self.Y @ Z
         else:
-            buckets["other"] += weight
-    return {k: v / total for k, v in buckets.items()}
+            Z = np.zeros((0, b.shape[1]), dtype=self.dtype)
+            xc = xb
+        x = np.zeros((self.n, b.shape[1]), dtype=self.dtype)
+        x[self.core, :] = xc
+        x[self.border, :] = Z[:self.nb, :]
+        return x
+
+
+def eigenpair_residual(J, M, lam, v) -> dict:
+    """Scale-free residual of one candidate eigenpair, plus the mass action."""
+    v = np.asarray(v).ravel()
+    Mv = np.asarray(M @ v).ravel()
+    lam_Mv = lam * Mv
+    residual = float(np.linalg.norm(np.asarray(J @ v).ravel() - lam_Mv))
+    norm_v = float(np.linalg.norm(v))
+    norm_Mv = float(np.linalg.norm(Mv))
+    norm_lam_Mv = float(np.linalg.norm(lam_Mv))
+    return {
+        "residual": residual,
+        "residual_scale_free": (residual / norm_lam_Mv if norm_lam_Mv > 0.0
+                                else float("inf")),
+        "residual_over_v": residual / norm_v if norm_v > 0.0 else float("inf"),
+        "mass_action": norm_Mv,
+        "mass_action_over_v": norm_Mv / norm_v if norm_v > 0.0 else 0.0,
+        "vector_norm": norm_v,
+    }
+
+
+def is_physical(J, M, lam, v, tol: float = 1e-6) -> bool:
+    """Verdict on a candidate eigenpair: does it solve the pencil?
+
+    This replaces the support-by-dof screen. For this pencil M is nonzero only
+    on the kinematic-condition rows against the interface mesh-position
+    columns, so a genuine eigenvector carries almost all of its 2-norm on
+    pressure dofs and interface components about 1e-6 of that amplitude.
+    Screening on where the amplitude sits therefore rejects every physical
+    mode; screening on whether ``J v = lambda M v`` holds does not.
+    """
+    Mv = np.asarray(M @ np.asarray(v).ravel()).ravel()
+    if not np.any(Mv):
+        return False
+    stats = eigenpair_residual(J, M, lam, v)
+    return stats["residual_scale_free"] < tol
+
+
+def reduced_finite_spectrum(J, M, kind=None, *, refine: int = 2,
+                            permc_spec: str = "COLAMD",
+                            dense_threshold: int = 1000, chunk: int = 64,
+                            n_vectors: int | None = 6,
+                            residual_tol: float = 1e-6,
+                            restrict_blocks: bool = True,
+                            infinite_safety: float = 10.0,
+                            verbose: bool = False) -> dict:
+    """All finite eigenvalues of ``J v = lambda M v`` by an exact reduction.
+
+    M carries mass only on the interface kinematic-condition rows, so
+    ``rank(M) = nR << n`` and the pencil has at most ``nR`` finite eigenvalues.
+    With ``E`` the ``n x nR`` injection of those rows and ``M_R = M[rows, :]``,
+    ``w = M_R v`` obeys ``w = lambda G w`` with ``G = M_R J^{-1} E``, so the
+    whole finite spectrum is ``1 / eig(G)``. No shift and no Krylov space: the
+    M-nullspace, which is what floods a shift-invert subspace near zero, is
+    projected out by construction rather than filtered afterwards.
+
+    An eigenvalue ``mu`` of ``G`` is reported infinite only when it lies within
+    ``infinite_safety`` times its own first-order error bar; see the comment at
+    the classification. ``out["finite_criterion"]`` records the numbers used.
+    """
+    J = sp.csr_matrix(J)
+    M = sp.csr_matrix(M)
+    n = J.shape[0]
+    is_complex = bool(np.iscomplexobj(J.data) or np.iscomplexobj(M.data))
+    dtype = np.complex128 if is_complex else np.float64
+    J = J.astype(dtype)
+    M = M.astype(dtype)
+    rows = np.flatnonzero(np.asarray(abs(M).sum(axis=1)).ravel() > 0)
+    mass_cols = np.flatnonzero(np.asarray(abs(M).sum(axis=0)).ravel() > 0)
+    nR = int(rows.size)
+    out: dict = {
+        "n": int(n), "complex": is_complex, "n_mass_rows": nR,
+        "n_mass_cols": int(mass_cols.size), "max_finite_eigenvalues": nR,
+        "J_nnz": int(J.nnz), "M_nnz": int(M.nnz),
+        "method": ("G = M[rows] J^{-1} E on the J block carrying the mass rows; "
+                   "lambda = 1/eig(G); J^{-1} by a bordered LU with the dense "
+                   "global rows/columns in the border and a rank-1 Woodbury fix "
+                   "for the core pressure nullspace"),
+        "refine_steps": int(refine), "permc_spec": permc_spec,
+    }
+    if nR == 0:
+        out.update(eigenvalues=np.zeros(0, dtype=complex), n_finite=0,
+                   eigenvectors=np.zeros((n, 0), dtype=complex),
+                   residuals=[], physical=[], n_positive_real_part=0)
+        return out
+    # At k = 0 the azimuthal velocity block decouples exactly, so J is block
+    # diagonal and a block with no mass rows can only carry infinite eigenvalues.
+    keep = np.arange(n)
+    n_blocks = 1
+    if restrict_blocks:
+        from scipy.sparse.csgraph import connected_components
+        n_blocks, label = connected_components((abs(J) + abs(J).T).tocsr(),
+                                               directed=False)
+        same = bool(np.all(label[rows] == label[rows[0]])
+                    and np.all(label[mass_cols] == label[rows[0]]))
+        if same:
+            keep = np.flatnonzero(label == label[rows[0]])
+        out["mass_rows_in_one_J_block"] = same
+    out["n_blocks_of_J"] = int(n_blocks)
+    out["n_kept"] = int(keep.size)
+    loc = -np.ones(n, dtype=np.int64)
+    loc[keep] = np.arange(keep.size)
+    rows_loc = loc[rows]
+    Jk = J[keep, :][:, keep].tocsr()
+    Mk = M[rows, :][:, keep]
+    nk = Jk.shape[0]
+    kind_k = np.asarray(kind)[keep] if kind is not None else None
+
+    solver = BorderedLU(Jk, kind_k, dense_threshold=dense_threshold,
+                        permc_spec=permc_spec, verbose=verbose)
+    out.update(lu_seconds=solver.lu_seconds, lu_nnz=solver.lu_nnz,
+               border_size=int(solver.nb), core_size=int(solver.m),
+               schur_condition=solver.S_cond)
+    rng = np.random.default_rng(20260921)
+    probe = rng.standard_normal((nk, 2))
+    if is_complex:
+        probe = probe + 1j * rng.standard_normal((nk, 2))
+    probe_x = solver.solve(probe, refine=refine)
+    out["solver_relative_residual"] = [
+        float(np.linalg.norm(Jk @ probe_x[:, i] - probe[:, i])
+              / np.linalg.norm(probe[:, i])) for i in range(2)]
+
+    # G is accumulated one chunk of columns at a time: G[:, a:b] = M_R X[:, a:b]
+    # with X = J^{-1} E, so the n x nR matrix X is never held whole (at
+    # Ca_in = 14 it would be 412815 x 923).
+    started = time.time()
+    G = np.empty((nR, nR), dtype=dtype)
+    for a in range(0, nR, chunk):
+        b = min(a + chunk, nR)
+        rhs = np.zeros((nk, b - a), dtype=dtype)
+        rhs[rows_loc[a:b], np.arange(b - a)] = 1.0
+        G[:, a:b] = np.asarray(Mk @ solver.solve(rhs, refine=refine))
+        if verbose:
+            print(f"  {b}/{nR} back-solves in {time.time() - started:.0f}s", flush=True)
+    out["solve_seconds"] = time.time() - started
+
+    mu, Y, W = sla.eig(G, left=True, right=True)
+    # Finite or infinite. Infinite eigenvalues of the pencil are mu = 0, but a
+    # computed mu is only known to within its error bar: with G carrying a
+    # relative perturbation delta, first-order perturbation theory moves mu_i
+    # by at most kappa_i * delta * ||G||, where kappa_i = 1/|y_i^H w_i| is the
+    # eigenvalue condition number (unit left and right eigenvectors). A mu_i
+    # inside ``infinite_safety`` times that bar cannot be told from zero and is
+    # reported infinite; anything outside it is resolved, however small it is
+    # relative to max|mu|. A fixed relative cutoff does neither: it discards a
+    # well-conditioned mu = 1e-13 next to mu = 1, and it keeps the ~sqrt(eps)
+    # values into which a nilpotent (higher-index) block of exact zeros splits,
+    # which would come back as spurious finite eigenvalues of size ~1e8.
+    # delta is the larger of the eig backward error (~nR eps) and the measured
+    # backward error of the J^{-1} applications that built G.
+    g_norm = float(np.linalg.norm(G, 2)) if nR else 0.0
+    delta = max(nR * np.finfo(float).eps, *out["solver_relative_residual"])
+    overlap = np.abs(np.einsum("ij,ij->j", Y.conj(), W))
+    with np.errstate(divide="ignore"):
+        kappa = np.where(overlap > 0.0, 1.0 / overlap, np.inf)
+    bar = infinite_safety * kappa * delta * g_norm
+    finite = np.abs(mu) > bar
+    lam = np.where(finite, 1.0 / np.where(finite, mu, 1.0), np.inf + 0j)
+    order = np.argsort(-np.real(np.where(finite, lam, -np.inf)))
+    order = np.array([i for i in order if finite[i]], dtype=int)
+    out["n_finite"] = int(finite.sum())
+    out["eigenvalues"] = lam[order]
+    out["mu"] = mu[order]
+    out["mu_condition"] = kappa[order]
+    out["mu_error_bar"] = bar[order]
+    out["finite_criterion"] = {
+        "rule": "|mu| > infinite_safety * kappa * delta * ||G||_2",
+        "infinite_safety": float(infinite_safety), "delta": float(delta),
+        "G_norm_2": g_norm, "n_numerically_infinite": int(nR - finite.sum()),
+    }
+    out["n_positive_real_part"] = int((np.real(lam[order]) > 0.0).sum())
+
+    # Reconstruct only the wanted eigenvectors: v = J^{-1} E w, one more
+    # back-solve per vector instead of X @ w with X held in memory.
+    want = order.size if n_vectors is None else min(int(n_vectors), order.size)
+    vectors = np.zeros((n, want), dtype=complex)
+    if want:
+        Ew = np.zeros((nk, want), dtype=np.result_type(dtype, W.dtype))
+        Ew[rows_loc, :] = W[:, order[:want]]
+        vectors[keep, :] = solver.solve(Ew, refine=refine)
+    out["eigenvectors"] = vectors
+    residuals = [eigenpair_residual(J, M, complex(lam[order[i]]), vectors[:, i])
+                 for i in range(want)]
+    out["residuals"] = residuals
+    out["physical"] = [bool(r["mass_action"] > 0.0
+                            and r["residual_scale_free"] < residual_tol)
+                       for r in residuals]
+    out["residual_tol"] = residual_tol
+    return out
+
+
+def finite_spectrum(problem: VoidBubbleProblem, azimuthal_k: int | None = None,
+                    **kwargs) -> dict:
+    """Whole finite spectrum of one azimuthal mode at the current state.
+
+    Assembles the pencil exactly as ``problem.solve_eigenproblem`` would, then
+    reduces it; see ``reduced_finite_spectrum``. Growth convention is
+    ``exp(lambda t)``, i.e. ``Re(lambda) > 0`` is unstable.
+    """
+    pencil = assemble_pencil(problem, azimuthal_k)
+    result = reduced_finite_spectrum(pencil.J, pencil.M, pencil.kind, **kwargs)
+    result["azimuthal_k"] = azimuthal_k
+    result["pencil"] = pencil
+    return result
+
+
+def shift_invert_start_vector(op_solve, M, mass_cols, rng, dtype=np.float64):
+    """A start vector ARPACK will accept for ``OP = (J - sigma M)^{-1} M``.
+
+    ``v0 = M r`` is what made ARPACK answer "error -9: Starting vector is zero":
+    M's nonzero rows (the kinematic conditions) and its nonzero columns (the
+    interface mesh positions) are disjoint dof sets, so ``M (M r) = 0``
+    identically and the first application of OP annihilates it. Start instead
+    from one application of OP to a random vector on M's *column* support.
+    """
+    n = M.shape[0]
+    z = np.zeros(n, dtype=dtype)
+    draw = rng.standard_normal(len(mass_cols))
+    if np.iscomplexobj(z):
+        draw = draw + 1j * rng.standard_normal(len(mass_cols))
+    z[mass_cols] = draw
+    v0 = np.asarray(op_solve(M @ z)).ravel()
+    norm = float(np.linalg.norm(v0))
+    if norm == 0.0:
+        raise RuntimeError("OP applied to a random vector is exactly zero; "
+                           "no starting vector in range(OP)")
+    return v0 / norm
+
+
+def shift_invert_control(J, M, kind=None, *, shift: float = 0.0, neig: int = 8,
+                         refine: int = 2, permc_spec: str = "COLAMD",
+                         dense_threshold: int = 1000, tol: float = 1e-9,
+                         seed: int = 1234) -> list[dict]:
+    """Independent Krylov control: ARPACK on ``(J - sigma M)^{-1} M``.
+
+    The same path pyoomph's scipy eigensolver takes, with the start vector of
+    ``shift_invert_start_vector``. Returns the pairs sorted by decreasing real
+    part, each with its scale-free residual.
+    """
+    J = sp.csr_matrix(J)
+    M = sp.csr_matrix(M)
+    is_complex = bool(np.iscomplexobj(J.data) or np.iscomplexobj(M.data))
+    dtype = np.complex128 if is_complex else np.float64
+    J = J.astype(dtype)
+    M = M.astype(dtype)
+    n = J.shape[0]
+    mass_cols = np.flatnonzero(np.asarray(abs(M).sum(axis=0)).ravel() > 0)
+    solver = BorderedLU((J - shift * M).tocsr(), kind,
+                        dense_threshold=dense_threshold, permc_spec=permc_spec)
+    op = spla.LinearOperator(
+        (n, n), matvec=lambda x: solver.solve(M @ x, refine=refine), dtype=dtype)
+    rng = np.random.default_rng(seed)
+    v0 = shift_invert_start_vector(
+        lambda b: solver.solve(b, refine=refine), M, mass_cols, rng, dtype=dtype)
+    theta, V = spla.eigs(op, k=neig, which="LM", v0=v0, tol=tol,
+                         ncv=min(n - 1, max(4 * neig, 40)))
+    pairs = []
+    for i in range(len(theta)):
+        th = complex(theta[i])
+        lam = shift + 1.0 / th if abs(th) > 0 else complex(np.inf)
+        stats = eigenpair_residual(J, M, lam, V[:, i])
+        pairs.append({"shift": float(shift), "lambda_real": float(np.real(lam)),
+                      "lambda_imag": float(np.imag(lam)), **stats})
+    pairs.sort(key=lambda p: -p["lambda_real"])
+    return pairs
+
+
+def eigenvector_support(problem: VoidBubbleProblem, vector, *,
+                        dof_description: tuple | None = None) -> dict:
+    """Where an eigenvector's 2-norm sits, by dof kind. **Diagnostic only.**
+
+    This is not a verdict and must not be used as one. For the void-bubble
+    pencil M is nonzero only on the kinematic-condition rows against the
+    interface mesh-position columns, so every genuine eigenvector carries
+    essentially all of its 2-norm on pressure dofs; rejecting "pressure-only"
+    modes rejects the physics. Use ``is_physical`` instead.
+
+    Layout for ``azimuthal_k >= 1``. pyoomph releases the strong axis
+    conditions and imposes them by matrix manipulation, so that pencil is
+    complex and slightly larger than ``problem.ndof()`` (415193 against 412815
+    at Ca_in 14 on the lip-8 station). ``problem.get_dof_description()`` called
+    *outside* the eigensolve describes the ndof-sized system only; called while
+    that numbering is live it describes the full pencil, which is what
+    ``Pencil.types``/``names`` hold. Pass that through ``dof_description`` and
+    the buckets are exact. Without it, the leading ``len(types)`` entries are
+    classified as usual and the tail -- the released axis dofs, which at
+    Ca_in 14 are the ``liquid/axis_rear`` and ``liquid/axis_front`` mesh and
+    velocity unknowns -- is reported separately under ``released_axis`` rather
+    than raising.
+    """
+    if dof_description is not None:
+        types, names = dof_description
+    else:
+        types, names = problem.get_dof_description()
+    types = np.asarray(types)
+    amp = np.abs(np.asarray(vector).ravel())
+    buckets = {k: 0.0 for k in DOF_KINDS}
+    buckets["released_axis"] = 0.0
+    total = float(np.dot(amp, amp)) or 1.0
+    described = min(amp.size, types.size)
+    weight = amp[:described] * amp[:described]
+    kinds = np.array([classify_dof_name(names[int(k)]) for k in types[:described]])
+    for k in DOF_KINDS:
+        buckets[k] = float(weight[kinds == k].sum()) / total
+    tail = amp[described:]
+    buckets["released_axis"] = float(np.dot(tail, tail)) / total
+    buckets["described_dofs"] = int(described)
+    buckets["vector_length"] = int(amp.size)
+    buckets["ndof_described"] = int(types.size)
+    buckets["truncated_description"] = bool(amp.size > types.size)
+    return buckets
 
 
 def label_from_growth(real: float, rate: float, *, band: float = 1e-3) -> tuple[str, str]:
