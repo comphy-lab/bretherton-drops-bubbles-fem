@@ -119,6 +119,10 @@ def build_stability_problem(
     lip_floor_divisor: float = 16.0,
     lip_patch_radii: float = 10.0,
     lip_gradation: float = 0.25,
+    gap_elements: float | None = None,
+    gap_min_chain: float = 0.05,
+    gap_max_range: float = 0.5,
+    gap_chain_ratio: float = 4.0,
     z_inlet: float = 0.0,
 ) -> VoidBubbleProblem:
     from problems.bretherton_bubble import VoidBubbleProblem
@@ -135,7 +139,10 @@ def build_stability_problem(
         geometry=geom, ca_in=ca_in, laplace=laplace,
         film_elements=film_elements, lip_elements=lip_elements,
         lip_floor_divisor=lip_floor_divisor, lip_patch_radii=lip_patch_radii,
-        lip_gradation=lip_gradation, bulk_resolution=bulk_resolution,
+        lip_gradation=lip_gradation, gap_elements=gap_elements,
+        gap_min_chain=gap_min_chain, gap_max_range=gap_max_range,
+        gap_chain_ratio=gap_chain_ratio,
+        bulk_resolution=bulk_resolution,
         closure="centroid", outlet="poiseuille",
         pressure_datum=pressure_datum, remesh=remesh,
     )

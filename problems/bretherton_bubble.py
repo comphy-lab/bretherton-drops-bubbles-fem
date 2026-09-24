@@ -148,6 +148,10 @@ class VoidBubbleProblem(Problem):
         lip_floor_divisor: float = 16.0,
         lip_patch_radii: float = 10.0,
         lip_gradation: float = 0.25,
+        gap_elements: float | None = None,
+        gap_min_chain: float = 0.05,
+        gap_max_range: float = 0.5,
+        gap_chain_ratio: float = 4.0,
         bulk_resolution: float = 0.08,
         closure: str = "centroid",
         outlet: str = "poiseuille",
@@ -166,6 +170,12 @@ class VoidBubbleProblem(Problem):
             raise ValueError("lip_elements must be positive, or None to disable curvature grading")
         if lip_floor_divisor < 1:
             raise ValueError("lip_floor_divisor must be at least 1")
+        if gap_elements is not None and gap_elements <= 0:
+            raise ValueError("gap_elements must be positive, or None to disable proximity grading")
+        if gap_min_chain <= 0 or gap_max_range <= 0:
+            raise ValueError("gap_min_chain and gap_max_range must be positive")
+        if gap_chain_ratio < 1:
+            raise ValueError("gap_chain_ratio must be at least 1")
         if closure not in ("centroid", "tip"):
             raise ValueError("closure must be 'centroid' or 'tip'")
         if outlet not in ("poiseuille", "traction_free"):
@@ -188,6 +198,19 @@ class VoidBubbleProblem(Problem):
         # grow away from it, per unit arclength. Only used with lip_elements.
         self.lip_patch_radii = lip_patch_radii
         self.lip_gradation = lip_gradation
+        # Elements demanded across a gap between two sheets of the interface,
+        # i.e. across the liquid film inside a folded rear cap. None keeps the
+        # sizes exactly as the curvature grading alone produced them. The gap is
+        # measured between interface points at least gap_min_chain apart along
+        # the chain and at least gap_chain_ratio times the gap itself (so it is
+        # a fold and not a straight sheet or a smooth U-turn), and no further
+        # apart than gap_max_range in space (so the search stays cheap). The
+        # tube wall is not on the interface chain, so the deposited film is
+        # unaffected.
+        self.gap_elements = gap_elements
+        self.gap_min_chain = gap_min_chain
+        self.gap_max_range = gap_max_range
+        self.gap_chain_ratio = gap_chain_ratio
         self.bulk_resolution = bulk_resolution
         self.closure = closure
         self.outlet = outlet
