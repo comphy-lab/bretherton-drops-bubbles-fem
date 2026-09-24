@@ -144,6 +144,10 @@ class VoidBubbleProblem(Problem):
         ca_in: float,
         laplace: float = 0.0,
         film_elements: float = 3.0,
+        lip_elements: float | None = None,
+        lip_floor_divisor: float = 16.0,
+        lip_patch_radii: float = 10.0,
+        lip_gradation: float = 0.25,
         bulk_resolution: float = 0.08,
         closure: str = "centroid",
         outlet: str = "poiseuille",
@@ -158,6 +162,10 @@ class VoidBubbleProblem(Problem):
             raise ValueError("La must be non-negative")
         if film_elements < 1 or bulk_resolution <= 0:
             raise ValueError("need at least one element across the film, and a positive bulk size")
+        if lip_elements is not None and lip_elements <= 0:
+            raise ValueError("lip_elements must be positive, or None to disable curvature grading")
+        if lip_floor_divisor < 1:
+            raise ValueError("lip_floor_divisor must be at least 1")
         if closure not in ("centroid", "tip"):
             raise ValueError("closure must be 'centroid' or 'tip'")
         if outlet not in ("poiseuille", "traction_free"):
@@ -168,6 +176,18 @@ class VoidBubbleProblem(Problem):
         self.ca_in = ca_in
         self.laplace = laplace
         self.film_elements = film_elements
+        # Elements demanded per local radius of interface curvature. None keeps the
+        # pure distance grading that produced every result before the rear cap was
+        # found to be re-entrant; see LiquidAnnulusMesh._interface_point_sizes.
+        self.lip_elements = lip_elements
+        # Smallest interface element the curvature grading may demand, as a
+        # fraction of the film element size: film_element_size / lip_floor_divisor.
+        self.lip_floor_divisor = lip_floor_divisor
+        # Width of the refined patch around the sharpest interface node, in lip
+        # radii of arclength, and the fastest the interface element size may
+        # grow away from it, per unit arclength. Only used with lip_elements.
+        self.lip_patch_radii = lip_patch_radii
+        self.lip_gradation = lip_gradation
         self.bulk_resolution = bulk_resolution
         self.closure = closure
         self.outlet = outlet

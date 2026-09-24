@@ -1,0 +1,294 @@
+{
+  "check": "s11_rear_cap",
+  "n_failed_cases": 0,
+  "n_resolution_checks": 2,
+  "note": "indentation_over_r_tube is the axial distance by which the on-axis rear tip leads the rearmost point of the interface, over R_t. It is zero for a convex cap and positive once the cap folds back. The onset is reported as a bracket rather than a value because between the bracketing capillary numbers the indentation is at the level of the discretisation; the pass condition is agreement between the two resolutions where the indentation is large enough to be resolved.",
+  "onset_bracket_ca_b": [
+    1.023924088607661,
+    1.0480990529184109
+  ],
+  "passed": true,
+  "resolved_above": 0.0004,
+  "results": [
+    {
+      "ca_b": 1.0089528220909965,
+      "ca_in": 0.4788,
+      "cases": [
+        {
+          "bulk_resolution_over_r0": 0.1,
+          "ca_b": 1.0089528220909965,
+          "ca_in": 0.4788,
+          "check_void_volume_error": 1.1102230246251565e-15,
+          "film_element_size_over_r0": 0.07184154171726588,
+          "film_elements": 3.0,
+          "h_over_r_tube": 0.311197329205,
+          "indentation_over_r_tube": 0.0
+        },
+        {
+          "bulk_resolution_over_r0": 0.1,
+          "ca_b": 1.0089618517921308,
+          "ca_in": 0.4788,
+          "check_void_volume_error": 1.9984014443252818e-15,
+          "film_element_size_over_r0": 0.03592077085863294,
+          "film_elements": 6.0,
+          "h_over_r_tube": 0.3112002594085714,
+          "indentation_over_r_tube": 0.0
+        }
+      ],
+      "convex_at_both": true,
+      "h_over_r_tube": 0.311197329205,
+      "indentation_coarse": 0.0,
+      "indentation_fine": 0.0,
+      "relative_difference": null
+    },
+    {
+      "ca_b": 1.023924088607661,
+      "ca_in": 0.485,
+      "cases": [
+        {
+          "bulk_resolution_over_r0": 0.1,
+          "ca_b": 1.023924088607661,
+          "ca_in": 0.485,
+          "check_void_volume_error": -1.6653345369377348e-15,
+          "film_element_size_over_r0": 0.072005384109809,
+          "film_elements": 3.0,
+          "h_over_r_tube": 0.3118394405542857,
+          "indentation_over_r_tube": 0.0
+        },
+        {
+          "bulk_resolution_over_r0": 0.1,
+          "ca_b": 1.0239350343948976,
+          "ca_in": 0.485,
+          "check_void_volume_error": 8.881784197001252e-16,
+          "film_element_size_over_r0": 0.0360026920549045,
+          "film_elements": 6.0,
+          "h_over_r_tube": 0.3118437457128571,
+          "indentation_over_r_tube": 0.0
+        }
+      ],
+      "convex_at_both": true,
+      "h_over_r_tube": 0.3118394405542857,
+      "indentation_coarse": 0.0,
+      "indentation_fine": 0.0,
+      "relative_difference": null
+    },
+    {
+      "ca_b": 1.036007557777457,
+      "ca_in": 0.49,
+      "cases": [
+        {
+          "bulk_resolution_over_r0": 0.1,
+          "ca_b": 1.036007557777457,
+          "ca_in": 0.49,
+          "check_void_volume_error": -1.4432899320127035e-15,
+          "film_element_size_over_r0": 0.07213528523409955,
+          "film_elements": 3.0,
+          "h_over_r_tube": 0.31234700383285713,
+          "indentation_over_r_tube": 3.6538300001482634e-06
+        },
+        {
+          "bulk_resolution_over_r0": 0.1,
+          "ca_b": 1.0360191622809036,
+          "ca_in": 0.49,
+          "check_void_volume_error": 3.3306690738754696e-15,
+          "film_element_size_over_r0": 0.036067642617049776,
+          "film_elements": 6.0,
+          "h_over_r_tube": 0.31235223585,
+          "indentation_over_r_tube": 0.0
+        }
+      ],
+      "convex_at_both": false,
+      "h_over_r_tube": 0.31234700383285713,
+      "indentation_coarse": 3.6538300001482634e-06,
+      "indentation_fine": 0.0,
+      "relative_difference": null
+    },
+    {
+      "ca_b": 1.0480990529184109,
+      "ca_in": 0.495,
+      "cases": [
+        {
+          "bulk_resolution_over_r0": 0.1,
+          "ca_b": 1.0480990529184109,
+          "ca_in": 0.495,
+          "check_void_volume_error": -1.6653345369377348e-15,
+          "film_element_size_over_r0": 0.07226324638247734,
+          "film_elements": 3.0,
+          "h_over_r_tube": 0.31284601090428565,
+          "indentation_over_r_tube": 1.4925778571507819e-05
+        },
+        {
+          "bulk_resolution_over_r0": 0.1,
+          "ca_b": 1.0481111777251153,
+          "ca_in": 0.495,
+          "check_void_volume_error": 3.1086244689504383e-15,
+          "film_element_size_over_r0": 0.03613162319123867,
+          "film_elements": 6.0,
+          "h_over_r_tube": 0.31285087878714285,
+          "indentation_over_r_tube": 3.721085715748172e-07
+        }
+      ],
+      "convex_at_both": false,
+      "h_over_r_tube": 0.31284601090428565,
+      "indentation_coarse": 1.4925778571507819e-05,
+      "indentation_fine": 3.721085715748172e-07,
+      "relative_difference": 39.111353813592004
+    },
+    {
+      "ca_b": 1.0601981661211617,
+      "ca_in": 0.5,
+      "cases": [
+        {
+          "bulk_resolution_over_r0": 0.1,
+          "ca_b": 1.0601981661211617,
+          "ca_in": 0.5,
+          "check_void_volume_error": 2.460698311779197e-12,
+          "film_element_size_over_r0": 0.07238931312650983,
+          "film_elements": 3.0,
+          "h_over_r_tube": 0.3133366616007142,
+          "indentation_over_r_tube": 2.9651081428573788e-05
+        },
+        {
+          "bulk_resolution_over_r0": 0.1,
+          "ca_b": 1.0602108803871,
+          "ca_in": 0.5,
+          "check_void_volume_error": -2.55351295663786e-15,
+          "film_element_size_over_r0": 0.036194656563254914,
+          "film_elements": 6.0,
+          "h_over_r_tube": 0.3133409772057143,
+          "indentation_over_r_tube": 6.6564800002158875e-06
+        }
+      ],
+      "convex_at_both": false,
+      "h_over_r_tube": 0.3133366616007142,
+      "indentation_coarse": 2.9651081428573788e-05,
+      "indentation_fine": 6.6564800002158875e-06,
+      "relative_difference": 3.454468642227142
+    },
+    {
+      "ca_b": 1.0844198298665157,
+      "ca_in": 0.51,
+      "cases": [
+        {
+          "bulk_resolution_over_r0": 0.1,
+          "ca_b": 1.0844198298665157,
+          "ca_in": 0.51,
+          "check_void_volume_error": 1.3153922395758855e-12,
+          "film_element_size_over_r0": 0.07263593849601095,
+          "film_elements": 3.0,
+          "h_over_r_tube": 0.3142940568228571,
+          "indentation_over_r_tube": 8.333410714283269e-05
+        },
+        {
+          "bulk_resolution_over_r0": 0.1,
+          "ca_b": 1.0844321409558972,
+          "ca_in": 0.51,
+          "check_void_volume_error": 1.4714895968381825e-12,
+          "film_element_size_over_r0": 0.036317969248005476,
+          "film_elements": 6.0,
+          "h_over_r_tube": 0.31429674144928565,
+          "indentation_over_r_tube": 6.506839571437543e-05
+        }
+      ],
+      "convex_at_both": false,
+      "h_over_r_tube": 0.3142940568228571,
+      "indentation_coarse": 8.333410714283269e-05,
+      "indentation_fine": 6.506839571437543e-05,
+      "relative_difference": 0.2807155644137367
+    },
+    {
+      "ca_b": 1.1329451975412583,
+      "ca_in": 0.53,
+      "cases": [
+        {
+          "bulk_resolution_over_r0": 0.1,
+          "ca_b": 1.1329451975412583,
+          "ca_in": 0.53,
+          "check_void_volume_error": -5.972999872483342e-13,
+          "film_element_size_over_r0": 0.07310830748553016,
+          "film_elements": 3.0,
+          "h_over_r_tube": 0.3161133555607143,
+          "indentation_over_r_tube": 0.0003942771214284134
+        },
+        {
+          "bulk_resolution_over_r0": 0.1,
+          "ca_b": 1.1329578733468724,
+          "ca_in": 0.53,
+          "check_void_volume_error": -1.3651302310790925e-12,
+          "film_element_size_over_r0": 0.03655415374276508,
+          "film_elements": 6.0,
+          "h_over_r_tube": 0.31611604432142854,
+          "indentation_over_r_tube": 0.00037570349142868054
+        }
+      ],
+      "convex_at_both": false,
+      "h_over_r_tube": 0.3161133555607143,
+      "indentation_coarse": 0.0003942771214284134,
+      "indentation_fine": 0.00037570349142868054,
+      "relative_difference": 0.049436937434633066
+    },
+    {
+      "ca_b": 1.2059208186958734,
+      "ca_in": 0.56,
+      "cases": [
+        {
+          "bulk_resolution_over_r0": 0.1,
+          "ca_b": 1.2059208186958734,
+          "ca_in": 0.56,
+          "check_void_volume_error": -2.2071233729548112e-13,
+          "film_element_size_over_r0": 0.07376912039420414,
+          "film_elements": 3.0,
+          "h_over_r_tube": 0.3186283302121428,
+          "indentation_over_r_tube": 0.0012095138585716775
+        },
+        {
+          "bulk_resolution_over_r0": 0.1,
+          "ca_b": 1.2059369086723493,
+          "ca_in": 0.56,
+          "check_void_volume_error": -1.326938559031987e-12,
+          "film_element_size_over_r0": 0.03688456019710207,
+          "film_elements": 6.0,
+          "h_over_r_tube": 0.31863199957857136,
+          "indentation_over_r_tube": 0.001249105855714345
+        }
+      ],
+      "convex_at_both": false,
+      "h_over_r_tube": 0.3186283302121428,
+      "indentation_coarse": 0.0012095138585716775,
+      "indentation_fine": 0.001249105855714345,
+      "relative_difference": 0.03169627054548185
+    },
+    {
+      "ca_b": 1.3035265924820039,
+      "ca_in": 0.6,
+      "cases": [
+        {
+          "bulk_resolution_over_r0": 0.1,
+          "ca_b": 1.3035265924820039,
+          "ca_in": 0.6,
+          "check_void_volume_error": 3.61710661422876e-13,
+          "film_element_size_over_r0": 0.07457186669150823,
+          "film_elements": 3.0,
+          "h_over_r_tube": 0.3216333749264285,
+          "indentation_over_r_tube": 0.002930612540000028
+        },
+        {
+          "bulk_resolution_over_r0": 0.1,
+          "ca_b": 1.3035512285341533,
+          "ca_in": 0.6,
+          "check_void_volume_error": 6.814548925149211e-13,
+          "film_element_size_over_r0": 0.03728593334575411,
+          "film_elements": 6.0,
+          "h_over_r_tube": 0.32163906535928566,
+          "indentation_over_r_tube": 0.0029599383314285865
+        }
+      ],
+      "convex_at_both": false,
+      "h_over_r_tube": 0.3216333749264285,
+      "indentation_coarse": 0.002930612540000028,
+      "indentation_fine": 0.0029599383314285865,
+      "relative_difference": 0.00990756838315765
+    }
+  ],
+  "tolerance": 0.1
+}

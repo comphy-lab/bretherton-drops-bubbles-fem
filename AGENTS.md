@@ -73,7 +73,8 @@ These were established by the checks in `verification/`; do not rediscover them.
   in the bubble frame the wall moves rearward, so the advancing front meniscus
   is the coating meniscus that sets the film.
 - **Poiseuille at both ends is exact.** In the bare tube it reproduces the
-  analytic pressure drop to 3e-14 and the flux to 2e-16. The traction-free
+  analytic pressure drop to 5.0e-14 and the flux to 4.4e-16, worst of the four
+  resolution and length combinations S0 runs. The traction-free
   outlet carries a fixed *absolute* pressure deficit of 0.066 at `Ca = 0.05`,
   independent of window length, so its relative error falls as `1/L`. Keep it
   as a switch for comparison with the parent, not as production.
@@ -116,7 +117,7 @@ These were established by the checks in `verification/`; do not rediscover them.
   of any cross-code difference can be attributed to a mismatch in `R0/R_tube`.
 - **A pressure datum is required and the choice is free.** With Poiseuille at
   both ends, `pressure_datum="none"` fails to solve; `"fixation"` and
-  `"integral"` agree on every reported observable to 1e-14.
+  `"integral"` agree on every reported observable to 2.6e-14.
 
 ## pyoomph traps that apply here
 
@@ -142,6 +143,20 @@ These were established by the checks in `verification/`; do not rediscover them.
   any fallback must checkpoint first or start from a fresh problem.
 - Boundary names must be identical in both branches of `define_geometry`, or
   interpolation across a remesh raises.
+- Angular (azimuthal) eigensolving is **refused** when the pressure datum is a
+  fixation: `solve_eigenproblem(..., azimuthal_m=m)` raises
+  `Do not use pressure_fixation with angular eigensolving`. Since
+  `pressure_datum="fixation"` is this solver's default, azimuthal stability
+  looks unavailable until the message is read. It is not: use
+  `pressure_datum="integral"`, which is the `with_pressure_integral_constraint`
+  the message names, and which `verification/s7_pressure_datum.py` shows agrees
+  with the fixation on every reported observable to 2.6e-14.
+- `setup_for_stability_analysis()` changes code generation and must be called
+  **before** `initialise()`.
+- A shift-invert eigensolve asked for too few eigenvalues can converge to a
+  cluster that does not contain the rightmost one, and report a more negative
+  growth rate with no warning. Request at least eight. The azimuthal
+  campaign is not part of the public validation case.
 
 ## Repository conventions
 

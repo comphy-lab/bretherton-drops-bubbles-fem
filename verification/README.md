@@ -19,11 +19,25 @@ different route to the same state, or a limit in which the answer is known.
 | `s8_inertia.py` | How large is the inertial correction, and is the frame-acceleration term exercised? | `s8_inertia.json` |
 | `s9_steadiness.py` | Is the stationary state an attractor, and over how many film renewals is that shown? | `s9_steadiness.json` |
 | `s10_route.py` | Does the answer depend on the solve route, the ladder direction, or the bubble length? | `s10_route.json` |
+| `s11_rear_cap.py` | Where does the rear cap stop being convex, and is that onset resolved? | `s11_rear_cap.json` |
+| `s12_azimuthal.py` | Does azimuthal eigensolving run here, and how many eigenvalues does it need? | `s12_azimuthal.json` |
+| `s13_eigen_dynamic.py` | Does the rightmost eigenvalue match a dynamic march? | `s13_eigen_dynamic.json` |
+| `s14_azimuthal_sweep.py` | Which sweep states are stable at k = 0, 1 and 2? | `s14_azimuthal_sweep.json` |
+| `s15_inertia_bound.py` | To what Reynolds number may the Stokes baseline be quoted? | `s15_inertia_bound.json` |
+| `s16_pressure_datum_spectrum.py` | Does the pressure datum move the axisymmetric spectrum? | `s16_pressure_datum_spectrum.json` |
+| `s17_la1_barrier.py` | Does La=1 continuation past Ca_in=2.91 survive with remesh off? | `s17_la1_barrier.json` |
+| `s18_azimuthal_k3.py` | Which sweep states are stable at k = 3? | `s18_azimuthal_k3.json`, `s18_azimuthal_k3_highca.json` |
+| `s19_la_grid.py` | What is H at the named (Ca_in, La) grid, and do the windows hold? | `s19_la_grid.json` |
 
 Stage numbering has gaps because S2 to S4 were folded into the production path
 during development rather than kept as separate scripts.
 
-Two stages deserve a note on what they do *not* establish.
+The S14 and S18 labels come from a spurious-mode screen based on where each
+eigenvector's support lies. That screen rejects genuine modes of this pencil
+(issue #2), so those labels are provisional until the residual-based screen
+replaces it.
+
+Five stages deserve a note on what they do *not* establish.
 
 **S9** marches the converged state forward. Persistence alone is weak evidence:
 a stationary solution is an exact fixed point of the implicit time
@@ -39,3 +53,18 @@ about whether either is right. The bubble-length comparison in the same stage
 is the one that carries physics: the residual 1.3e-3 at `Ca_b = 0.011` survives
 mesh refinement and is a real finite-bubble effect, which is why it has its own
 looser tolerance rather than being tuned away.
+
+**S11** reports a bracket rather than a value, deliberately. Near onset the
+indentation is a few parts in `1e5` of the tube radius, small enough to be a
+property of the mesh; two film resolutions are what separate the two, and the
+stage's only pass condition is that they agree where the indentation is large
+enough that they should.
+
+**S15** is a Reynolds bound, not a Laplace-number grid. It fails if the
+top-of-sweep inertial row is missing or if the Stokes pad-doubled windows
+there disagree in film thickness by more than two percent. An inertial
+solve that dies on the doubled window is recorded, not fatal.
+
+**S19** is the named La grid that S15 deliberately was not. It reuses
+S15 cells, fills La=0.1 and La=10 at the thin-film and mid stations, and
+records pad-doubled windows at La>0. It does not build h(Ca_b, La).
