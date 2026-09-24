@@ -112,19 +112,29 @@ def finalise_mode(entry: dict, rate: float, problem: VoidBubbleProblem) -> dict:
     nonzero only on the kinematic-condition rows against the interface
     mesh-position columns, so every genuine mode is pressure-dominated and that
     screen rejected the physics; see verification/README.md.
+
+    A winner with no residual verdict at all (``physical is None``: the pencil
+    was not captured, or its size did not match the vector) is ``untested``.
+    Growth alone is the unscreened acceptance this screen exists to remove.
     """
     winner = entry.pop("_winner", None)
     if entry["rightmost_real"] is None:
         return entry
     label, reason = label_from_growth(entry["rightmost_real"], rate)
+    physical = winner.get("physical") if winner is not None else None
     if winner is not None:
         screen = winner.get("residual_screen")
         entry["residual_screen"] = screen
-        entry["physical"] = winner.get("physical")
+        entry["physical"] = physical
         # Support stays in the receipt as a diagnostic, never as a verdict.
-        entry["support"] = eigenvector_support(problem, winner["vector"])
-        if winner.get("physical") is False:
-            label, reason = "untested", "eigenpair_residual_too_large"
+        # The live pencil's description matches the vector's numbering.
+        entry["support"] = eigenvector_support(
+            problem, winner["vector"],
+            dof_description=winner.get("dof_description"))
+    if physical is False:
+        label, reason = "untested", "eigenpair_residual_too_large"
+    elif physical is None:
+        label, reason = "untested", "residual_screen_unavailable"
     entry["label"] = label
     entry["label_reason"] = reason
     entry["growth_over_rate"] = entry["rightmost_real"] / max(rate, 1e-12)

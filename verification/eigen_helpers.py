@@ -25,13 +25,19 @@ import contextlib
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import numpy as np
+import scipy.linalg as sla
 import scipy.sparse as sp
 import scipy.sparse.linalg as spla
 
-from problems.bretherton_bubble import VoidBubbleProblem
 from problems.geometry import CapsuleGeometry
+
+if TYPE_CHECKING:
+    # problems.bretherton_bubble imports pyoomph; the pencil algebra below does
+    # not need it, and the contract tests run without it.
+    from problems.bretherton_bubble import VoidBubbleProblem
 
 
 SWEEP_CA = (
@@ -115,6 +121,8 @@ def build_stability_problem(
     lip_gradation: float = 0.25,
     z_inlet: float = 0.0,
 ) -> VoidBubbleProblem:
+    from problems.bretherton_bubble import VoidBubbleProblem
+
     if pressure_datum == "fixation" and azimuthal_stability:
         raise ValueError(
             "azimuthal eigensolving is refused with pressure_datum='fixation'; "
@@ -164,7 +172,10 @@ def rightmost_sample(problem: VoidBubbleProblem, azimuthal_k: int | None, n: int
     The eigensolver already assembles (J, M) and ``capture_pencil`` keeps them,
     so the residual screen of ``is_physical`` costs one matrix-vector product
     and no second assembly. The matrices are dropped again before returning:
-    only the screen's numbers travel with the sample.
+    only the screen's numbers and the dof description of the numbering the
+    solve ran under travel with the sample. That description is what
+    ``eigenvector_support`` needs for an ``azimuthal_k >= 1`` vector, which is
+    longer than ``problem.ndof()`` once the solve has returned.
     """
     with capture_pencil(problem) as box:
         values, vectors = problem.solve_eigenproblem(
@@ -181,6 +192,7 @@ def rightmost_sample(problem: VoidBubbleProblem, azimuthal_k: int | None, n: int
     return {
         "residual_screen": screen,
         "physical": physical,
+        "dof_description": pencil.dof_description if pencil is not None else None,
         "azimuthal_k": azimuthal_k,
         "n": n,
         "shift": float(shift),
@@ -375,6 +387,12 @@ def assemble_pencil(problem: VoidBubbleProblem, azimuthal_k: int | None = None) 
         cap.update(J=J, M=M, n=n, is_complex=is_complex, types=types, names=names)
         raise _PencilCaptured()
 
+    # Raising out of es.solve skips only what pyoomph does *after* the solver
+    # returns: storing the results and undo_make_steady(), which
+    # _steady_restored does here. The mode parameter is put back by pyoomph's
+    # own finally. Axis release, renumbering, matrix contributions and the
+    # zero-dof manipulator are all set up before es.solve is entered and are
+    # not undone on a normal return either; the next solve re-establishes them.
     es.solve = _capture
     try:
         with _steady_restored(problem):
@@ -537,6 +555,12 @@ class BorderedLU:
         each refinement step costs one more core back-solve.
         """
         b = np.asarray(b)
+        if np.iscomplexobj(b) and self.dtype != np.complex128:
+            # A real factorisation would cast a complex right-hand side to
+            # real and silently drop its imaginary part; J is real, so the
+            # two parts solve independently.
+            return (self.solve(b.real, refine=refine)
+                    + 1j * self.solve(b.imag, refine=refine))
         single = b.ndim == 1
         if single:
             b = b[:, None]
@@ -610,6 +634,7 @@ def reduced_finite_spectrum(J, M, kind=None, *, refine: int = 2,
                             n_vectors: int | None = 6,
                             residual_tol: float = 1e-6,
                             restrict_blocks: bool = True,
+                            infinite_safety: float = 10.0,
                             verbose: bool = False) -> dict:
     """All finite eigenvalues of ``J v = lambda M v`` by an exact reduction.
 
@@ -620,6 +645,10 @@ def reduced_finite_spectrum(J, M, kind=None, *, refine: int = 2,
     whole finite spectrum is ``1 / eig(G)``. No shift and no Krylov space: the
     M-nullspace, which is what floods a shift-invert subspace near zero, is
     projected out by construction rather than filtered afterwards.
+
+    An eigenvalue ``mu`` of ``G`` is reported infinite only when it lies within
+    ``infinite_safety`` times its own first-order error bar; see the comment at
+    the classification. ``out["finite_criterion"]`` records the numbers used.
     """
     J = sp.csr_matrix(J)
     M = sp.csr_matrix(M)
@@ -683,34 +712,64 @@ def reduced_finite_spectrum(J, M, kind=None, *, refine: int = 2,
         float(np.linalg.norm(Jk @ probe_x[:, i] - probe[:, i])
               / np.linalg.norm(probe[:, i])) for i in range(2)]
 
+    # G is accumulated one chunk of columns at a time: G[:, a:b] = M_R X[:, a:b]
+    # with X = J^{-1} E, so the n x nR matrix X is never held whole (at
+    # Ca_in = 14 it would be 412815 x 923).
     started = time.time()
-    X = np.empty((nk, nR), dtype=dtype)
+    G = np.empty((nR, nR), dtype=dtype)
     for a in range(0, nR, chunk):
         b = min(a + chunk, nR)
         rhs = np.zeros((nk, b - a), dtype=dtype)
         rhs[rows_loc[a:b], np.arange(b - a)] = 1.0
-        X[:, a:b] = solver.solve(rhs, refine=refine)
+        G[:, a:b] = np.asarray(Mk @ solver.solve(rhs, refine=refine))
         if verbose:
             print(f"  {b}/{nR} back-solves in {time.time() - started:.0f}s", flush=True)
     out["solve_seconds"] = time.time() - started
-    G = np.asarray(Mk @ X)
 
-    mu, W = np.linalg.eig(G)
-    abs_mu = np.abs(mu)
-    finite = abs_mu > 1e-12 * abs_mu.max() if abs_mu.max() > 0 else np.zeros(nR, bool)
+    mu, Y, W = sla.eig(G, left=True, right=True)
+    # Finite or infinite. Infinite eigenvalues of the pencil are mu = 0, but a
+    # computed mu is only known to within its error bar: with G carrying a
+    # relative perturbation delta, first-order perturbation theory moves mu_i
+    # by at most kappa_i * delta * ||G||, where kappa_i = 1/|y_i^H w_i| is the
+    # eigenvalue condition number (unit left and right eigenvectors). A mu_i
+    # inside ``infinite_safety`` times that bar cannot be told from zero and is
+    # reported infinite; anything outside it is resolved, however small it is
+    # relative to max|mu|. A fixed relative cutoff does neither: it discards a
+    # well-conditioned mu = 1e-13 next to mu = 1, and it keeps the ~sqrt(eps)
+    # values into which a nilpotent (higher-index) block of exact zeros splits,
+    # which would come back as spurious finite eigenvalues of size ~1e8.
+    # delta is the larger of the eig backward error (~nR eps) and the measured
+    # backward error of the J^{-1} applications that built G.
+    g_norm = float(np.linalg.norm(G, 2)) if nR else 0.0
+    delta = max(nR * np.finfo(float).eps, *out["solver_relative_residual"])
+    overlap = np.abs(np.einsum("ij,ij->j", Y.conj(), W))
+    with np.errstate(divide="ignore"):
+        kappa = np.where(overlap > 0.0, 1.0 / overlap, np.inf)
+    bar = infinite_safety * kappa * delta * g_norm
+    finite = np.abs(mu) > bar
     lam = np.where(finite, 1.0 / np.where(finite, mu, 1.0), np.inf + 0j)
     order = np.argsort(-np.real(np.where(finite, lam, -np.inf)))
     order = np.array([i for i in order if finite[i]], dtype=int)
     out["n_finite"] = int(finite.sum())
     out["eigenvalues"] = lam[order]
     out["mu"] = mu[order]
+    out["mu_condition"] = kappa[order]
+    out["mu_error_bar"] = bar[order]
+    out["finite_criterion"] = {
+        "rule": "|mu| > infinite_safety * kappa * delta * ||G||_2",
+        "infinite_safety": float(infinite_safety), "delta": float(delta),
+        "G_norm_2": g_norm, "n_numerically_infinite": int(nR - finite.sum()),
+    }
     out["n_positive_real_part"] = int((np.real(lam[order]) > 0.0).sum())
 
+    # Reconstruct only the wanted eigenvectors: v = J^{-1} E w, one more
+    # back-solve per vector instead of X @ w with X held in memory.
     want = order.size if n_vectors is None else min(int(n_vectors), order.size)
     vectors = np.zeros((n, want), dtype=complex)
     if want:
-        vectors[keep, :] = X @ W[:, order[:want]]
-    del X
+        Ew = np.zeros((nk, want), dtype=np.result_type(dtype, W.dtype))
+        Ew[rows_loc, :] = W[:, order[:want]]
+        vectors[keep, :] = solver.solve(Ew, refine=refine)
     out["eigenvectors"] = vectors
     residuals = [eigenpair_residual(J, M, complex(lam[order[i]]), vectors[:, i])
                  for i in range(want)]
