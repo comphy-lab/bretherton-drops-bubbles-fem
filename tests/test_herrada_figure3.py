@@ -224,6 +224,39 @@ def test_local_sampling_manifest_is_exact_and_has_finite_budget():
             validate_case(changed, "run")
 
 
+LOCAL_SPATIAL_PROBES = {
+    "mesh-medium": (77, 15.0, 6.0),
+    "domain20-fine": (73, 20.0, 8.0),
+    "domain25-fine": (70, 25.0, 8.0),
+}
+
+
+@pytest.mark.parametrize(("source_variant", "expected"), LOCAL_SPATIAL_PROBES.items())
+def test_local_spatial_probe_cases_preserve_base_mapping(source_variant, expected):
+    _, domain, film_elements = expected
+    variant = f"sampling-eighth-hook-{source_variant}"
+    case = read_case(HERE / "cases" / f"{variant}.json", "run")
+    base = read_case(HERE / "cases" / f"{source_variant}.json", "run")
+    assert case["sampling"]["baseline_case_id"] == base["case_id"]
+    assert case["convergence"] == base["convergence"]
+    assert case["physics"]["domain_over_r"] == domain
+    assert case["mesh"]["film_elements"] == film_elements
+    assert case["continuation"]["max_ds"] == 0.0025
+    assert case["continuation"]["max_steps"] == 200
+    assert case["completion"] == read_case(HERE / "cases/sampling-eighth-hook.json")["completion"]
+    for section, name, value in (
+        ("physics", "domain_over_r", domain + 1),
+        ("mesh", "film_elements", film_elements + 1),
+        ("continuation", "max_ds", 0.005),
+        ("sampling", "baseline_case_id", "herradaEtAl_figure3_bo1p56_mesh_fine"),
+        ("convergence", "variant", "mesh-fine"),
+    ):
+        changed = copy.deepcopy(case)
+        changed[section][name] = value
+        with pytest.raises(ValueError):
+            validate_case(changed, "run")
+
+
 def test_resume_refuses_a_different_case_hash():
     case = read_case(HERE / "case.json", "run")
     restart = {
@@ -362,6 +395,68 @@ def sampling_seed(tmp_path):
                 "station": 1, "next_ds": -0.02, "progress_path": "progress.jsonl",
                 "progress_sha256": file_digest(tmp_path / "progress.jsonl")}
     return seed
+
+
+@pytest.mark.parametrize(("source_variant", "expected"), LOCAL_SPATIAL_PROBES.items())
+def test_local_spatial_seed_requires_own_accepted_prefold_station(
+    tmp_path, source_variant, expected
+):
+    from validation.herradaEtAl_figure3.driver import (
+        file_digest,
+        validate_sampling_seed,
+        write_branches,
+    )
+
+    station, _, _ = expected
+    variant = f"sampling-eighth-hook-{source_variant}"
+    case = read_case(HERE / "cases" / f"{variant}.json", "run")
+    base = read_case(HERE / "cases" / f"{source_variant}.json", "run")
+    (tmp_path / "case.json").write_text(json.dumps(base))
+    checkpoint_dir = tmp_path / "checkpoints"
+    checkpoint_dir.mkdir()
+    state_path = f"checkpoints/station_{station:05d}.dump"
+    (tmp_path / state_path).write_bytes(f"{source_variant} station {station}".encode())
+    decrement = 0.02335 / station
+    ca = [0.02 - decrement * i for i in range(station + 2)]
+    ca.append(ca[-1] + decrement)
+    rows = [
+        {"station": i, "bond": 1.56, "ca": value, "bubble_length_over_r": 6.9,
+         "signed_ca_b": 0.1, "volume_error": 0.0, "flux_error": 0.0,
+         "min_gap": 0.03, "axial_span_over_r": 6.0}
+        for i, value in enumerate(ca)
+    ]
+    write_branches(tmp_path / "branches.csv", rows)
+    (tmp_path / "progress.jsonl").write_text(json.dumps({
+        "stage": "station_accepted", "station": station,
+        "next_ds": -0.02, "ca": rows[station]["ca"],
+    }) + "\n")
+    seed = {
+        "schema": "herrada-figure3-sampling-seed-v1",
+        "run_directory": str(tmp_path), "case_path": "case.json",
+        "case_sha256": case_digest(base), "branches_path": "branches.csv",
+        "branches_sha256": file_digest(tmp_path / "branches.csv"),
+        "state_path": state_path, "state_sha256": file_digest(tmp_path / state_path),
+        "station": station, "next_ds": -0.02, "progress_path": "progress.jsonl",
+        "progress_sha256": file_digest(tmp_path / "progress.jsonl"),
+    }
+    source_case, source_rows, state = validate_sampling_seed(seed, case)
+    assert source_case == base
+    assert len(source_rows) == len(rows)
+    assert state == tmp_path / state_path
+
+    other_variant = "mesh-fine" if source_variant != "mesh-fine" else "mesh-medium"
+    other_base = read_case(HERE / "cases" / f"{other_variant}.json", "run")
+    (tmp_path / "case.json").write_text(json.dumps(other_base))
+    wrong_base_seed = dict(seed, case_sha256=case_digest(other_base))
+    with pytest.raises(ValueError, match=f"accepted {source_variant} case"):
+        validate_sampling_seed(wrong_base_seed, case)
+    (tmp_path / "case.json").write_text(json.dumps(base))
+
+    with pytest.raises(ValueError, match=f"{source_variant} station {station}"):
+        validate_sampling_seed(dict(seed, station=station - 1), case)
+    (tmp_path / state_path).write_bytes(b"altered checkpoint")
+    with pytest.raises(ValueError, match="state hash mismatch"):
+        validate_sampling_seed(seed, case)
 
 
 @pytest.mark.parametrize("variant", ["sampling-half", "sampling-quarter"])

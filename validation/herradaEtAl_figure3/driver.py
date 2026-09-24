@@ -46,7 +46,25 @@ CONVERGENCE_VARIANTS = {
     },
 }
 SAMPLING_CAPS = {"sampling-half": 0.01, "sampling-quarter": 0.005,
-                 "sampling-eighth-hook": 0.0025}
+                 "sampling-eighth-hook": 0.0025,
+                 "sampling-eighth-hook-mesh-medium": 0.0025,
+                 "sampling-eighth-hook-domain20-fine": 0.0025,
+                 "sampling-eighth-hook-domain25-fine": 0.0025}
+SAMPLING_SOURCE_VARIANTS = {
+    "sampling-half": "mesh-fine",
+    "sampling-quarter": "mesh-fine",
+    "sampling-eighth-hook": "mesh-fine",
+    "sampling-eighth-hook-mesh-medium": "mesh-medium",
+    "sampling-eighth-hook-domain20-fine": "domain20-fine",
+    "sampling-eighth-hook-domain25-fine": "domain25-fine",
+}
+# Each local probe starts at a checkpoint accepted by its own base trace.
+LOCAL_SAMPLING_STATIONS = {
+    "sampling-eighth-hook": 80,
+    "sampling-eighth-hook-mesh-medium": 77,
+    "sampling-eighth-hook-domain20-fine": 73,
+    "sampling-eighth-hook-domain25-fine": 70,
+}
 LOCAL_COMPLETION = {"kind": "event",
                     "value": "first_ca_reversal_plus_10_stations_and_descending_l_b_le_6p84"}
 BRANCH_FIELDS = (
@@ -161,13 +179,16 @@ def validate_case(case: dict, expected_mode: str | None = None) -> None:
 
         sampling = case.get("sampling")
         if sampling is not None:
-            if convergence is None or convergence["variant"] != "mesh-fine":
-                raise ValueError("sampling refinement requires the mesh-fine variant")
-            if not isinstance(sampling, dict) or sampling != {
+            if not isinstance(sampling, dict) or sampling.get("variant") not in SAMPLING_CAPS:
+                raise ValueError("sampling metadata must name a declared refinement")
+            source_variant = SAMPLING_SOURCE_VARIANTS[sampling["variant"]]
+            if convergence is None or convergence["variant"] != source_variant:
+                raise ValueError(f"sampling refinement requires the {source_variant} variant")
+            if sampling != {
                 "study": "figure3_continuation_sampling",
-                "baseline_case_id": CONVERGENCE_VARIANTS["mesh-fine"]["case_id"],
+                "baseline_case_id": CONVERGENCE_VARIANTS[source_variant]["case_id"],
                 "variant": sampling.get("variant"),
-            } or sampling["variant"] not in SAMPLING_CAPS:
+            }:
                 raise ValueError("sampling metadata must name a declared refinement")
             variant = dict(variant, case_id=f"{BASE_CASE_ID}_{sampling['variant'].replace('-', '_')}")
             if case["continuation"]["max_ds"] != SAMPLING_CAPS[sampling["variant"]]:
@@ -197,7 +218,7 @@ def validate_case(case: dict, expected_mode: str | None = None) -> None:
             raise ValueError("max_steps and min_turns must be integers")
         if cont["max_steps"] <= 0 or cont["min_turns"] < 2:
             raise ValueError("continuation needs a finite positive budget and at least two turns")
-        if (sampling is not None and sampling["variant"] == "sampling-eighth-hook"
+        if (sampling is not None and sampling["variant"] in LOCAL_SAMPLING_STATIONS
                 and cont["max_steps"] != 200):
             raise ValueError("local sampling max_steps must be 200")
         if not math.isclose(finite(cont, "stop_ca"), -0.02, rel_tol=0, abs_tol=1e-12):
@@ -210,7 +231,7 @@ def validate_case(case: dict, expected_mode: str | None = None) -> None:
         if case["solve"].get("mode") != "continuation":
             raise ValueError("production solve mode must be continuation")
         expected_completion = LOCAL_COMPLETION if sampling is not None and sampling[
-            "variant"] == "sampling-eighth-hook" else {
+            "variant"] in LOCAL_SAMPLING_STATIONS else {
             "kind": "event", "value": "ca_le_-0p02_and_at_least_2_turns"
         }
         if case["completion"] != expected_completion:
@@ -323,7 +344,7 @@ def branch_digest(rows: list[dict]) -> str:
 
 
 def validate_sampling_seed(seed: dict, case: dict) -> tuple[dict, list[dict], Path]:
-    """Authenticate a pre-fold fine-mesh checkpoint for a distinct sampling study."""
+    """Authenticate a pre-fold checkpoint from the sampling case's own base trace."""
     validate_case(case, "run")
     if "sampling" not in case or seed.get("schema") != "herrada-figure3-sampling-seed-v1":
         raise ValueError("refine requires a sampling case and sampling seed v1")
@@ -338,9 +359,10 @@ def validate_sampling_seed(seed: dict, case: dict) -> tuple[dict, list[dict], Pa
             raise ValueError(f"seed {name} must be a SHA-256 digest")
     source = Path(seed["run_directory"])
     source_case = read_case(source / seed["case_path"], "run")
-    accepted_case = read_case(HERE / "cases" / "mesh-fine.json", "run")
+    source_variant = SAMPLING_SOURCE_VARIANTS[case["sampling"]["variant"]]
+    accepted_case = read_case(HERE / "cases" / f"{source_variant}.json", "run")
     if source_case != accepted_case or case_digest(source_case) != seed["case_sha256"]:
-        raise ValueError("seed source case must match the accepted mesh-fine case and hash")
+        raise ValueError(f"seed source case must match the accepted {source_variant} case and hash")
     normalized = copy.deepcopy(case)
     normalized.pop("sampling")
     normalized["case_id"] = source_case["case_id"]
@@ -362,8 +384,9 @@ def validate_sampling_seed(seed: dict, case: dict) -> tuple[dict, list[dict], Pa
     if (type(station) is not int or station < 1 or station >= len(rows)
             or not turns or station >= turns[0]["station"]):
         raise ValueError("seed must precede the first reversal on branch III")
-    if case["completion"] == LOCAL_COMPLETION and station != 80:
-        raise ValueError("local sampling seed must use saved fine station 80")
+    required_station = LOCAL_SAMPLING_STATIONS.get(case["sampling"]["variant"])
+    if required_station is not None and station != required_station:
+        raise ValueError(f"local sampling seed must use saved {source_variant} station {required_station}")
     if seed["state_path"] != f"checkpoints/station_{station:05d}.dump":
         raise ValueError("seed state must be the saved checkpoint for its station")
     next_ds = float(seed.get("next_ds", math.nan))
