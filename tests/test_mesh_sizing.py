@@ -12,6 +12,7 @@ import numpy as np
 import pytest
 
 from problems.interface_sizing import (
+    _grade_along_chain,
     chain_arclength,
     interface_gap,
     interface_point_sizes,
@@ -149,8 +150,9 @@ def legacy_point_sizes(points, *, film_size, lip_elements, lip_floor_divisor,
                        lip_patch_radii, lip_gradation):
     """The sizing exactly as it stood before the proximity floor was added.
 
-    Kept verbatim so that ``gap_elements=None`` can be shown to reproduce every
-    earlier mesh bit for bit rather than merely closely.
+    Kept verbatim, including the dense ``n x n`` gradation that the module now
+    does in two linear sweeps, so that ``gap_elements=None`` can be shown to
+    reproduce every earlier mesh to rounding rather than merely closely.
     """
     pts = np.asarray(points, dtype=float)
     size = np.full(len(pts), film_size, dtype=float)
@@ -186,4 +188,26 @@ def test_gap_elements_none_reproduces_the_previous_sizes_exactly(lip_elements, f
     want = legacy_point_sizes(points, film_size=FILM_SIZE, lip_elements=lip_elements,
                               lip_floor_divisor=floor_divisor, lip_patch_radii=10.0,
                               lip_gradation=0.25)
-    assert np.array_equal(got, want)
+    assert np.allclose(got, want, rtol=1e-14, atol=0.0)
+
+
+def dense_gradation(size, s, rate):
+    """The O(n^2) reference: ``min_j(size_j + rate*|s_i - s_j|)`` by brute force."""
+    return np.min(size[None, :] + rate * np.abs(s[:, None] - s[None, :]), axis=1)
+
+
+def test_linear_gradation_matches_the_dense_distance_transform():
+    """The two-sweep gradation is the dense minimum, on chains unlike the skirt.
+
+    Uneven spacing from 1e-8 to 1 and sizes from 1e-7 to 1e-1 at arclengths up
+    to ~20 are the conditions of a resolved lip far from the chain origin, where
+    a cancelling rearrangement would lose digits.
+    """
+    rng = np.random.default_rng(20260924)
+    for _ in range(50):
+        n = int(rng.integers(2, 400))
+        s = rng.uniform(0.0, 15.0) + np.cumsum(10.0 ** rng.uniform(-8.0, 0.0, n))
+        size = 10.0 ** rng.uniform(-7.0, -1.0, n)
+        rate = float(rng.uniform(0.01, 2.0))
+        got = _grade_along_chain(size, s, rate)
+        assert np.allclose(got, dense_gradation(size, s, rate), rtol=1e-14, atol=0.0)
