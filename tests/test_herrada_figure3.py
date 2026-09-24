@@ -231,23 +231,29 @@ LOCAL_SPATIAL_PROBES = {
 }
 
 
+@pytest.mark.parametrize("sampling_prefix", ["sampling-eighth-hook", "sampling-quarter"])
 @pytest.mark.parametrize(("source_variant", "expected"), LOCAL_SPATIAL_PROBES.items())
-def test_local_spatial_probe_cases_preserve_base_mapping(source_variant, expected):
+def test_spatial_probe_cases_preserve_base_mapping(sampling_prefix, source_variant, expected):
     _, domain, film_elements = expected
-    variant = f"sampling-eighth-hook-{source_variant}"
+    variant = f"{sampling_prefix}-{source_variant}"
     case = read_case(HERE / "cases" / f"{variant}.json", "run")
     base = read_case(HERE / "cases" / f"{source_variant}.json", "run")
+    is_local = sampling_prefix == "sampling-eighth-hook"
     assert case["sampling"]["baseline_case_id"] == base["case_id"]
     assert case["convergence"] == base["convergence"]
     assert case["physics"]["domain_over_r"] == domain
     assert case["mesh"]["film_elements"] == film_elements
-    assert case["continuation"]["max_ds"] == 0.0025
-    assert case["continuation"]["max_steps"] == 200
-    assert case["completion"] == read_case(HERE / "cases/sampling-eighth-hook.json")["completion"]
+    assert case["continuation"]["max_ds"] == (0.0025 if is_local else 0.005)
+    assert case["continuation"]["max_steps"] == (200 if is_local else 2000)
+    assert case["continuation"]["initial_ds"] < 0
+    assert case["completion"] == read_case(HERE / "cases" / f"{sampling_prefix}.json")["completion"]
     for section, name, value in (
         ("physics", "domain_over_r", domain + 1),
         ("mesh", "film_elements", film_elements + 1),
-        ("continuation", "max_ds", 0.005),
+        ("continuation", "max_ds", 0.01),
+        ("continuation", "max_steps", 2000 if is_local else 200),
+        ("completion", "value", "ca_le_-0p02_and_at_least_2_turns" if is_local else
+         "first_ca_reversal_plus_10_stations_and_descending_l_b_le_6p84"),
         ("sampling", "baseline_case_id", "herradaEtAl_figure3_bo1p56_mesh_fine"),
         ("convergence", "variant", "mesh-fine"),
     ):
@@ -397,9 +403,10 @@ def sampling_seed(tmp_path):
     return seed
 
 
+@pytest.mark.parametrize("sampling_prefix", ["sampling-eighth-hook", "sampling-quarter"])
 @pytest.mark.parametrize(("source_variant", "expected"), LOCAL_SPATIAL_PROBES.items())
-def test_local_spatial_seed_requires_own_accepted_prefold_station(
-    tmp_path, source_variant, expected
+def test_spatial_sampling_seed_requires_own_accepted_prefold_station(
+    tmp_path, sampling_prefix, source_variant, expected
 ):
     from validation.herradaEtAl_figure3.driver import (
         file_digest,
@@ -408,7 +415,7 @@ def test_local_spatial_seed_requires_own_accepted_prefold_station(
     )
 
     station, _, _ = expected
-    variant = f"sampling-eighth-hook-{source_variant}"
+    variant = f"{sampling_prefix}-{source_variant}"
     case = read_case(HERE / "cases" / f"{variant}.json", "run")
     base = read_case(HERE / "cases" / f"{source_variant}.json", "run")
     (tmp_path / "case.json").write_text(json.dumps(base))

@@ -46,6 +46,9 @@ CONVERGENCE_VARIANTS = {
     },
 }
 SAMPLING_CAPS = {"sampling-half": 0.01, "sampling-quarter": 0.005,
+                 "sampling-quarter-mesh-medium": 0.005,
+                 "sampling-quarter-domain20-fine": 0.005,
+                 "sampling-quarter-domain25-fine": 0.005,
                  "sampling-eighth-hook": 0.0025,
                  "sampling-eighth-hook-mesh-medium": 0.0025,
                  "sampling-eighth-hook-domain20-fine": 0.0025,
@@ -53,6 +56,9 @@ SAMPLING_CAPS = {"sampling-half": 0.01, "sampling-quarter": 0.005,
 SAMPLING_SOURCE_VARIANTS = {
     "sampling-half": "mesh-fine",
     "sampling-quarter": "mesh-fine",
+    "sampling-quarter-mesh-medium": "mesh-medium",
+    "sampling-quarter-domain20-fine": "domain20-fine",
+    "sampling-quarter-domain25-fine": "domain25-fine",
     "sampling-eighth-hook": "mesh-fine",
     "sampling-eighth-hook-mesh-medium": "mesh-medium",
     "sampling-eighth-hook-domain20-fine": "domain20-fine",
@@ -64,6 +70,11 @@ LOCAL_SAMPLING_STATIONS = {
     "sampling-eighth-hook-mesh-medium": 77,
     "sampling-eighth-hook-domain20-fine": 73,
     "sampling-eighth-hook-domain25-fine": 70,
+}
+FULL_SAMPLING_STATIONS = {
+    "sampling-quarter-mesh-medium": 77,
+    "sampling-quarter-domain20-fine": 73,
+    "sampling-quarter-domain25-fine": 70,
 }
 LOCAL_COMPLETION = {"kind": "event",
                     "value": "first_ca_reversal_plus_10_stations_and_descending_l_b_le_6p84"}
@@ -221,6 +232,9 @@ def validate_case(case: dict, expected_mode: str | None = None) -> None:
         if (sampling is not None and sampling["variant"] in LOCAL_SAMPLING_STATIONS
                 and cont["max_steps"] != 200):
             raise ValueError("local sampling max_steps must be 200")
+        if (sampling is not None and sampling["variant"] in FULL_SAMPLING_STATIONS
+                and cont["max_steps"] != 2000):
+            raise ValueError("full-branch sampling max_steps must be 2000")
         if not math.isclose(finite(cont, "stop_ca"), -0.02, rel_tol=0, abs_tol=1e-12):
             raise ValueError("stop_ca must be -0.02 for the declared completion event")
         finite(cont, "bond_step", positive=True)
@@ -384,9 +398,11 @@ def validate_sampling_seed(seed: dict, case: dict) -> tuple[dict, list[dict], Pa
     if (type(station) is not int or station < 1 or station >= len(rows)
             or not turns or station >= turns[0]["station"]):
         raise ValueError("seed must precede the first reversal on branch III")
-    required_station = LOCAL_SAMPLING_STATIONS.get(case["sampling"]["variant"])
+    sampling_variant = case["sampling"]["variant"]
+    required_station = (LOCAL_SAMPLING_STATIONS.get(sampling_variant)
+                        or FULL_SAMPLING_STATIONS.get(sampling_variant))
     if required_station is not None and station != required_station:
-        raise ValueError(f"local sampling seed must use saved {source_variant} station {required_station}")
+        raise ValueError(f"sampling seed must use saved {source_variant} station {required_station}")
     if seed["state_path"] != f"checkpoints/station_{station:05d}.dump":
         raise ValueError("seed state must be the saved checkpoint for its station")
     next_ds = float(seed.get("next_ds", math.nan))
