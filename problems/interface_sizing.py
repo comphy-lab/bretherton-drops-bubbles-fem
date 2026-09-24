@@ -179,6 +179,25 @@ def _proximity_sizes(size, pts, s, *, gap_elements, gap_min_chain, gap_max_range
     return np.minimum(size, target), min_gap
 
 
+def _grade_along_chain(size, s, rate):
+    """``min_j(size_j + rate*|s_i - s_j|)`` for strictly increasing ``s``, in O(n).
+
+    This is the 1-D distance transform, done in one forward and one backward
+    sweep instead of an ``n x n`` table. The forward sweep carries the best
+    candidate from ``j <= i`` and the backward sweep the best from ``j >= i``.
+    Each step adds ``rate`` times one arclength increment, so rounding stays
+    relative to the sizes themselves; the ``size_j - rate*s_j`` rearrangement
+    would instead cancel a sub-micron lip size against ``rate*s ~ O(1)``.
+    """
+    out = [float(v) for v in size]
+    step = (rate * np.diff(s)).tolist()
+    for k in range(1, len(out)):
+        out[k] = min(out[k], out[k - 1] + step[k - 1])
+    for k in range(len(out) - 2, -1, -1):
+        out[k] = min(out[k], out[k + 1] + step[k])
+    return np.array(out, dtype=float)
+
+
 def interface_point_sizes(points, *, film_size: float,
                           lip_elements: float | None = None,
                           lip_floor_divisor: float = 16.0,
@@ -225,7 +244,7 @@ def interface_point_sizes(points, *, film_size: float,
             gap_max_range=gap_max_range, gap_chain_ratio=gap_chain_ratio)
 
     if lip_gradation > 0:
-        size = np.min(size[None, :] + lip_gradation * np.abs(s[:, None] - s[None, :]), axis=1)
+        size = _grade_along_chain(size, s, float(lip_gradation))
 
     size = np.maximum(size, film_size / lip_floor_divisor)
     return (size, min_gap) if with_min_gap else size
