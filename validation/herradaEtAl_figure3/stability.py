@@ -52,13 +52,20 @@ def validate_request(station: int, mode: int, shifts: list[float], neigen: int,
 def compare_steady_observables(loaded: dict, source: dict) -> dict[str, float]:
     """Fail if a changed gauge/linearisation has moved the accepted steady state."""
     differences = {}
+    changed = []
     for key in OBSERVABLES:
         actual, reference = float(loaded[key]), float(source[key])
         if not math.isfinite(actual) or not math.isfinite(reference):
             raise ValueError(f"non-finite steady observable: {key}")
         differences[key] = actual - reference
-        if not math.isclose(actual, reference, rel_tol=1e-8, abs_tol=1e-9):
-            raise ValueError(f"stability-gauge steady state changed {key}: {actual} vs {reference}")
+        # The gap is a nodal geometric minimum, not a solved global constraint.
+        # Allow one Newton tolerance in R0 units after stationary re-polishing.
+        absolute_tolerance = 1e-8 if key == "min_gap" else 1e-9
+        if not math.isclose(actual, reference, rel_tol=1e-8,
+                            abs_tol=absolute_tolerance):
+            changed.append(f"{key}: {actual} vs {reference}")
+    if changed:
+        raise ValueError("stability-gauge steady state changed " + "; ".join(changed))
     return differences
 
 

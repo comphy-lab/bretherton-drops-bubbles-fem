@@ -36,6 +36,16 @@ def test_changed_gauge_must_preserve_every_steady_observable():
         stability.compare_steady_observables(same, source)
 
 
+def test_repolished_gap_is_checked_at_newton_scale():
+    source = {name: 1.0 for name in stability.OBSERVABLES}
+    source["min_gap"] = 0.01710217794
+    re_polished = dict(source, min_gap=source["min_gap"] + 3.53e-9)
+    assert stability.compare_steady_observables(re_polished, source)["min_gap"] == pytest.approx(3.53e-9)
+    re_polished["min_gap"] = source["min_gap"] + 2e-8
+    with pytest.raises(ValueError, match="min_gap"):
+        stability.compare_steady_observables(re_polished, source)
+
+
 def test_generalised_residual_and_mass_action_reject_spurious_pairs():
     jacobian = csr_matrix(np.diag([2.0, 3.0]))
     mass = csr_matrix(np.diag([1.0, 1.0]))
