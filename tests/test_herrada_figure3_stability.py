@@ -83,6 +83,30 @@ def test_reassembled_pencil_uses_requested_mode_and_restores_parameter():
     assert problem._azimuthal_mode_param_m.value == 0
 
 
+def test_axisymmetric_pencil_needs_no_azimuthal_setup():
+    class FakeProblem:
+        _azimuthal_mode_param_m = None
+
+        def actions_before_eigen_solve(self):
+            self.assembled = True
+
+        def get_eigen_solver(self):
+            return SimpleNamespace(get_J_M_n_and_type=lambda: 7)
+
+    problem = FakeProblem()
+    assert stability.assemble_current_mode_pencil(problem, 0) == 7
+    assert problem.assembled
+    with pytest.raises(RuntimeError, match="azimuthal stability"):
+        stability.assemble_current_mode_pencil(problem, 1)
+
+
+def test_saved_axisymmetric_checkpoint_rejects_nonzero_mode_before_output(tmp_path):
+    output = tmp_path / "spectrum"
+    with pytest.raises(ValueError, match="stationary checkpoint written"):
+        stability.run(tmp_path, 0, 1, [0.001], 8, 1e-7, output)
+    assert not output.exists()
+
+
 def test_run_checks_loaded_steady_state_before_solving_eigenproblem(tmp_path, monkeypatch):
     from validation.herradaEtAl_figure3 import driver
 
@@ -95,7 +119,7 @@ def test_run_checks_loaded_steady_state_before_solving_eigenproblem(tmp_path, mo
     (run_dir / "checkpoints" / "station_00000.dump").write_bytes(b"mock-state")
 
     class FakeProblem:
-        _azimuthal_mode_param_m = SimpleNamespace(value=0)
+        _azimuthal_mode_param_m = None
 
         def __init__(self):
             self.events = []
@@ -150,7 +174,7 @@ def test_run_checks_loaded_steady_state_before_solving_eigenproblem(tmp_path, mo
     problem = FakeProblem()
 
     def build(_case, *, pressure_datum, **_kwargs):
-        assert pressure_datum == "integral"
+        assert pressure_datum == "fixation"
         return problem
 
     monkeypatch.setattr(driver, "build_problem", build)
@@ -158,12 +182,14 @@ def test_run_checks_loaded_steady_state_before_solving_eigenproblem(tmp_path, mo
     monkeypatch.setattr(driver, "extract_row", lambda *_: (dict(source), None))
     output = tmp_path / "spectrum"
     assert stability.run(run_dir, 0, 0, [0.01], 1, 1e-7, output) == 0
-    assert problem.events == ["output", "backend", "setup", "initialise", "load",
+    assert problem.events == ["output", "backend", "initialise", "load",
                               "polish", "eigensolve", "reassemble"]
     status = json.loads((output / "status.json").read_text())
     assert status["status"] == "complete"
     assert len(status["source_commit"]) == 40
     assert status["expected_pyoomph_commit"] == stability.EXPECTED_PYOOMPH_COMMIT
+    assert status["eigenproblem"] == "axisymmetric_base"
+    assert status["pressure_datum"] == "fixation"
     assert status["spectra"][0]["eigenpairs"][0]["lambda_real"] == 2.0
     assert status["spectra"][0]["eigenpairs"][0]["paper_omega_i"] == pytest.approx(
         2.0 * case["physics"]["r_tube"] / case["physics"]["r0"]

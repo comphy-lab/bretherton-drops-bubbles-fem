@@ -1,4 +1,4 @@
-"""Analyse one saved Figure 3 steady station with the pinned pyoomph eigenproblem.
+"""Analyse the axisymmetric spectrum of one saved Figure 3 steady station.
 
 Example::
 
@@ -8,10 +8,12 @@ Example::
       --output-dir /path/to/new/stability-result
 
 The fresh output directory contains ``status.json`` with source hashes, the
-gauge-preserved steady observables and finite-eigenpair diagnostics, plus one
+fixation-gauge steady observables and finite-eigenpair diagnostics, plus one
 ``eigenvectors_shift_XX.npz`` per shift for later mode-shape analysis. This is
 a finite-spectrum diagnostic, not a stability classification or a sweep. The
 void model and imposed end conditions remain those of the steady driver.
+Nonzero azimuthal modes require a steady checkpoint written from an azimuthal
+formulation and are rejected by this saved-state driver.
 """
 
 from __future__ import annotations
@@ -138,7 +140,10 @@ def assemble_current_mode_pencil(problem, mode: int):
     """Reassemble the same mode and constrained rows that pyoomph just solved."""
     parameter = problem._azimuthal_mode_param_m
     if parameter is None:
-        raise RuntimeError("azimuthal stability was not set up before initialisation")
+        if mode != 0:
+            raise RuntimeError("azimuthal stability was not set up before initialisation")
+        problem.actions_before_eigen_solve()
+        return problem.get_eigen_solver().get_J_M_n_and_type()
     old_value = parameter.value
     try:
         parameter.value = mode
@@ -151,6 +156,12 @@ def assemble_current_mode_pencil(problem, mode: int):
 def run(run_dir: Path, station: int, mode: int, shifts: list[float], neigen: int,
         residual_tolerance: float, output: Path) -> int:
     validate_request(station, mode, shifts, neigen, residual_tolerance)
+    if mode != 0:
+        raise ValueError(
+            "nonzero azimuthal modes require a stationary checkpoint written "
+            "by the integral-gauge azimuthal formulation; this saved-state "
+            "driver currently accepts only the original axisymmetric m=0 state"
+        )
     case_path = run_dir / "case.json"
     case = driver.read_case(case_path, "run")
     growth_rate_factor = float(case["physics"]["r_tube"]) / float(case["physics"]["r0"])
@@ -176,22 +187,29 @@ def run(run_dir: Path, station: int, mode: int, shifts: list[float], neigen: int
         "state_sha256": driver.file_digest(state), "shifts": shifts,
         "neigen_requested": neigen, "residual_tolerance": residual_tolerance,
         "paper_growth_rate_factor": growth_rate_factor,
-        "pressure_datum": "integral", "eigensolver": "spectra", "spectra": [],
+        "pressure_datum": "fixation",
+        "eigenproblem": "axisymmetric_base",
+        "eigensolver": "spectra", "spectra": [],
     }
     driver.atomic_json(output / "status.json", receipt)
     try:
         driver._require_one_rank()
-        problem = driver.build_problem(case, ca=float(case["physics"]["seed_ca"]), bond=0.0,
-                                       pressure_datum="integral")
+        # The saved m=0 state was written by the fixation-gauge base problem.
+        # A stability-enabled problem adds an azimuthal parameter, and the
+        # integral datum changes the constrained state. Pyoomph correctly
+        # rejects a dump from the different stationary formulation.
+        # The ordinary axisymmetric eigenproblem is the m=0 meridional pencil.
+        problem = driver.build_problem(
+            case, ca=float(case["physics"]["seed_ca"]), bond=0.0,
+            pressure_datum="fixation",
+        )
         problem.set_output_directory(str(output / "solver"))
         problem.set_eigensolver("spectra")
-        problem.setup_for_stability_analysis(azimuthal_stability=True)
         with problem:
             problem.initialise()
             problem.load_state(str(state), quiet=True, ignore_eigendata=True,
                                ignore_continuation_data=True)
-            # Loading a point-gauge dump into the integral-gauge problem adds a
-            # multiplier. Re-polish the stationary equations before comparing.
+            # Re-polish the stationary equations before comparing the saved state.
             problem.solve(max_newton_iterations=20)
             loaded, _ = driver.extract_row(problem, station, case["acceptance"])
             receipt["steady_observable_differences"] = compare_steady_observables(
@@ -201,13 +219,10 @@ def run(run_dir: Path, station: int, mode: int, shifts: list[float], neigen: int
             receipt["degrees_of_freedom"] = problem.ndof()
             for index, shift in enumerate(shifts):
                 values, vectors = problem.solve_eigenproblem(
-                    neigen, shift=shift, azimuthal_m=mode, quiet=True
+                    neigen, shift=shift, quiet=True,
                 )
                 if len(values) == 0:
                     raise ValueError(f"no finite eigenpairs returned near shift {shift}")
-                labels = problem.get_last_eigenmodes_m()
-                if labels is None or len(labels) != len(values) or np.any(labels != mode):
-                    raise ValueError("eigensolver mode labels do not match requested m")
                 jacobian, mass, n, is_complex = assemble_current_mode_pencil(problem, mode)
                 if n != problem.ndof():
                     raise ValueError("assembled eigenproblem size differs from current DOF count")
