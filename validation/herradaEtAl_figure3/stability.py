@@ -81,6 +81,10 @@ def diagnose_eigenpairs(values, vectors, jacobian, mass, *, mode: int,
     if mass.nnz == 0 or not np.any(mass.data):
         raise ValueError("empty mass matrix")
     mass_scale = float(np.max(np.abs(mass.data)))
+    jacobian_norm = float(np.linalg.norm(jacobian.data))
+    mass_norm = float(np.linalg.norm(mass.data))
+    if jacobian_norm == 0:
+        raise ValueError("empty Jacobian")
     records = []
     for index, (value, vector) in enumerate(zip(values, vectors, strict=True)):
         vnorm = float(np.linalg.norm(vector))
@@ -88,17 +92,26 @@ def diagnose_eigenpairs(values, vectors, jacobian, mass, *, mode: int,
         jnorm, mnorm = float(np.linalg.norm(jv)), float(np.linalg.norm(mv))
         absolute = float(np.linalg.norm(jv - value * mv))
         relative = absolute / max(jnorm + abs(value) * mnorm, 1e-300)
+        backward = absolute / max(
+            (jacobian_norm + abs(value) * mass_norm) * vnorm, 1e-300
+        )
+        stationary_null = jnorm / max(jacobian_norm * vnorm, 1e-300)
         mass_action = mnorm / max(mass_scale * vnorm, 1e-300)
-        if not all(map(math.isfinite, (vnorm, jnorm, mnorm, absolute, relative, mass_action))):
+        if not all(map(math.isfinite, (
+            vnorm, jnorm, mnorm, absolute, relative, backward,
+            stationary_null, mass_action,
+        ))):
             raise ValueError(f"non-finite eigenpair diagnostic at index {index}")
         if vnorm == 0 or mass_action <= 1e-12:
             raise ValueError(f"zero/near-null mass action at eigenpair {index}")
-        if relative > residual_tolerance:
-            raise ValueError(f"eigenpair {index} residual {relative:g} exceeds {residual_tolerance:g}")
+        if backward > residual_tolerance:
+            raise ValueError(f"eigenpair {index} backward residual {backward:g} exceeds {residual_tolerance:g}")
         records.append({
             "index": index, "m": mode, "lambda_real": float(value.real),
             "lambda_imag": float(value.imag), "absolute_residual_l2": absolute,
-            "relative_residual_l2": relative, "mass_action_ratio": mass_action,
+            "relative_residual_l2": relative, "backward_residual_l2": backward,
+            "stationary_null_residual_l2": stationary_null,
+            "mass_action_ratio": mass_action,
             "vector_norm_l2": vnorm,
         })
     return records
@@ -140,6 +153,7 @@ def run(run_dir: Path, station: int, mode: int, shifts: list[float], neigen: int
     validate_request(station, mode, shifts, neigen, residual_tolerance)
     case_path = run_dir / "case.json"
     case = driver.read_case(case_path, "run")
+    growth_rate_factor = float(case["physics"]["r_tube"]) / float(case["physics"]["r0"])
     rows = driver.read_branches(run_dir / "branches.csv")
     if station >= len(rows):
         raise ValueError("station is absent from the accepted branch table")
@@ -161,6 +175,7 @@ def run(run_dir: Path, station: int, mode: int, shifts: list[float], neigen: int
         "branches_sha256": driver.file_digest(run_dir / "branches.csv"),
         "state_sha256": driver.file_digest(state), "shifts": shifts,
         "neigen_requested": neigen, "residual_tolerance": residual_tolerance,
+        "paper_growth_rate_factor": growth_rate_factor,
         "pressure_datum": "integral", "eigensolver": "spectra", "spectra": [],
     }
     driver.atomic_json(output / "status.json", receipt)
@@ -199,6 +214,8 @@ def run(run_dir: Path, station: int, mode: int, shifts: list[float], neigen: int
                 diagnostics = diagnose_eigenpairs(values, vectors, jacobian, mass,
                                                   mode=mode,
                                                   residual_tolerance=residual_tolerance)
+                for item in diagnostics:
+                    item["paper_omega_i"] = growth_rate_factor * item["lambda_real"]
                 for item, fields in zip(diagnostics, mode_components(problem, vectors), strict=True):
                     item["dominant_dof_groups"] = fields
                 filename = f"eigenvectors_shift_{index:02d}.npz"

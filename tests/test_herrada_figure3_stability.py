@@ -43,6 +43,7 @@ def test_generalised_residual_and_mass_action_reject_spurious_pairs():
     good = stability.diagnose_eigenpairs([2.0, 3.0], vectors, jacobian, mass,
                                          mode=0, residual_tolerance=1e-7)
     assert [record["relative_residual_l2"] for record in good] == [0.0, 0.0]
+    assert [record["backward_residual_l2"] for record in good] == [0.0, 0.0]
     with pytest.raises(ValueError, match="residual"):
         stability.diagnose_eigenpairs([2.1], vectors[:1], jacobian, mass,
                                       mode=0, residual_tolerance=1e-7)
@@ -53,6 +54,18 @@ def test_generalised_residual_and_mass_action_reject_spurious_pairs():
     with pytest.raises(ValueError, match="non-finite"):
         stability.diagnose_eigenpairs([complex(float("inf"), 0)], vectors[:1],
                                       jacobian, mass, mode=0, residual_tolerance=1e-7)
+
+
+def test_near_fold_zero_mode_uses_matrix_scaled_residual():
+    jacobian = csr_matrix(np.diag([1e-12, 1.0]))
+    mass = csr_matrix(np.eye(2))
+    pair = stability.diagnose_eigenpairs(
+        [0.0], np.array([[1.0, 0.0]]), jacobian, mass,
+        mode=0, residual_tolerance=1e-7,
+    )[0]
+    assert pair["relative_residual_l2"] == 1.0
+    assert pair["backward_residual_l2"] == pytest.approx(1e-12)
+    assert pair["stationary_null_residual_l2"] == pytest.approx(1e-12)
 
 
 def test_reassembled_pencil_uses_requested_mode_and_restores_parameter():
@@ -152,6 +165,9 @@ def test_run_checks_loaded_steady_state_before_solving_eigenproblem(tmp_path, mo
     assert len(status["source_commit"]) == 40
     assert status["expected_pyoomph_commit"] == stability.EXPECTED_PYOOMPH_COMMIT
     assert status["spectra"][0]["eigenpairs"][0]["lambda_real"] == 2.0
+    assert status["spectra"][0]["eigenpairs"][0]["paper_omega_i"] == pytest.approx(
+        2.0 * case["physics"]["r_tube"] / case["physics"]["r0"]
+    )
 
     monkeypatch.setattr(driver, "extract_row", lambda *_: (dict(source, ca=2.0), None))
     failed = tmp_path / "changed-steady"
