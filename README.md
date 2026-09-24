@@ -43,9 +43,10 @@ the re-entrant rear cap at high capillary number. Build it with
 make -C docs/validation
 ```
 
-Every number it plots or tabulates is vendored as a compact CSV under
+Every campaign number it plots or tabulates is vendored as a compact CSV under
 `docs/validation/data/`, and its figures regenerate from those alone, without a
-solver or a simulation dump.
+solver or a simulation dump. The verification-stage values come from the JSON
+receipts under `receipts/`.
 
 This file documents the code: what it computes, how it is arranged, how to run
 it and what each verification stage asks. Measured properties of the solver that

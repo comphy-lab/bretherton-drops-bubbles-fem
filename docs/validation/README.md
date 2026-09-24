@@ -10,7 +10,7 @@ results, and with the companion volume-of-fluid campaign.
 | `references.bib` | Bibliography |
 | `main.pdf` | Compiled report |
 | `figures/` | PDF and PNG figures, with their plotting scripts |
-| `data/` | Compact CSVs holding every number the report plots or tabulates |
+| `data/` | Compact CSVs holding the campaign data behind the report's figures and tables; verification-stage values come from `../../receipts/` |
 | `Makefile` | LaTeX and figure build |
 
 ## Compile

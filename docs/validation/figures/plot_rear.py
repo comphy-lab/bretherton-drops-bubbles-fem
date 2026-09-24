@@ -4,7 +4,7 @@ Inputs are the compact CSVs in ../data. Outputs are the PDF and PNG beside this
 script. No simulation dumps and no solver are needed.
 
 The left panel shows converged profiles, one per decade, each shifted so its
-rear tip sits at the origin; without that shift the bubbles sit at different
+rearmost point sits at the origin; without that shift the bubbles sit at different
 stations in their own windows and the rear caps cannot be compared. The right
 panel is the indentation of the rear cap against capillary number, at two film
 resolutions, because near onset the indentation is small enough that it has to

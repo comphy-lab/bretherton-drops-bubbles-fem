@@ -33,7 +33,7 @@ def _public_row(row: dict) -> dict:
     profile = cleaned.get("interface_profile")
     if isinstance(profile, str):
         try:
-            cleaned["interface_profile"] = str(Path(profile).resolve().relative_to(ROOT))
+            cleaned["interface_profile"] = str((Path(profile) if Path(profile).is_absolute() else ROOT / profile).resolve().relative_to(ROOT))
         except ValueError:
             cleaned.pop("interface_profile", None)
     return cleaned
