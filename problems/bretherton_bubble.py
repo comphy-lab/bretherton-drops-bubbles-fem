@@ -343,6 +343,13 @@ class VoidBubbleProblem(Problem):
         # else: no velocity condition at all, which is the natural traction-free
         # outflow of the weak form - the parent Basilisk code's outlet.
 
+        # The azimuthal stability code adds a third velocity component. No-slip
+        # on the rigid wall and prescribed Poiseuille flow at both ends require
+        # its perturbation to vanish there; the axis is handled by AxisymmetryBC.
+        if self.is_normal_mode_stability_set_up() == "azimuthal":
+            for boundary in ("wall", "inlet", "outlet"):
+                eqs += DirichletBC(velocity_phi=0) @ boundary
+
         # Interface charts for old-to-new interpolation across a remesh. Arclength
         # rather than an Eulerian coordinate, because the interface is not
         # single-valued in r and need not stay single-valued in z at the caps.

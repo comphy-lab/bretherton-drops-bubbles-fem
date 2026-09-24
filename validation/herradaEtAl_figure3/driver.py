@@ -459,7 +459,8 @@ def seed_geometry(case: dict):
                            l_domain=float(p["domain_over_r"]) * rt)
 
 
-def build_problem(case: dict, *, ca: float, bond: float):
+def build_problem(case: dict, *, ca: float, bond: float,
+                  pressure_datum: str = "fixation"):
     from problems.bretherton_bubble import VoidBubbleProblem
 
     problem = VoidBubbleProblem(
@@ -467,6 +468,7 @@ def build_problem(case: dict, *, ca: float, bond: float):
         allow_signed_flow=True, film_elements=float(case["mesh"]["film_elements"]),
         bulk_resolution=float(case["mesh"]["bulk_resolution"]), closure="front_tip",
         outlet="poiseuille", remesh=bool(case["mesh"].get("remeshing", True)),
+        pressure_datum=pressure_datum,
         newton_tolerance=float(case["tolerances"]["newton"]),
     )
     problem.set_linear_solver("superlu")
