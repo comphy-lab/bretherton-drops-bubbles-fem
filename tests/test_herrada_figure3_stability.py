@@ -12,6 +12,20 @@ from scipy.sparse import csr_matrix
 from validation.herradaEtAl_figure3 import stability
 
 
+class FakeStepper:
+    def __init__(self):
+        self.steady = False
+
+    def is_steady(self):
+        return self.steady
+
+    def make_steady(self):
+        self.steady = True
+
+    def undo_make_steady(self):
+        self.steady = False
+
+
 def test_request_is_bounded_and_cannot_target_the_exact_fold_shift():
     stability.validate_request(12, 1, [-0.01, 0.01], 8, 1e-7)
     for station, mode, shifts, neigen, tolerance in (
@@ -82,8 +96,21 @@ def test_reassembled_pencil_uses_requested_mode_and_restores_parameter():
     class FakeProblem:
         _azimuthal_mode_param_m = SimpleNamespace(value=0)
 
+        def __init__(self):
+            self.stepper = FakeStepper()
+
+        def ntime_stepper(self):
+            return 1
+
+        def time_stepper_pt(self, _index):
+            return self.stepper
+
         def actions_before_eigen_solve(self):
+            assert self.stepper.is_steady()
             self.assembled_mode = self._azimuthal_mode_param_m.value
+
+        def setup_forced_zero_dof_list_for_eigenproblems(self):
+            assert self.stepper.is_steady()
 
         def get_eigen_solver(self):
             return SimpleNamespace(get_J_M_n_and_type=lambda: self.assembled_mode)
@@ -91,14 +118,28 @@ def test_reassembled_pencil_uses_requested_mode_and_restores_parameter():
     problem = FakeProblem()
     assert stability.assemble_current_mode_pencil(problem, 1) == 1
     assert problem._azimuthal_mode_param_m.value == 0
+    assert not problem.stepper.is_steady()
 
 
 def test_axisymmetric_pencil_needs_no_azimuthal_setup():
     class FakeProblem:
         _azimuthal_mode_param_m = None
 
+        def __init__(self):
+            self.stepper = FakeStepper()
+
+        def ntime_stepper(self):
+            return 1
+
+        def time_stepper_pt(self, _index):
+            return self.stepper
+
         def actions_before_eigen_solve(self):
+            assert self.stepper.is_steady()
             self.assembled = True
+
+        def setup_forced_zero_dof_list_for_eigenproblems(self):
+            assert self.stepper.is_steady()
 
         def get_eigen_solver(self):
             return SimpleNamespace(get_J_M_n_and_type=lambda: 7)
@@ -106,8 +147,36 @@ def test_axisymmetric_pencil_needs_no_azimuthal_setup():
     problem = FakeProblem()
     assert stability.assemble_current_mode_pencil(problem, 0) == 7
     assert problem.assembled
+    assert not problem.stepper.is_steady()
     with pytest.raises(RuntimeError, match="azimuthal stability"):
         stability.assemble_current_mode_pencil(problem, 1)
+
+
+def test_pencil_reassembly_restores_mode_and_time_stepper_after_failure():
+    class FakeProblem:
+        _azimuthal_mode_param_m = SimpleNamespace(value=0)
+
+        def __init__(self):
+            self.stepper = FakeStepper()
+
+        def ntime_stepper(self):
+            return 1
+
+        def time_stepper_pt(self, _index):
+            return self.stepper
+
+        def actions_before_eigen_solve(self):
+            assert self._azimuthal_mode_param_m.value == 1
+            assert self.stepper.is_steady()
+
+        def setup_forced_zero_dof_list_for_eigenproblems(self):
+            raise RuntimeError("assembly failed")
+
+    problem = FakeProblem()
+    with pytest.raises(RuntimeError, match="assembly failed"):
+        stability.assemble_current_mode_pencil(problem, 1)
+    assert problem._azimuthal_mode_param_m.value == 0
+    assert not problem.stepper.is_steady()
 
 
 def test_saved_axisymmetric_checkpoint_rejects_nonzero_mode_before_output(tmp_path):
@@ -133,8 +202,18 @@ def test_run_checks_loaded_steady_state_before_solving_eigenproblem(tmp_path, mo
 
         def __init__(self):
             self.events = []
+            self.stepper = FakeStepper()
             self.solver = SimpleNamespace(get_J_M_n_and_type=lambda: (
                 csr_matrix([[2.0]]), csr_matrix([[1.0]]), 1, False))
+
+        def ntime_stepper(self):
+            return 1
+
+        def time_stepper_pt(self, _index):
+            return self.stepper
+
+        def setup_forced_zero_dof_list_for_eigenproblems(self):
+            assert self.stepper.is_steady()
 
         def set_output_directory(self, value):
             self.events.append("output")
@@ -173,6 +252,7 @@ def test_run_checks_loaded_steady_state_before_solving_eigenproblem(tmp_path, mo
             return np.array([0])
 
         def actions_before_eigen_solve(self):
+            assert self.stepper.is_steady()
             self.events.append("reassemble")
 
         def get_eigen_solver(self):

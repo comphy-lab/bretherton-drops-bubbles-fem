@@ -146,18 +146,25 @@ def mode_components(problem, vectors) -> list[list[dict]]:
 def assemble_current_mode_pencil(problem, mode: int):
     """Reassemble the same mode and constrained rows that pyoomph just solved."""
     parameter = problem._azimuthal_mode_param_m
-    if parameter is None:
-        if mode != 0:
-            raise RuntimeError("azimuthal stability was not set up before initialisation")
-        problem.actions_before_eigen_solve()
-        return problem.get_eigen_solver().get_J_M_n_and_type()
-    old_value = parameter.value
+    if parameter is None and mode != 0:
+        raise RuntimeError("azimuthal stability was not set up before initialisation")
+    old_value = parameter.value if parameter is not None else None
+    steppers = [problem.time_stepper_pt(index) for index in range(problem.ntime_stepper())]
+    was_steady = [stepper.is_steady() for stepper in steppers]
     try:
-        parameter.value = mode
+        for stepper in steppers:
+            stepper.make_steady()
+        if parameter is not None:
+            parameter.value = mode
         problem.actions_before_eigen_solve()
+        problem.setup_forced_zero_dof_list_for_eigenproblems()
         return problem.get_eigen_solver().get_J_M_n_and_type()
     finally:
-        parameter.value = old_value
+        if parameter is not None:
+            parameter.value = old_value
+        for stepper, steady in zip(steppers, was_steady, strict=True):
+            if not steady:
+                stepper.undo_make_steady()
 
 
 def run(run_dir: Path, station: int, mode: int, shifts: list[float], neigen: int,
