@@ -122,6 +122,25 @@ class _SlideCallback(CustomMathExpression):
         return target_point(xr, xz, t, frame)[self.component]
 
 
+class _ConstraintOffset(CustomMathExpression):
+    """Offset of a global constraint target after a remesh, by call-back.
+
+    ``which`` is ``"moment"`` (the centroid closure) or ``"volume"``. See
+    :meth:`VoidBubbleProblem.rebase_constraints`.
+    """
+
+    def __init__(self, problem: VoidBubbleProblem, which: str):
+        super().__init__()
+        self.problem = problem
+        self.which = which
+
+    def get_id_name(self) -> str:
+        return "ConstraintOffset" + self.which.capitalize()
+
+    def eval(self, arg_array) -> float:
+        return float(self.problem.constraint_offset(self.which, float(arg_array[0])))
+
+
 class TangentialNodeSlide(InterfaceEquations):
     """Hold interface nodes on the tangential map, ``(x - X*) . t = 0``.
 
@@ -297,6 +316,7 @@ class VoidBubbleProblem(Problem):
         self.sliding_nodes = sliding_nodes
         self.sliding_stiffness = sliding_stiffness
         self.sliding_frame = SlidingFrame()
+        self._constraint_rebase = {"moment": 0.0, "volume": 0.0, "t0": 0.0, "relax": 0.0}
         self.ignore_command_line = True
 
     # ------------------------------------------------------------------ meshing
@@ -333,14 +353,21 @@ class VoidBubbleProblem(Problem):
         # which is a far better guess than Ca_in and matters for Newton. Its own
         # residual is the closure chosen below; the centroid form carries a
         # constant target, the tip pin does not.
+        centroid_target = -geom.axial_moment if self.closure == "centroid" else 0
+        if self.sliding_nodes and self.closure == "centroid":
+            # The target may be re-based on the mesh as remeshed; see rebase_constraints.
+            centroid_target = centroid_target - _ConstraintOffset(self, "moment")(var("time"))
         speed, speed_test = self.add_global_dof(
             "U",
-            equation_contribution=-geom.axial_moment if self.closure == "centroid" else 0,
+            equation_contribution=centroid_target,
             initial_condition=self.ca_in * (geom.r_tube / geom.r_body) ** 2,
         )
         # P: the void pressure. Seeded at the cap Laplace pressure.
+        volume_target = -geom.volume
+        if self.sliding_nodes:
+            volume_target = volume_target - _ConstraintOffset(self, "volume")(var("time"))
         pressure, pressure_test = self.add_global_dof(
-            "P", equation_contribution=-geom.volume, initial_condition=2.0 / geom.r_body
+            "P", equation_contribution=volume_target, initial_condition=2.0 / geom.r_body
         )
 
         # La = 0 is the Stokes limit and must use StokesEquations, not a zero
@@ -497,6 +524,47 @@ class VoidBubbleProblem(Problem):
         if not self.sliding_nodes:
             raise RuntimeError("set_sliding_frame needs VoidBubbleProblem(sliding_nodes=True)")
         self.sliding_frame = frame
+
+    def rebase_constraints(self, relax_time: float) -> dict[str, float]:
+        """Re-base the two global constraints on the mesh as remeshed.
+
+        A remesh changes the interpolated void's volume and axial moment
+        slightly (relative errors of order 1e-5). With fixed targets the first
+        step then restores both at once: the bubble inflates or deflates by up
+        to ~1e-5 along its whole normal and shifts axially by as much. At a rim
+        a few times 1e-6 across, that is several tip radii in one step. Without
+        sliding nodes the mesh absorbs it, at the price of a poor first step;
+        with sliding nodes the nodes around the tip cannot follow a normal
+        offset larger than the tip radius, and Newton fails at any step size.
+
+        The centroid closure only fixes where the bubble sits in the window, so
+        its target is simply re-based on the present moment, and the bubble
+        stays where the remesh put it (a shift of order 1e-5 the window does
+        not feel). The volume target is the physics, so it is re-based and then
+        relaxed linearly back to ``4/3 pi R0^3`` over ``relax_time``: the volume
+        is restored exactly, at a normal speed the tip can follow. Returns the
+        two offsets. Requires ``sliding_nodes=True``.
+        """
+        if not self.sliding_nodes:
+            raise RuntimeError("rebase_constraints needs sliding_nodes=True")
+        if relax_time <= 0:
+            raise ValueError("relax_time must be positive")
+        self.invalidate_cached_mesh_data()
+        t = self.get_current_time(as_float=True)
+        moment = (self.observable("void_moment", "liquid/interface") - self.geometry.axial_moment
+                  if self.closure == "centroid" else 0.0)
+        volume = self.observable("void_volume", "liquid/interface") - self.geometry.volume
+        self._constraint_rebase = {"moment": moment, "volume": volume, "t0": t, "relax": relax_time}
+        return {"moment": moment, "volume": volume}
+
+    def constraint_offset(self, which: str, t: float) -> float:
+        """Offset of the moment or volume target at time ``t``; see rebase_constraints."""
+        r = self._constraint_rebase
+        if which == "moment":
+            return r["moment"]
+        if r["relax"] <= 0:
+            return 0.0
+        return r["volume"] * max(0.0, 1.0 - (t - r["t0"]) / r["relax"])
 
     def reset_lagrangian_coordinates(self) -> None:
         """Make the current mesh the reference configuration ``X`` of the map."""
