@@ -167,6 +167,78 @@ These were established by the checks in `verification/`; do not rediscover them.
   - States load either way, because no field and no global parameter is
     added. Leave the option off for eigenproblems.
 
+## Measured facts at high capillary number
+
+These come from the stability campaign reported in `docs/validation/`; do not
+rediscover them.
+
+- **Audit the rim, not the film.** Above `Ca_b ~ 10` the re-entrant rear
+  closes into a rim whose radius decays roughly as `exp(-0.5 Ca_in)`. On
+  distance-graded meshes `R_lip/ds` falls to 0.31 by `Ca_in = 14` while every
+  film diagnostic looks healthy, and the continuation produces a turning point
+  near `Ca_in = 14.86` that does not exist. Use `lip_elements` and admit a
+  station only with `R_lip/ds >= 8`.
+- **The element floor is a driver setting, not a scale.** The curvature
+  grading is clamped at `film_element_size / lip_floor_divisor`. The default
+  divisor of 16 gives a floor near `2e-3`, which loses the rim near
+  `Ca_in = 8`; a resolved branch needs the driver to reset the floor from the
+  last measured `R_lip` before every remesh. A march that ends because
+  `R_lip` fell below the floor reports the setting, not physics: with the floor
+  lowered tenfold the same marches continue until the remesher or Newton fails.
+- **Raise `newton_tolerance` to `1e-7` when the rim nears the floor.** There the
+  nonlinear residual stalls at about `1.1e-8`, just above the default `1e-8`, so
+  every step is rejected and the march stops advancing while its clock runs. A
+  residual that has fallen seven decades is converged.
+- **Interface nodes pack into an advancing rim.** Nodes move only normally, so a
+  rim that advances along its own axis crowds them into its tip. That, not the
+  element floor, caps the time step in a resolved rim collapse, at a cost of
+  hours per e-fold of `R_lip` near `3e-6`. Going deeper needs tangentially
+  sliding interface nodes.
+- **Keep the rim near the coordinate origin.** The projection of mesh nodes onto
+  the interface spline has a tolerance proportional to the local spacing; with
+  rim elements near `1e-6` and coordinates near 13 it falls below coordinate
+  rounding and the remesh raises `Cannot invert spline`. Placing the window so
+  the rim sits near `z = 0` recovers about seventyfold headroom. Subdividing the
+  polyline does not help.
+- **Evaluate every station on a mesh adapted to its own `Ca_in`.** A chain
+  continued downward on a frozen mesh biases the stability thresholds by
+  `+0.027` and `+0.131`. Re-stationing a state onto an enlarged or translated
+  window failed in four attempts of four; a window study needs a fresh climb.
+- **Solve the stability pencil by its reduced finite spectrum**
+  (`verification/eigen_helpers.py`). `M` has nonzero rows only on the kinematic
+  condition, so `G = M_R J^-1 E` gives every finite eigenvalue densely. A
+  shift-invert search near zero returns the pressure-datum null structure
+  instead, and a screen on which unknowns carry an eigenvector's amplitude
+  rejects the physics, because every genuine eigenvector is pressure-dominated.
+  Judge modes by the scale-free residual.
+- **The finite count belongs to the rule; the unstable count does not.** The
+  fixed cutoff `|mu| < 1e-12 max|mu|` and the error-bar rule
+  `|mu| < 10 kappa delta ||G||` retain 901 against 362 finite eigenvalues at
+  `Ca_in = 12`, `k = 0`, but agree on every eigenvalue with positive real part.
+  When `J_k` is nearly singular (`k = 1` at `Ca_in = 13.6`, `lambda ~ -0.01`)
+  the error-bar rule classes everything infinite; reduce the shifted pencil
+  `(J + 1.5 M, M)` and add the shift back. Some shifted `k = 1` stations still
+  retain only 5 to 27 finite eigenvalues; their leading value then rests on its
+  residual and an independent shift-invert control.
+- **A shift-invert control needs a start vector in the operator's range.** The
+  row and column supports of `M` are disjoint, so `M r` is annihilated and
+  ARPACK reports a zero starting vector; use
+  `shift_invert_start_vector`.
+- **Remeshing rules that preserve limit-cycle amplitudes.** Remeshing whenever
+  the interface deviates from the base state by `3e-3`, or only when it has
+  moved `4e-3` since the last remesh or `R_lip/ds < 8`, gives the same
+  saturated amplitude to 0.5% at `Ca_in = 10.45`, as do a halved time step and
+  `lip_elements = 16`. A mesh rebuilt once at the displaced seed shape and then
+  frozen is wrong: it decays nearly ten times too fast and settles to a
+  different steady state with the rim still resolved. Remeshing every chunk
+  adds an extra damping of order `0.01` at small amplitude, so read the cubic
+  coefficient from runs whose remeshing does not change during the fit.
+- **Quote marched growth rates corrected for BDF2.** The integrator amplifies
+  slightly faster than `lambda` when `lambda dt` is not small: rates of 12.26
+  and 12.20 at `dt = 0.01` and `0.0025` invert to 12.1992 and 12.1993 against
+  the eigenvalue 12.1990. The chunk length must also track the rate: `0.1` suits
+  `lambda ~ 13`, while `lambda ~ 48` needs `0.02`.
+
 ## pyoomph traps that apply here
 
 - `NavierStokesFreeSurface` resolves `static_interface="auto"` to *moving* only
@@ -203,8 +275,8 @@ These were established by the checks in `verification/`; do not rediscover them.
   **before** `initialise()`.
 - A shift-invert eigensolve asked for too few eigenvalues can converge to a
   cluster that does not contain the rightmost one, and report a more negative
-  growth rate with no warning. Request at least eight. The azimuthal
-  campaign is not part of the public validation case.
+  growth rate with no warning. Request at least eight, or avoid the search
+  altogether with the reduced finite spectrum above.
 
 ## Repository conventions
 
@@ -215,5 +287,5 @@ These were established by the checks in `verification/`; do not rediscover them.
 - `runners/` holds case drivers and sweeps.
 - `tests/` must keep at least one path that imports no pyoomph.
 - `runs/` is attempt/restart custody, never source.
-- Component `AGENTS.md` is public-candidate. Private operational history stays
-  in the project-context manual.
+- Component `AGENTS.md` and the docs carry measured properties of the solver,
+  never operational history; that stays in the project-context manual.

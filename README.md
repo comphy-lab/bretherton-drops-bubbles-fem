@@ -37,7 +37,13 @@ remains to be measured is how much pad the caps need, which is what
 covers the deposited film over five decades of `Ca_b`, the recovery of the
 Bretherton coefficient in the thin-film limit, the comparison with published
 axisymmetric computations and with the companion volume-of-fluid campaign, and
-the re-entrant rear cap at high capillary number. Build it with
+the re-entrant rear cap. It then follows the rim-resolved steady branch to
+`Ca_b = 50` and its stability: the rim's exponential sharpening and local cusp
+form, the complete finite spectrum, an axisymmetric Hopf bifurcation at
+`Ca_in = 10.370 ± 0.001` and a real `k = 1` crossing at `13.604 ± 0.002`, the
+supercritical limit cycle and the narrow branch of cycles, the dependence on
+confinement, where the Hopf mode is sensitive, and the rim collapse and skirt
+thinning beyond the cycles. Build it with
 
 ```bash
 make -C docs/validation
@@ -46,7 +52,8 @@ make -C docs/validation
 Every campaign number it plots or tabulates is vendored as a compact CSV under
 `docs/validation/data/`, and its figures regenerate from those alone, without a
 solver or a simulation dump. The verification-stage values come from the JSON
-receipts under `receipts/`.
+receipts under `receipts/`; the stability campaign's CSVs are extracted from
+that campaign's receipts by `docs/validation/data/extract_stability.py`.
 
 This file documents the code: what it computes, how it is arranged, how to run
 it and what each verification stage asks. Measured properties of the solver that
@@ -83,6 +90,32 @@ film and the rear meniscus only receives it. A symmetric-only study would have
 concealed it. In practice `pad_rear = 1.5`, `pad_front = 3` suffices, a window
 of about `7 R0` against the parent's 16, with no trajectory to contain.
 
+### Interface sizing
+
+Three lengths compete for each interface node, and the smallest wins
+(`problems/interface_sizing.py`). The film size grades the deposited film.
+`lip_elements` requests that many elements per local radius of curvature over a
+patch around the sharpest point, which is what resolves the rim that forms at
+the fold of a re-entrant rear above `Ca_b ~ 10`; distance grading alone spans
+that rim with a fraction of one element. `gap_elements` is proximity-aware: it
+requests that many elements across any gap between two parts of the interface
+that are close in space but far apart along it, which is what resolves a thin
+trailing sheet whose faces approach each other while both stay smooth. With
+both left at `None` the sizes are the distance grading exactly. The smallest
+size the curvature rule may request is `film_element_size / lip_floor_divisor`.
+
+### Linear stability
+
+`verification/eigen_helpers.py` solves the stability pencil `J v = lambda M v`
+by its reduced finite spectrum. For the void bubble `M` is nonzero only on the
+interface kinematic rows, so the dense matrix `G = M_R J^-1 E` of that size
+gives every finite eigenvalue, and the null space of `M` is projected out by
+construction rather than filtered afterwards. Modes are judged by their
+eigenpair residual. `verification/README.md` documents the reduction, the
+bordered factorisation and the finite/infinite rule, and
+`tests/test_eigen_reduced.py` checks it against a pencil with a known
+spectrum.
+
 ## Verification
 
 Each stage is a script that exits non-zero on failure and writes a JSON receipt
@@ -99,6 +132,14 @@ to `receipts/`. They are ordered so that a failure localises.
 | `s9_steadiness.py` | Is the stationary state an attractor, and over how many film renewals is that shown? | displaced, it returns to within 0.6% of the displacement in 1.5 renewals |
 | `s10_route.py` | Does the answer depend on the solve route, the ladder direction, or the bubble length? | routes agree to `9e-5`; retrace to `8e-13`; bubble length `1.3e-3` |
 | `s11_rear_cap.py` | Where does the rear cap stop being convex, and is that onset resolved? | onset in `1.024 < Ca_b < 1.048` |
+| `s12_azimuthal.py` | Does azimuthal eigensolving run here, and how many eigenvalues does it need? | runs for every mode tested |
+| `s13_eigen_dynamic.py` | Does the rightmost eigenvalue match a time march? | period to `2e-16`; decay rate to 5% (film envelope) |
+| `s14_azimuthal_sweep.py` | Which sweep states are stable at `k = 0`, 1 and 2? | see `verification/README.md` |
+| `s15_inertia_bound.py` | To what Reynolds number may the Stokes baseline be quoted? | holds to 0.78% for `Re < 1.47` |
+| `s16_pressure_datum_spectrum.py` | Does the pressure datum move the axisymmetric spectrum? | rightmost `lambda` agrees |
+| `s17_la1_barrier.py` | Does `La = 1` continuation past `Ca_in = 2.91` survive with remesh off? | no; continuation limit at `2.90851` |
+| `s18_azimuthal_k3.py` | Which sweep states are stable at `k = 3`? | see `verification/README.md` |
+| `s19_la_grid.py` | What is `H` on the named `(Ca_in, La)` grid? | `La = 10` at `Ca_in = 0.5` thins `H` by 5.8% |
 | `s20_sliding_nodes.py` | With `sliding_nodes=True`, do nodes sliding along the interface leave the physics alone? | nodes moved 0.115; sphere radius within `3.1e-4`, Laplace pressure within `1.3e-5` |
 
 `s8` is also the only stage that executes the frame-acceleration body force
@@ -126,13 +167,15 @@ equilibrium, so the tube is widened rather than the flow switched off.
 ## Layout
 
 ```
-problems/       equations, mesh template, capsule geometry
-cases/          portable pyoomph-case-v2 documents
-verification/   staged checks against analytic answers
-runners/        case driver and Ca sweep
-postprocess/    deposited-film extraction and reference laws
-receipts/       JSON receipts written by the drivers and checks
-docs/validation/  the validation report, its figures and its vendored data
+problems/         equations, mesh template, capsule geometry, interface sizing
+cases/            portable pyoomph-case-v2 documents
+verification/     staged checks and the reduced-spectrum stability helpers
+runners/          case driver and Ca sweep
+postprocess/      deposited-film extraction and reference laws
+tests/            software-contract tests, at least one path without pyoomph
+receipts/         JSON receipts written by the drivers and checks
+docs/validation/  the report, its figures with their scripts, and its vendored
+                  data with the stability extraction script
 ```
 
 ## Requirements
