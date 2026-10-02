@@ -79,7 +79,7 @@ from pyoomph.output.generic import IntegralObservableOutput
 
 from .geometry import CapsuleGeometry
 from .mesh import LiquidAnnulusMesh, PlainTubeMesh
-from .sliding_frame import SlidingFrame, target_point
+from .sliding_frame import SlidingFrame, penalty_weight, target_point
 
 NORMAL_INTO_VOID = -1
 """Sign converting the liquid outward normal to the void outward normal.
@@ -94,14 +94,16 @@ step is taken. A wrong sign here does not crash; it converges to nonsense.
 """
 
 
-class _SlideTarget(CustomMathExpression):
-    """One component of the target ``X*(X, t)`` for the problem's current frame.
+class _SlideCallback(CustomMathExpression):
+    """One number of the tangential map for the problem's current frame.
 
-    Evaluated by call-back, so the frame can change between stretches of a
-    march without regenerating code. Global parameters would do the same but
-    are written into every state file, and a state saved with a different set of
-    them can no longer be loaded. The arguments are the Lagrangian position and
-    the time, neither of which is an unknown, so no derivative is ever taken.
+    ``component`` 0 and 1 are the target ``X*(X, t)``, 2 is the penalty factor
+    of :func:`problems.sliding_frame.penalty_weight`. Evaluated by call-back,
+    so the frame can change between steps of a march without regenerating
+    code. Global parameters would do the same but are written into every state
+    file, and a state saved with a different set of them can no longer be
+    loaded. The arguments are the Lagrangian position and the time, neither of
+    which is an unknown, so no derivative is ever taken.
     """
 
     def __init__(self, problem: VoidBubbleProblem, component: int):
@@ -110,12 +112,14 @@ class _SlideTarget(CustomMathExpression):
         self.component = component
 
     def get_id_name(self) -> str:
-        return "SlideTarget" + "RZ"[self.component]
+        return "SlideCallback" + "RZW"[self.component]
 
     def eval(self, arg_array) -> float:
-        xr, xz, t = arg_array
-        return target_point(float(xr), float(xz), float(t), self.problem.sliding_frame)[
-            self.component]
+        xr, xz, t = (float(a) for a in arg_array)
+        frame = self.problem.sliding_frame
+        if self.component == 2:
+            return penalty_weight(xr, xz, frame, self.problem.film_element_size())
+        return target_point(xr, xz, t, frame)[self.component]
 
 
 class TangentialNodeSlide(InterfaceEquations):
@@ -123,7 +127,9 @@ class TangentialNodeSlide(InterfaceEquations):
 
     The constraint enters the mesh equations of the interface nodes as a stiff
     tangential penalty, ``(k/h) ((x - X*) . t) t``, with ``h`` the length of the
-    interface element. The pseudo-solid is scale-free in the plane, so the
+    interface element in the reference mesh, as the frame describes it
+    (:func:`problems.sliding_frame.penalty_weight`). The pseudo-solid is
+    scale-free in the plane, so the
     force it exerts on a node is about ``strain * h``, and the penalty leaves a
     tangential misplacement of about ``strain * h / k``: with ``k = 1e3`` the
     pseudo-solid no longer decides where interface nodes sit along the
@@ -135,24 +141,24 @@ class TangentialNodeSlide(InterfaceEquations):
 
     The penalty acts along the current tangent only. At the axis tips the
     tangent is radial and the radial position is pinned, so it does nothing
-    there. ``target`` is the expression ``X*`` in terms of
-    ``var("lagrangian")`` and ``var("time")``; see
-    :mod:`problems.sliding_frame`.
+    there. ``target`` is the expression ``X*`` and ``weight`` the factor
+    ``strength/h``, both in terms of ``var("lagrangian")`` and ``var("time")``;
+    see :mod:`problems.sliding_frame`.
     """
 
     required_parent_type = BaseMovingMeshEquations
 
-    def __init__(self, target, stiffness: float = 1e3):
+    def __init__(self, target, weight, stiffness: float = 1e3):
         super().__init__()
         self.target = target
+        self.weight = weight
         self.stiffness = stiffness
 
     def define_residuals(self):
         n = var("normal")
         tangent = vector(-n[1], n[0])
         offset = dot(var("mesh") - self.target, tangent)
-        h = var("cartesian_element_length_h")
-        self.add_weak(self.stiffness / h * offset * tangent, testfunction("mesh"),
+        self.add_weak(self.stiffness * self.weight * offset * tangent, testfunction("mesh"),
                       coordsys=cartesian)
 
 
@@ -382,8 +388,9 @@ class VoidBubbleProblem(Problem):
         ) @ "interface"
 
         if self.sliding_nodes:
+            target, weight = self._sliding_target()
             eqs += TangentialNodeSlide(
-                self._sliding_target(), stiffness=self.sliding_stiffness) @ "interface"
+                target, weight, stiffness=self.sliding_stiffness) @ "interface"
 
         # The two divergence-theorem constraints over the closed void surface.
         # The axis segments contribute nothing: the axisymmetric measure carries
@@ -460,17 +467,19 @@ class VoidBubbleProblem(Problem):
     # ------------------------------------------------------ sliding interface nodes
 
     def _sliding_target(self):
-        """The map ``X*`` of :mod:`problems.sliding_frame`, by call-back.
+        """The map ``X*`` and the penalty factor of :mod:`problems.sliding_frame`.
 
-        It starts at the default frame (pure normal motion) and is moved by
-        :meth:`set_sliding_frame` without regenerating code.
+        Both are call-backs on the current frame, which starts at the default
+        (pure normal motion) and is moved by :meth:`set_sliding_frame` without
+        regenerating code.
         """
         # subexpression: one call-back per integration point and assembly, not
         # one per residual and Jacobian entry.
         X = var("lagrangian")
         args = (X[0], X[1], var("time"))
-        return vector(subexpression(_SlideTarget(self, 0)(*args)),
-                      subexpression(_SlideTarget(self, 1)(*args)))
+        target = vector(subexpression(_SlideCallback(self, 0)(*args)),
+                        subexpression(_SlideCallback(self, 1)(*args)))
+        return target, subexpression(_SlideCallback(self, 2)(*args))
 
     def set_sliding_frame(self, frame: SlidingFrame) -> None:
         """Set the tangential map for the stretch of march that follows.
@@ -479,6 +488,11 @@ class VoidBubbleProblem(Problem):
         mesh as built, with ``frame.t0`` the current time. The frame is not part
         of a saved state: set it again after loading one. Requires
         ``sliding_nodes=True``.
+
+        Before holding the nodes to a frame, the reference has to be the mesh as
+        it is. After a remesh it is; after loading a state written at any
+        other moment, or after a step taken with ``strength = 0``, call
+        :meth:`reset_lagrangian_coordinates` first.
         """
         if not self.sliding_nodes:
             raise RuntimeError("set_sliding_frame needs VoidBubbleProblem(sliding_nodes=True)")

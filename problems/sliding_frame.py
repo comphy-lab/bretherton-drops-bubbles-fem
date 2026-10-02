@@ -63,7 +63,8 @@ from dataclasses import dataclass, replace
 
 import numpy as np
 
-__all__ = ["SlidingFrame", "relock", "rim_motion", "tangential_target", "target_point", "window"]
+__all__ = ["SlidingFrame", "penalty_weight", "relock", "rim_motion", "tangential_target",
+           "target_point", "window"]
 
 
 @dataclass(frozen=True)
@@ -75,6 +76,13 @@ class SlidingFrame:
     translation ``D0`` already accumulated at ``t0`` and ``log_contraction`` the
     accumulated ``sigma0``. A window length of zero switches that window off,
     and the default frame is the pure normal motion ``(x - X) . t = 0``.
+
+    The last four fields set how hard the map is held; see
+    :func:`penalty_weight`. ``strength = 0`` releases the interface nodes to
+    the pseudo-solid, which is what the first step after a remesh needs: the
+    remesh changes the void's axial moment slightly, the centroid closure then
+    shifts the whole bubble by up to a few tip radii, and a shift that large
+    cannot be made of normal moves around a tip of radius ``R``.
     """
 
     t0: float = 0.0
@@ -85,10 +93,16 @@ class SlidingFrame:
     contraction_length: float = 0.0
     offset: tuple[float, float] = (0.0, 0.0)
     log_contraction: float = 0.0
+    strength: float = 1.0
+    spacing_tip: float = 0.0
+    spacing_growth: float = 0.0
+    spacing_far: float = 0.0
 
     def __post_init__(self):
         if self.translation_length < 0 or self.contraction_length < 0:
             raise ValueError("window lengths must be non-negative")
+        if self.strength < 0 or self.spacing_tip < 0 or self.spacing_growth < 0 or self.spacing_far < 0:
+            raise ValueError("strength and spacings must be non-negative")
 
     def translation(self, t: float) -> np.ndarray:
         """``D(t)``: where the frame has carried the reference rim point."""
@@ -142,6 +156,27 @@ def target_point(xr: float, xz: float, t: float, frame: SlidingFrame) -> tuple[f
             math.exp(-(frame.log_contraction + frame.contraction_rate * tau)) - 1.0)
         tr, tz = tr + w * dr, tz + w * dz
     return xr + tr, xz + tz
+
+
+def penalty_weight(xr: float, xz: float, frame: SlidingFrame, far_spacing: float) -> float:
+    """``strength / h(X)``, the factor of the tangential penalty at ``X``.
+
+    ``h`` stands for the interface element length in the reference mesh:
+    ``spacing_tip + spacing_growth |X - c|`` near the rim, capped at
+    ``spacing_far`` (or at ``far_spacing`` when the frame leaves it at zero).
+    Dividing by it makes the penalty a fixed multiple of the pseudo-solid's
+    stiffness, which is scale-free in the plane, on elements of every size. It
+    is a function of the reference position only, so it adds nothing to the
+    Jacobian; the element's own current length would, and leaving that
+    derivative out (as pyoomph does for element sizes) spoils Newton
+    convergence wherever ``x - X*`` is comparable with ``h``.
+    """
+    far = frame.spacing_far if frame.spacing_far > 0 else far_spacing
+    h = far
+    if frame.spacing_tip > 0:
+        d = math.hypot(xr - frame.centre[0], xz - frame.centre[1])
+        h = min(far, frame.spacing_tip + frame.spacing_growth * d)
+    return frame.strength / h
 
 
 def relock(frame: SlidingFrame, t: float, *, rim, radius: float, reference_radius: float,

@@ -13,6 +13,7 @@ import pytest
 
 from problems.sliding_frame import (
     SlidingFrame,
+    penalty_weight,
     relock,
     rim_motion,
     tangential_target,
@@ -145,6 +146,25 @@ def test_relock_steers_a_mispredicted_frame_onto_the_rim():
     image = np.asarray(CENTRE) + frame.translation(n * dt)
     assert np.hypot(*(image - (np.asarray(CENTRE) + v_true * n * dt))) < 1e-3 * R
     assert frame.log_scale(n * dt) == pytest.approx(lam_true * n * dt, rel=1e-3)
+
+
+def test_the_penalty_follows_the_reference_element_length():
+    """strength / h, with h graded from the rim and capped by the far spacing."""
+    frame = SlidingFrame(centre=CENTRE, spacing_tip=R / 16, spacing_growth=0.25,
+                         spacing_far=6e-3, strength=1.0)
+    at_rim = penalty_weight(*CENTRE, frame, far_spacing=1.0)
+    assert at_rim == pytest.approx(16 / R)
+    near = penalty_weight(CENTRE[0] + 1e-4, CENTRE[1], frame, far_spacing=1.0)
+    assert near == pytest.approx(1.0 / (R / 16 + 0.25e-4))
+    far = penalty_weight(CENTRE[0] + 0.1, CENTRE[1], frame, far_spacing=1.0)
+    assert far == pytest.approx(1.0 / 6e-3)
+    # No rim spacing: the far spacing everywhere, the problem's when the frame has none.
+    assert penalty_weight(*CENTRE, SlidingFrame(), far_spacing=0.02) == pytest.approx(50.0)
+    # Released: no penalty at all.
+    released = SlidingFrame(centre=CENTRE, spacing_tip=R / 16, strength=0.0)
+    assert penalty_weight(*CENTRE, released, far_spacing=1.0) == 0.0
+    with pytest.raises(ValueError):
+        SlidingFrame(strength=-1.0)
 
 
 def test_rim_motion_is_the_finite_difference_of_position_and_log_radius():
