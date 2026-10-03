@@ -192,8 +192,9 @@ rediscover them.
 - **Interface nodes pack into an advancing rim.** Nodes move only normally, so a
   rim that advances along its own axis crowds them into its tip. That, not the
   element floor, caps the time step in a resolved rim collapse, at a cost of
-  hours per e-fold of `R_lip` near `3e-6`. Going deeper needs tangentially
-  sliding interface nodes.
+  hours per e-fold of `R_lip` near `3e-6`. Use `sliding_nodes=True` (above) to
+  go deeper; with it the `Ca_in = 12` collapse was followed to its smallest
+  radius, `5.6e-7`, and through its reopening.
 - **Keep the rim near the coordinate origin.** The projection of mesh nodes onto
   the interface spline has a tolerance proportional to the local spacing; with
   rim elements near `1e-6` and coordinates near 13 it falls below coordinate
