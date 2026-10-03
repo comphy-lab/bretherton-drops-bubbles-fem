@@ -99,6 +99,7 @@ to `receipts/`. They are ordered so that a failure localises.
 | `s9_steadiness.py` | Is the stationary state an attractor, and over how many film renewals is that shown? | displaced, it returns to within 0.6% of the displacement in 1.5 renewals |
 | `s10_route.py` | Does the answer depend on the solve route, the ladder direction, or the bubble length? | routes agree to `9e-5`; retrace to `8e-13`; bubble length `1.3e-3` |
 | `s11_rear_cap.py` | Where does the rear cap stop being convex, and is that onset resolved? | onset in `1.024 < Ca_b < 1.048` |
+| `s20_sliding_nodes.py` | With `sliding_nodes=True`, do nodes sliding along the interface leave the physics alone? | nodes moved 0.115; sphere radius within `3.1e-4`, Laplace pressure within `1.3e-5` |
 
 `s8` is also the only stage that executes the frame-acceleration body force
 `-rho dU/dt`, which makes the co-moving frame consistent while `U` is still

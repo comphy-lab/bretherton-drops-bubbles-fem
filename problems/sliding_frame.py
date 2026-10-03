@@ -45,6 +45,12 @@ speed. The frame is therefore meant to be re-set after every time step by
 few steps. Only the reference configuration (the mesh as built at the last
 remesh) is fixed between remeshes, so the pseudo-solid keeps its memory.
 
+Measured at ``Ca_in = 12``, the contraction biased the tip radius by 0.3% from
+a fresh remesh of the same state within 30 steps, where translation alone left
+it within 5e-5; use translation, and let remeshing restore the resolution as
+the radius falls. A remesh also changes the void's volume and moment slightly;
+see ``VoidBubbleProblem.rebase_constraints``.
+
 The map is exact in the sense that matters: only the tangential *position* of
 the nodes is prescribed, the normal one is still the kinematic condition, so the
 computed interface and flow are those of the same equations. With ``D = 0`` and
@@ -79,10 +85,7 @@ class SlidingFrame:
 
     The last four fields set how hard the map is held; see
     :func:`penalty_weight`. ``strength = 0`` releases the interface nodes to
-    the pseudo-solid, which is what the first step after a remesh needs: the
-    remesh changes the void's axial moment slightly, the centroid closure then
-    shifts the whole bubble by up to a few tip radii, and a shift that large
-    cannot be made of normal moves around a tip of radius ``R``.
+    the pseudo-solid, i.e. the behaviour without the option, for a step.
     """
 
     t0: float = 0.0

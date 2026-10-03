@@ -118,6 +118,54 @@ These were established by the checks in `verification/`; do not rediscover them.
 - **A pressure datum is required and the choice is free.** With Poiseuille at
   both ends, `pressure_datum="none"` fails to solve; `"fixation"` and
   `"integral"` agree on every reported observable to 2.6e-14.
+- **Sliding interface nodes (`sliding_nodes=True`, off by default) are for
+  following a rim that sharpens while it advances.** With the default
+  pseudo-solid placement, interface nodes do not follow a rim that moves along
+  its own axis, and they pack into the tip at about `V/R` (150 to 470 per unit
+  time at `Ca_in = 12`, tip radius 2.2e-5 to 1.1e-5). That packing, not the
+  physics, then caps the step. The option holds interface nodes on a prescribed
+  tangential map (`problems/sliding_frame.py`) through a stiff tangential
+  penalty on the mesh equations, while the kinematic condition still sets their
+  normal motion. Measured:
+  - Off, the solver is bit-for-bit unchanged: every dof of the `Ca_in = 12`
+    station (stationary solve and five steps) and of a rim-collapse chunk (four
+    steps) is identical to the base commit.
+  - On, the same station moves by 4e-8 in tip radius and 8e-11 in `Ca_b`. The
+    analytic Jacobian agrees with finite differences to 2e-7. S20 drags nodes
+    0.115 along a static sphere and its radius stays within 3e-4, its Laplace
+    pressure within 1.3e-5 and its volume within 2e-15.
+  - In the rim collapse at `Ca_in = 12`:
+    - the tip resolution no longer grows within a chunk (16 elements per tip
+      radius held where the default packed it to 30 within a chunk);
+    - steps are set by the collapse rate (`lambda dt = 0.004`) instead of by
+      node compression, and a march from tip radius 2.3e-5 agrees with its
+      halved-step repeat to a median 0.2%;
+    - remesh jumps of the tip radius have a median of 4e-4.
+
+  How to use it:
+  - Re-lock the frame on the measured rim every step
+    (`sliding_frame.relock`). A rim velocity known only to `dV` packs or
+    spreads the nodes again at `dV/R`. Start each stretch from the velocity
+    measured over the previous one, however short it was.
+  - Call `rebase_constraints` after every remesh and every load. A remesh
+    changes the void's volume and axial moment by about 1e-5, and fixed
+    targets would make the next step inflate or shift the whole bubble by
+    several tip radii at once, which nodes held tangentially around a sharp
+    tip cannot follow. The moment target, a gauge, is re-based; the volume is
+    relaxed back to `4/3 pi R0^3` over a set time.
+  - Move the Newton initial guess with the frame before each step (a hook in
+    `actions_before_newton_solve`, after the history shift). Steps then
+    converge in about three iterations even when the tip moves ten tip radii
+    per step.
+  - Use translation only, with a window much wider than the rim's
+    displacement between remeshes (3e-2 here). Contracting the nodes about the
+    tip, or a narrow window, left the tip radius 0.1-0.3% away from a fresh
+    remesh of the same state after 30 steps; translation in a 7e-3 window left
+    it within 5e-5.
+  - Remesh when the curvature-maximum radius falls below 0.993 of the fitted
+    tip radius, or when the tip resolution leaves its bounds.
+  - States load either way, because no field and no global parameter is
+    added. Leave the option off for eigenproblems.
 
 ## pyoomph traps that apply here
 

@@ -519,7 +519,8 @@ class VoidBubbleProblem(Problem):
         Before holding the nodes to a frame, the reference has to be the mesh as
         it is. After a remesh it is; after loading a state written at any
         other moment, or after a step taken with ``strength = 0``, call
-        :meth:`reset_lagrangian_coordinates` first.
+        :meth:`reset_lagrangian_coordinates` first. After a remesh or a load,
+        also call :meth:`rebase_constraints`.
         """
         if not self.sliding_nodes:
             raise RuntimeError("set_sliding_frame needs VoidBubbleProblem(sliding_nodes=True)")

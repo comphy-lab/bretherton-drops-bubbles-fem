@@ -1,0 +1,27 @@
+{
+  "passed": true,
+  "results": [
+    {
+      "off_laplace_jump": 1.99999555030886,
+      "off_sphere_radius_max_dev": 1.0858390000034746e-05,
+      "off_volume_error": 2.3292479056635784e-13,
+      "on_laplace_jump": 2.0000173182545646,
+      "on_minus_off_laplace": 2.1767945704631586e-05,
+      "on_sphere_radius_max_dev": 1.743074932725186e-05,
+      "on_volume_error": -2.1094237467877974e-15,
+      "passed": true,
+      "passed_off": true,
+      "passed_on": true,
+      "passed_sliding": true,
+      "resolution": 0.12,
+      "rtol": 0.002,
+      "sliding_dt": 0.02,
+      "sliding_laplace_jump": 2.0000260856324585,
+      "sliding_node_displacement_max": 0.11486959922257971,
+      "sliding_sphere_radius_max_dev": 0.0003087901929637038,
+      "sliding_steps": 10,
+      "sliding_volume_error": -2.6401103525586223e-13
+    }
+  ],
+  "stage": "S20"
+}
