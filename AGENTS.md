@@ -132,7 +132,7 @@ These were established by the checks in `verification/`; do not rediscover them.
     steps) is identical to the base commit.
   - On, the same station moves by 4e-8 in tip radius and 8e-11 in `Ca_b`. The
     analytic Jacobian agrees with finite differences to 2e-7. S20 drags nodes
-    0.115 along a static sphere and its radius stays within 3e-4, its Laplace
+    0.115 along a static sphere and its radius stays within 3.1e-4, its Laplace
     pressure within 1.3e-5 and its volume within 2e-15.
   - In the rim collapse at `Ca_in = 12`:
     - the tip resolution no longer grows within a chunk (16 elements per tip
