@@ -130,7 +130,7 @@ verification/   staged checks against analytic answers
 runners/        case driver and Ca sweep
 postprocess/    deposited-film extraction and reference laws
 receipts/       JSON receipts written by the drivers and checks
-docs/validation/  the validation report, its figures and its vendored data
+Documentation drafts: VatsalSy/bretherton-drops-bubbles-fem-docs (explicit approval required before promotion)
 ```
 
 ## Requirements

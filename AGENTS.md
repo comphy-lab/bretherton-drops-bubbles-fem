@@ -169,3 +169,13 @@ These were established by the checks in `verification/`; do not rediscover them.
 - `runs/` is attempt/restart custody, never source.
 - Component `AGENTS.md` is public-candidate. Private operational history stays
   in the project-context manual.
+
+## Documentation staging
+
+Draft reports and documentation in the private staging repository
+`VatsalSy/bretherton-drops-bubbles-fem-docs`. Treat all staged material as
+public-candidate; genuinely private material belongs in the owning project
+context, outside this repository. Vatsal must explicitly read and approve
+both content and destination before promotion into this repository. A build,
+a commit or a private checkpoint is not approval. Keep simulation drivers here.
+Do not restore the removed documentation from old clones or unfiltered history.
