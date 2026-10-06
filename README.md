@@ -174,7 +174,7 @@ runners/          case driver and Ca sweep
 postprocess/      deposited-film extraction and reference laws
 tests/            software-contract tests, at least one path without pyoomph
 receipts/         JSON receipts written by the drivers and checks
-docs/validation/  the report, its figures with their scripts, and its vendored
+Documentation drafts: VatsalSy/bretherton-drops-bubbles-fem-docs (explicit approval required before promotion)
                   data with the stability extraction script
 ```
 
