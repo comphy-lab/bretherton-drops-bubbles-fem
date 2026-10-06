@@ -23,7 +23,7 @@ The steady continuation reproduces the three-branch diagram in the reference.
 At `Ca_l=0.02`, the meridional length is `L_b/R=7.9897`, compared with
 approximately `8.00` in the published figure; at `Ca_l=-0.02`, it is `6.6209`,
 compared with approximately `6.61`. The
-[Newtonian validation report](../../docs/validation/newtonian-validation.tex)
+[Newtonian validation report](https://github.com/VatsalSy/bretherton-drops-bubbles-fem-docs/blob/main/validation/newtonian-validation.tex)
 contains the comparison and the model assumptions. The agreement concerns
 steady branch geometry. The report's mesh and sampling diagnostic does not
 yet establish full-branch mesh or domain-length convergence. Stability and

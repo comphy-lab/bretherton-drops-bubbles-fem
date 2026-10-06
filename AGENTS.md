@@ -159,8 +159,18 @@ These were established by the checks in `verification/`; do not rediscover them.
 - `validation/` holds literature benchmarks with their own drivers and case
   definitions. `validation/herradaEtAl_figure2/` uses `pyoomph-case-v1` and the
   reference paper's tube-radius normalization.
-- `docs/validation/` holds authored LaTeX reports, bibliographies and figures.
+- Authored reports are drafted in `VatsalSy/bretherton-drops-bubbles-fem-docs`; promotion here requires explicit approval.
 - `tests/` must keep at least one path that imports no pyoomph.
 - `runs/` is attempt/restart custody, never source.
 - Component `AGENTS.md` is public-candidate. Private operational history stays
   in the project-context manual.
+
+## Documentation staging
+
+Draft reports and documentation in the private staging repository
+`VatsalSy/bretherton-drops-bubbles-fem-docs`. Treat all staged material as
+public-candidate; genuinely private material belongs in the owning project
+context, outside this repository. Vatsal must explicitly read and approve
+both content and destination before promotion into this repository. A build,
+a commit or a private checkpoint is not approval. Keep simulation drivers here.
+Do not restore the removed documentation from old clones or unfiltered history.

@@ -18,14 +18,14 @@ gravity-free film profiles in figure 2 of Herrada, Yu & Stone (2023) at
 [figure 3 benchmark](validation/herradaEtAl_figure3/) reproduces the steady
 three-branch response at `Bo = 1.56`, including the folds of the multivalued
 relation between imposed flow and meridional interface length. The
-[Newtonian validation report](docs/validation/build/newtonian-validation.pdf) compares the
+[Newtonian validation report](https://github.com/VatsalSy/bretherton-drops-bubbles-fem-docs/blob/main/validation/build/newtonian-validation.pdf) compares the
 finite-element profiles with digitized reference curves and records the
 quantitative agreement in film thickness and interface length, together with
 the model assumptions. The report also separates mesh differences from
 continuation sampling. A refined local trace resolves the plotted upper-fold
 turn, while full-branch mesh and domain convergence remains unestablished.
 Stability and transient branch switching are separate validation targets. The
-[source and build instructions](docs/validation/README.md) accompany the PDF.
+[source and build instructions](https://github.com/VatsalSy/bretherton-drops-bubbles-fem-docs/blob/main/validation/README.md) accompany the PDF.
 
 ## Why a co-moving frame
 
@@ -239,7 +239,7 @@ verification/   staged checks against analytic answers
 validation/     executable benchmarks against published results
 runners/        case driver and Ca sweep
 postprocess/    deposited-film extraction and reference laws
-docs/validation/ LaTeX validation reports, references and figures
+Documentation drafts: VatsalSy/bretherton-drops-bubbles-fem-docs (explicit approval required before promotion)
 receipts/       JSON receipts written by the drivers and checks
 ```
 

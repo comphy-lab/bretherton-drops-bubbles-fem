@@ -51,3 +51,4 @@ runs/accepted/
 # Environment
 .env
 .env.local
+/docs/

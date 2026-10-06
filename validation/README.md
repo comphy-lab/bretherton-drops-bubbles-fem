@@ -7,7 +7,7 @@ This directory contains executable comparisons with published results.
   `Ca_l = -0.001` and `-0.02`. The comparison reproduces the thin deposited
   film and its departure from Bretherton's small-capillary-number law at the
   higher imposed speed, within the stated void-interior approximation.
-  The [Newtonian validation report](../docs/validation/newtonian-validation.tex)
+  The [Newtonian validation report](https://github.com/VatsalSy/bretherton-drops-bubbles-fem-docs/blob/main/validation/newtonian-validation.tex)
   contains the digitized profile overlay and quantitative film comparison.
 
 The benchmark uses the paper's tube-radius normalization, `b/R`, and compares

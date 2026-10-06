@@ -33,7 +33,7 @@ gas is represented by a fixed-volume pressure constraint rather than a meshed
 gas phase. The primary cases impose fully developed Poiseuille flow at both
 ends. This differs from the paper's prescribed upper inlet and static-pressure
 lower outlet. The model and boundary-condition differences are stated in the
-[Newtonian validation report](../../docs/validation/newtonian-validation.tex), which includes
+[Newtonian validation report](https://github.com/VatsalSy/bretherton-drops-bubbles-fem-docs/blob/main/validation/newtonian-validation.tex), which includes
 the comparison with digitized profiles from the paper.
 
 The two cases reproduce the nearly uniform film and the capillary depression
