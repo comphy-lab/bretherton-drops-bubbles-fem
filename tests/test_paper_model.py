@@ -214,11 +214,17 @@ def test_manifest_precedes_progress_and_binds_actual_inputs(
     manifest_path = out / runner.MANIFEST
     manifest = json.loads(manifest_path.read_text())
     assert manifest["schema"] == "pyoomph-runner-manifest-v1"
+    assert manifest["case_file"] == manifest["case_path"]
     assert manifest["case_path"] == str(paper_case_path.resolve())
     assert manifest["case_sha256"] == hashlib.sha256(paper_case_path.read_bytes()).hexdigest()
     assert manifest["case_id"] == paper_bubble.read_case(paper_case_path)["case_id"]
     assert manifest["case_fields_used"] == list(paper_bubble.CASE_FIELDS_USED)
-    assert manifest["units"] == paper_bubble.read_case(paper_case_path)["nondimensionalization"]
+    assert manifest["units"] == "nondimensional (sigma=mu_liquid=R0=1)"
+    assert manifest["nondimensionalization"] == paper_bubble.read_case(paper_case_path)["nondimensionalization"]
+    assert manifest["runner"] == {"path": str(RUNNER),
+                                  "sha256": hashlib.sha256(RUNNER.read_bytes()).hexdigest()}
+    assert manifest["runner_path"] == manifest["runner"]["path"]
+    assert manifest["runner_sha256"] == manifest["runner"]["sha256"]
     assert manifest["runner_sha256"] == hashlib.sha256(RUNNER.read_bytes()).hexdigest()
     assert manifest["component_commit"] == clean_source_standin["commit"]
     assert manifest["component"]["clean"] is True
@@ -536,3 +542,206 @@ def test_pinned_native_api_definitions_import_without_initialising_problem():
     problem_type, pressure_type = paper_bubble._native_problem_types()
     assert problem_type.__name__ == "PaperBubbleProblem"
     assert pressure_type.required_parent_type is StokesEquations
+
+
+@pytest.fixture
+def official_project_helper() -> Path:
+    configured = os.environ.get("PYOOMPH_PROJECT_HELPER")
+    path = (Path(configured).expanduser() if configured else
+            Path.home() / ".agents/skills/pyoomph-projects-comphy/scripts/pyoomph_project.py")
+    assert path.is_file(), "install pyoomph-projects-comphy or set PYOOMPH_PROJECT_HELPER"
+    return path.resolve()
+
+
+def call_official_helper(helper: Path, *arguments: str) -> subprocess.CompletedProcess:
+    """Execute the installed validator itself, with no helper stand-in."""
+    return subprocess.run(
+        [sys.executable, str(helper), *arguments],
+        env=dict(os.environ, PYTHONDONTWRITEBYTECODE="1"),
+        capture_output=True, text=True, check=False, timeout=30,
+    )
+
+
+@pytest.mark.parametrize("path", paper_cases(), ids=lambda path: path.stem)
+def test_official_helper_validates_every_paper_case(official_project_helper, path):
+    result = call_official_helper(official_project_helper, "validate-case", "--case", str(path))
+    assert result.returncode == 0, result.stderr
+    validated = json.loads(result.stdout)
+    assert validated["schema"] == "pyoomph-case-v1"
+    assert validated["case_id"] == paper_bubble.read_case(path)["case_id"]
+    assert validated["path"] == str(path.resolve())
+    assert validated["sha256"] == runner.sha256_file(path)
+
+
+@pytest.fixture
+def software_closeout_bundle(
+    paper_case_path, tmp_path, monkeypatch, clean_source_standin, official_project_helper,
+):
+    """Bind actual files/environment metadata under synthetic source/solve gates.
+
+    This is a validator fixture, not a launch receipt or numerical result.
+    """
+    monkeypatch.setattr(runner, "run_model", lambda case, path: {
+        "status": "completed", "completion_reached": True,
+        "scientific_status": "software_fixture_only",
+    })
+    runtime = tmp_path / "runtime"
+    assert runner.main([str(paper_case_path), "--out", str(runtime)]) == 0
+    manifest = json.loads((runtime / runner.MANIFEST).read_text())
+    environment = manifest["pyoomph"]
+    receipt = {
+        "schema": "pyoomph-environment-v1", "compatible": True,
+        "purpose": "software validator fixture; no native compatibility claim",
+        "interpreter": environment["interpreter"],
+        "pyoomph": {
+            "resolved_commit": environment["commit"],
+            "locked_commit": environment["commit"],
+            "direct_url": environment["direct_url"],
+            "core_sha256": environment["native_core"]["sha256"],
+            "core_path": environment["native_core"]["path"],
+        },
+    }
+    receipt_path = tmp_path / "software-environment.json"
+    receipt_path.write_text(json.dumps(receipt) + "\n", encoding="utf-8")
+    launch = {
+        "schema": "pyoomph-run-manifest-v1", "created_at": manifest["created_at"],
+        "case_id": manifest["case_id"],
+        "case": {"path": str(paper_case_path), "sha256": runner.sha256_file(paper_case_path)},
+        "runner": {"path": str(RUNNER), "sha256": runner.sha256_file(RUNNER)},
+        "fem_commit": clean_source_standin["commit"],
+        "pyoomph_commit": environment["commit"],
+        "core_sha256": environment["native_core"]["sha256"],
+        "environment_receipt": {"path": str(receipt_path),
+                                "sha256": runner.sha256_file(receipt_path)},
+    }
+    launch_path = tmp_path / "software-launch-manifest.json"
+    launch_path.write_text(json.dumps(launch) + "\n", encoding="utf-8")
+    validation = call_official_helper(
+        official_project_helper, "validate-manifest", "--manifest", str(launch_path),
+    )
+    assert validation.returncode == 0, validation.stderr
+    return runtime, launch_path, receipt_path, manifest
+
+
+def test_official_helper_accepts_runner_closeout_against_launch(
+    official_project_helper, software_closeout_bundle,
+):
+    runtime, launch_path, receipt_path, manifest = software_closeout_bundle
+    result = call_official_helper(
+        official_project_helper, "validate-run-output", "--run", str(runtime),
+        "--launch-manifest", str(launch_path),
+    )
+    assert result.returncode == 0, result.stderr
+    closeout = json.loads(result.stdout)
+    assert closeout["schema"] == "pyoomph-run-output-validation-v1"
+    assert closeout["case_id"] == manifest["case_id"]
+    assert closeout["component_commit"] == manifest["component_commit"]
+    assert closeout["pyoomph_commit"] == paper_bubble.PYOOMPH_COMMIT
+    assert closeout["launch_manifest"] == {
+        "path": str(launch_path), "sha256": runner.sha256_file(launch_path),
+    }
+    assert closeout["claim"] == "provenance agreement only; no numerical verification or validation"
+    assert json.loads(receipt_path.read_text())["pyoomph"]["core_sha256"] == manifest["pyoomph"]["native_core"]["sha256"]
+
+
+def test_official_closeout_refuses_legacy_aliases_without_canonical_runner(
+    official_project_helper, software_closeout_bundle,
+):
+    runtime, launch_path, _, manifest = software_closeout_bundle
+    manifest.pop("runner")  # Deliberately spoil only this software fixture.
+    (runtime / runner.MANIFEST).write_text(json.dumps(manifest) + "\n", encoding="utf-8")
+    result = call_official_helper(
+        official_project_helper, "validate-run-output", "--run", str(runtime),
+        "--launch-manifest", str(launch_path),
+    )
+    assert result.returncode == 2
+    assert "runner hash differs or is not recorded" in result.stderr
+
+
+@pytest.mark.parametrize("cadence", [0, -1, True, float("nan"), float("inf")])
+def test_output_cadence_requires_a_finite_positive_number(paper_case_path, cadence):
+    case = paper_bubble.read_case(paper_case_path)
+    case["output"]["cadence"] = cadence
+    with pytest.raises(ValueError, match="cadence"):
+        paper_bubble.validate_case(case)
+
+
+def test_run_model_passes_case_cadence_to_transient_standin(tmp_path, monkeypatch):
+    from types import ModuleType
+
+    case = paper_bubble.read_case(ROOT / "verification/paper_model/cases/bare-tube.json")
+    case["solve"]["relax_time"] = 8.0
+    case["output"]["cadence"] = 0.4
+    transient_calls = []
+    solver_calls = []
+
+    class ProblemStandin:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def set_output_directory(self, path):
+            assert Path(path) == tmp_path / "solver"
+
+        def set_linear_solver(self, name):
+            assert name == "superlu"
+
+        def set_c_compiler(self, name):
+            assert name == "system"
+
+        def initialise(self):
+            solver_calls.append("initialise_standin")
+
+        def run(self, duration, **kwargs):
+            transient_calls.append((duration, kwargs))
+
+        def solve(self, **kwargs):
+            solver_calls.append(("solve_standin", kwargs))
+
+        def observable(self, name, domain="liquid"):
+            return 1.0 if name in ("area", "velocity_reference_squared", "pressure_reference_squared") else 0.0
+
+        def frame_speed(self):
+            return 0.0
+
+        def save_state(self, path, *, quiet):
+            assert quiet is True
+            state = Path(path)
+            state.parent.mkdir()
+            state.write_bytes(b"software state stand-in")
+
+    def build_standin(model_case, *, initial_bond):
+        assert model_case == case
+        assert initial_bond == case["solve"]["initial_bond"]
+        return ProblemStandin()
+
+    def copy_state_standin(source, destination, *, copy_mesh_files):
+        assert copy_mesh_files is True
+        Path(destination).write_bytes(Path(source).read_bytes())
+
+    # The execution function's import resolves to this pure module, not pyoomph.
+    package = ModuleType("pyoomph")
+    package.__path__ = []
+    output_package = ModuleType("pyoomph.output")
+    output_package.__path__ = []
+    states = ModuleType("pyoomph.output.states")
+    states.copy_state_file = copy_state_standin
+    for name, module in (("pyoomph", package), ("pyoomph.output", output_package),
+                         ("pyoomph.output.states", states)):
+        monkeypatch.setitem(sys.modules, name, module)
+    monkeypatch.setattr(paper_bubble, "build_problem", build_standin)
+    monkeypatch.setattr(paper_bubble, "_stationary_residual", lambda problem: 0.0)
+    runner.create_run_manifest(tmp_path, {"purpose": "software cadence fixture only"})
+    summary = paper_bubble.run_model(case, tmp_path)
+    assert transient_calls == [(8.0, {
+        "startstep": case["solve"]["start_step"], "outstep": 0.4, "maxstep": 1.0,
+        "temporal_error": case["tolerances"]["temporal_error"],
+    })]
+    assert solver_calls == ["initialise_standin", ("solve_standin", {
+        "max_newton_iterations": case["solve"]["max_newton_iterations"],
+    })]
+    assert summary["status"] == "completed"
+    assert summary["completion_reached"] is True
+    assert (tmp_path / summary["checkpoint"]).read_bytes() == b"software state stand-in"

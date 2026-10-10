@@ -37,5 +37,6 @@ python runners/run_paper_case.py validation/herradaEtAl_paper_model/cases/h15-bo
 The mixed-port and two-phase verification cases are in
 `verification/paper_model/`. The case validator requires explicit units,
 pressure convention, material ratios, mesh, frame/volume constraints, solve
-limits and completion checks. The runner records their provenance before
+limits, positive output cadence and completion checks. The cadence sets the
+transient output interval. The runner records their provenance before
 execution, and generated fields, state and check results belong in the run.

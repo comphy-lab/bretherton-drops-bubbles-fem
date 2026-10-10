@@ -253,17 +253,22 @@ def main(argv: list[str] | None = None) -> int:
         require_clean_source(component)
         environment = pyoomph_revision()
         require_pinned_environment(environment)
+        runner_record = {"path": str(Path(__file__).resolve()),
+                         "sha256": sha256_file(Path(__file__))}
         manifest = {
             "schema": "pyoomph-runner-manifest-v1",
             "created_at": datetime.now(UTC).isoformat(),
+            "case_file": str(case_path),
             "case_path": str(case_path),
             "case_sha256": hashlib.sha256(raw_case).hexdigest(),
             "case_id": case["case_id"],
             "case_fields_used": list(CASE_FIELDS_USED),
-            "units": case["nondimensionalization"],
+            "units": "nondimensional (sigma=mu_liquid=R0=1)",
+            "nondimensionalization": case["nondimensionalization"],
             "argv": [sys.executable, str(Path(__file__).resolve()), *arguments],
-            "runner_path": str(Path(__file__).resolve()),
-            "runner_sha256": sha256_file(Path(__file__)),
+            "runner": runner_record,
+            "runner_path": runner_record["path"],
+            "runner_sha256": runner_record["sha256"],
             "component_commit": component["commit"],
             "component": component,
             "pyoomph": environment,

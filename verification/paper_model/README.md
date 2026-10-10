@@ -34,6 +34,8 @@ python runners/run_paper_case.py verification/paper_model/cases/bare-tube.json -
 ```
 
 The runner writes its provenance manifest before progress and native execution.
+`output.cadence` sets the transient output interval in the declared time units;
+the stationary checks do not depend on that interval.
 The summary records each check, and a failed check returns a nonzero exit.
 Use the declared tolerances and compare refinement only to resolve a failed or
 under-resolved observable. A successful import or case check is a software

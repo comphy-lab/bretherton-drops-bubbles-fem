@@ -11,6 +11,6 @@
   "mesh": {"template": "PaperTwoPhaseMesh", "film_elements": 6.0, "bulk_resolution": 0.08, "remeshing": false},
   "tolerances": {"newton": 1e-8, "temporal_error": 1e-4, "volume_relative": 1e-6, "flux_absolute": 1e-8, "pressure_boundary_absolute": 1e-6, "velocity_reference_relative": 1e-6, "pressure_reference_relative": 1e-6, "laplace_relative": 0.002, "sphere_radius_absolute": 0.002},
   "solve": {"mode": "stationary", "initial_bond": 0.0, "bond_step": 0.1, "max_bond_steps": 1, "max_newton_iterations": 40, "relax_time": 0.0, "start_step": 0.0001},
-  "output": {"write_states": true},
+  "output": {"cadence": 1.0, "write_states": true},
   "completion": {"kind": "event", "value": "stationary_and_checks"}
 }

@@ -157,8 +157,10 @@ def validate_case(case: dict) -> dict:
             and math.isfinite(initial) and math.isfinite(numbers["bond"])
             and initial + max_bond_steps * bond_step < numbers["bond"] - 1e-12):
         errors.append("solve.max_bond_steps cannot reach the selected Bond number")
-    if sections["output"] != {"write_states": True}:
-        errors.append("output must request a portable final state")
+    if (set(sections["output"]) != {"write_states", "cadence"}
+            or sections["output"].get("write_states") is not True):
+        errors.append("output must declare cadence and request a portable final state")
+    _number(sections["output"], "cadence", errors, positive=True)
     if sections["completion"] != {"kind": "event", "value": "stationary_and_checks"}:
         errors.append("completion must be stationary_and_checks")
     if not errors and kind != "bare_tube":
@@ -424,7 +426,7 @@ def run_model(case, output):
         problem.initialise()
         if solve["relax_time"]:
             problem.run(solve["relax_time"], startstep=solve["start_step"],
-                outstep=solve["relax_time"] / 8, maxstep=solve["relax_time"] / 8,
+                outstep=case["output"]["cadence"], maxstep=solve["relax_time"] / 8,
                 temporal_error=tol["temporal_error"])
             route.append("transient seed")
         problem.solve(max_newton_iterations=solve["max_newton_iterations"])
