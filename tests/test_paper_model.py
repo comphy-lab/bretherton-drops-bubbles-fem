@@ -898,18 +898,25 @@ def test_translating_and_bare_cases_record_rms_without_zero_flow_gate(
 
 @pytest.fixture
 def confined_polish_standin(monkeypatch):
-    """Exercise the real pinned Python inversion recovery on a pure fake problem."""
+    """Exercise pinned Python hook dispatch and inversion recovery without native solves."""
     from types import SimpleNamespace
 
     from pyoomph.generic.problem import Problem
 
     class FakeProblem:
         _solve_with_inversion_remesh = Problem._solve_with_inversion_remesh
+        _perform_pending_remesh = Problem._perform_pending_remesh
+        actions_before_newton_solve = Problem.actions_before_newton_solve
+        actions_after_newton_step = Problem.actions_after_newton_step
+        actions_after_newton_solve = Problem.actions_after_newton_solve
+        last_newton_step_failed = Problem.last_newton_step_failed
 
-        def __init__(self, failures=(), *, updates_needed=2, quality_remesh=False):
+        def __init__(self, failures=(), *, updates_needed=2, quality_remesh=0,
+                     state_notifications=False):
             self.failures = list(failures)
-            self.updates_needed = updates_needed
-            self.quality_remesh = quality_remesh
+            self.updates_needed = list(updates_needed) if isinstance(updates_needed, list) else updates_needed
+            self.quality_remesh = int(quality_remesh)
+            self.state_notifications = state_notifications
             self.max_newton_iterations = 40
             self.newton_relaxation_factor = 1.0
             self.newton_solver_tolerance = 1e-8
@@ -933,7 +940,14 @@ def confined_polish_standin(monkeypatch):
             self.volume = 4.0
             self.speed = 0.01
             self.steady = False
-            self.hooks = []
+            self.hooks = self._hooks = []
+            self._equation_system = SimpleNamespace(_before_newton_solve=lambda: None,
+                                                    _after_newton_solve=lambda: None)
+            self._debug_largest_residual = 0
+            self._custom_assembler = self._bifurcation_reactivation_after_adaptation = None
+            self._solve_in_arclength_conti = None
+            self.do_call_remeshing_when_necessary = True
+            self.cmdlineargs = SimpleNamespace(quick_test=False)
             self.events = []
 
         def __iadd__(self, hook):
@@ -988,6 +1002,21 @@ def confined_polish_standin(monkeypatch):
         def invalidate_cached_mesh_data(self):
             pass
 
+        def _sync_diagonal_requirement_from_solver(self):
+            pass
+
+        def _agree_on_domains_to_remesh(self):
+            pass
+
+        def nsub_mesh(self):
+            return 0
+
+        def get_bifurcation_tracking_mode(self):
+            return ""
+
+        def get_last_residual_convergence(self):
+            return [self.residual]
+
         def _get_inversion_reports(self):
             return self.inversions
 
@@ -1003,6 +1032,7 @@ def confined_polish_standin(monkeypatch):
             for hook in self.hooks:
                 hook.actions_before_remeshing(["shared_liquid_gas_template"])
             self.events.append("remesh_both_phases")
+            self.residual = 1e-3
             for hook in self.hooks:
                 hook.actions_after_remeshing()
 
@@ -1013,14 +1043,16 @@ def confined_polish_standin(monkeypatch):
             def trial():
                 self.steady = True
                 self._last_bc_setting = "stationary"
-                for hook in self.hooks:
-                    hook.actions_before_newton_solve()
+                self.actions_before_newton_solve()
                 self.events.append(("trial", self.newton_relaxation_factor, self.max_newton_iterations))
+                if self.state_notifications:
+                    self._restore_state(self._snapshot_state())
                 failure = self.failures.pop(0) if self.failures else None
-                count = 1 if failure else min(self.updates_needed, self.max_newton_iterations)
+                needed = 1 if failure else (self.updates_needed.pop(0)
+                    if isinstance(self.updates_needed, list) else self.updates_needed)
+                count = min(needed, self.max_newton_iterations)
                 for _ in range(count):
-                    for hook in self.hooks:
-                        hook.actions_after_newton_step()
+                    self.actions_after_newton_step()
                 if failure:
                     self.fields = [float("inf"), 9.0]
                     self.pins = [1, 0]
@@ -1031,20 +1063,23 @@ def confined_polish_standin(monkeypatch):
                     if failure == "inversion":
                         self.inversions += 1
                     raise RuntimeError("source setup failure" if failure == "setup" else "Newton solve failure")
-                if self.updates_needed > count:
+                if needed > count:
                     self.fields = [3.0, 4.0]
                     self.residual = 0.1
                     raise RuntimeError("iteration budget exhausted")
                 self.residual = 0.0
                 self._last_step_was_stationary = True
                 self.steady = False
+                if self.quality_remesh:
+                    self.quality_remesh -= 1
+                    self._domains_to_remesh.update(self._domains_remesh_on_inversion)
+                self.actions_after_newton_solve()
+                if self.state_notifications:
+                    self._restore_state(self._snapshot_state())
                 return 0
 
             self._solve_with_inversion_remesh(trial)
-            if self.quality_remesh:
-                self.quality_remesh = False
-                self.force_remesh(self._domains_remesh_on_inversion)
-                self.residual = 1e-3
+            self._perform_pending_remesh()
 
     monkeypatch.setattr(paper_bubble, "_stationary_residual", lambda problem: problem.residual)
     return FakeProblem
@@ -1082,23 +1117,78 @@ def test_noninversion_failure_propagates_after_full_state_and_control_restore(
     assert record["status"] == "failed" and record["rollback_verified"] is True
 
 
-def test_confined_polish_budgets_all_core_retries_together(confined_polish_standin, tmp_path):
+@pytest.mark.parametrize("state_notifications", [False, True])
+def test_confined_polish_budgets_all_core_retries_together(
+    confined_polish_standin, tmp_path, state_notifications,
+):
     case = paper_bubble.read_case(ROOT / "validation/herradaEtAl_paper_model/cases/h15-bo1p56.json")
-    problem = confined_polish_standin(["inversion"], updates_needed=50)
+    problem = confined_polish_standin(["inversion"], updates_needed=50,
+                                     state_notifications=state_notifications)
     with pytest.raises(RuntimeError, match="budget"):
         paper_bubble.polish_confined_state(problem, case, tmp_path, "seed")
     record = json.loads((tmp_path / "polish/seed/polish.json").read_text())
     assert record["updates_total"] == 40 and record["remeshes_total"] == 1
+    assert record["stage_updates"] == 40
     assert record["rollback_verified"] is True
 
 
 def test_post_remesh_interpolation_requires_another_stationary_solve(confined_polish_standin, tmp_path):
     case = paper_bubble.read_case(ROOT / "validation/herradaEtAl_paper_model/cases/h15-bo1p56.json")
-    problem = confined_polish_standin(quality_remesh=True)
+    problem = confined_polish_standin(updates_needed=[34, 22], quality_remesh=True)
     record = paper_bubble.polish_confined_state(problem, case, tmp_path, "seed")
     assert record["status"] == "converged" and len(record["trials"]) == 2
     assert record["trials"][0]["residual_linf"] == 1e-3
-    assert record["trials"][1]["residual_linf"] == 0 and record["updates_total"] == 4
+    assert record["trials"][1]["residual_linf"] == 0 and record["updates_total"] == 56
+    assert [(trial["relaxation"], trial["remaining_updates"]) for trial in record["trials"]] == [
+        (0.5, 40), (0.5, 40)]
+    assert record["trials"][1]["updates_total_before"] == 34
+    assert record["trials"][1]["stage_updates_before"] == 0
+    assert record["stage_updates"] == 22 and record["remeshes_total"] == 1
+
+
+def test_failed_inversion_after_quality_remesh_consumes_its_existing_stage(
+    confined_polish_standin, tmp_path,
+):
+    case = paper_bubble.read_case(ROOT / "validation/herradaEtAl_paper_model/cases/h15-bo1p56.json")
+    problem = confined_polish_standin([None, "inversion"], updates_needed=[34, 50],
+                                     quality_remesh=True)
+    with pytest.raises(RuntimeError, match="budget"):
+        paper_bubble.polish_confined_state(problem, case, tmp_path, "seed")
+    record = json.loads((tmp_path / "polish/seed/polish.json").read_text())
+    assert [(trial["relaxation"], trial["remaining_updates"]) for trial in record["trials"]] == [
+        (0.5, 40), (0.5, 40), (0.25, 39)]
+    assert record["updates_total"] == 74 and record["stage_updates"] == 40
+    assert record["remeshes_total"] == 2 and record["rollback_verified"] is True
+
+
+def test_state_reload_notifications_do_not_reset_an_accepted_stage(confined_polish_standin, tmp_path):
+    case = paper_bubble.read_case(ROOT / "validation/herradaEtAl_paper_model/cases/h15-bo1p56.json")
+    problem = confined_polish_standin(updates_needed=34, state_notifications=True)
+    record = paper_bubble.polish_confined_state(problem, case, tmp_path, "seed")
+    assert record["updates_total"] == record["stage_updates"] == 34
+    assert record["remeshes_total"] == 0
+    assert problem.events.count("restore") == 2
+    assert record["trials"][0]["relaxation"] == 0.5
+
+
+@pytest.mark.parametrize("quality_remeshes", [3, 4])
+def test_quality_remesh_stages_never_exceed_total_update_or_remesh_limits(
+    confined_polish_standin, tmp_path, quality_remeshes,
+):
+    case = paper_bubble.read_case(ROOT / "validation/herradaEtAl_paper_model/cases/h15-bo1p56.json")
+    problem = confined_polish_standin(updates_needed=40, quality_remesh=quality_remeshes)
+    if quality_remeshes == 3:
+        record = paper_bubble.polish_confined_state(problem, case, tmp_path, "seed")
+        assert record["status"] == "converged"
+    else:
+        with pytest.raises(RuntimeError, match="three-remesh budget"):
+            paper_bubble.polish_confined_state(problem, case, tmp_path, "seed")
+        record = json.loads((tmp_path / "polish/seed/polish.json").read_text())
+        assert record["rollback_verified"] is True
+    assert record["updates_total"] == 160 and record["stage_updates"] == 40
+    assert record["remeshes_total"] == problem.events.count("remesh_both_phases") == 3
+    assert all(trial["relaxation"] == 0.5 and trial["remaining_updates"] == 40
+               for trial in record["trials"])
 
 
 def test_core_inversion_retry_never_exceeds_three_shared_remeshes(confined_polish_standin, tmp_path):

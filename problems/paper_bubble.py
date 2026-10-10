@@ -427,48 +427,72 @@ def polish_confined_state(problem, case, output, label, *, initial_relaxation=0.
     """Bounded damped solve with the pinned core's evidenced-inversion recovery.
 
     The core restores its own full two-phase snapshot before remeshing, and
-    propagates failures without inversion reports. All retries share the case
-    iteration budget; post-remesh interpolation requires another steady check.
+    propagates failures without inversion reports. Failed-inversion retries
+    share a mesh stage's budget. A quality remesh after convergence starts a
+    new stage at unchanged damping; interpolation requires another steady check.
+    Each stage permits at most 40 updates, with at most 160 updates in total.
     Gmsh files referenced by the snapshots must remain in their run directory.
     """
     import numpy as np
     from pyoomph.generic.problem import GenericProblemHooks
 
+    stage_limit = min(40, case["solve"]["max_newton_iterations"])
+
     class Budget(GenericProblemHooks):
         def __init__(self):
             super().__init__()
             self.updates = self.remeshes = 0
+            self.stage_updates = 0
             self.active = True
             self.remeshing = False
+            self.converged = False
+            self.remesh_after_convergence = False
             self.relaxation = initial_relaxation
             self.trials = []
+
+        def remaining_updates(self):
+            return min(stage_limit - self.stage_updates, 160 - self.updates)
 
         def actions_before_newton_solve(self):
             if not self.active:
                 return
-            remaining = case["solve"]["max_newton_iterations"] - self.updates
+            self.converged = False
+            remaining = self.remaining_updates()
             if remaining <= 0:
-                raise RuntimeError("confined polish exhausted its aggregate Newton budget")
+                raise RuntimeError("confined polish exhausted its stage or total Newton budget")
             problem.max_newton_iterations = remaining
             problem.newton_relaxation_factor = self.relaxation
             self.trials.append({"relaxation": self.relaxation, "remaining_updates": remaining,
+                                "stage_updates_before": self.stage_updates,
+                                "updates_total_before": self.updates,
                                 "inversion_reports_before": problem._get_inversion_reports()})
 
         def actions_after_newton_step(self):
             if self.active:
                 self.updates += 1
+                self.stage_updates += 1
+
+        def actions_after_newton_solve(self):
+            if self.active:
+                self.converged = True
 
         def actions_before_remeshing(self, active_remeshers):
             if self.active and self.remeshes >= 3:
                 raise RuntimeError("confined polish exhausted its three-remesh budget")
             self.remeshing = self.active
+            self.remesh_after_convergence = self.active and self.converged
+            self.converged = False
 
         def actions_after_remeshing(self):
             # load_state also calls this hook, without actions_before_remeshing.
             if self.active and self.remeshing:
                 self.remeshing = False
                 self.remeshes += 1
-                self.relaxation *= 0.5
+                if self.remesh_after_convergence:
+                    self.stage_updates = 0
+                else:
+                    self.relaxation *= 0.5
+                self.remesh_after_convergence = False
 
     settings = {name: getattr(problem, name) for name in (
         "max_newton_iterations", "newton_relaxation_factor", "newton_solver_tolerance",
@@ -502,9 +526,9 @@ def polish_confined_state(problem, case, output, label, *, initial_relaxation=0.
               "initial_residual_linf": initial_residual, "parameters": parameters,
               "status": "running", "trials": counter.trials}
     try:
-        while counter.updates < case["solve"]["max_newton_iterations"]:
+        while counter.remaining_updates() > 0:
             before_remeshes = counter.remeshes
-            problem.solve(max_newton_iterations=case["solve"]["max_newton_iterations"] - counter.updates,
+            problem.solve(max_newton_iterations=counter.remaining_updates(),
                           newton_relaxation_factor=counter.relaxation, do_not_set_IC=True)
             residual = _stationary_residual(problem)
             record["trials"][-1].update(residual_linf=residual, status="returned",
@@ -516,7 +540,7 @@ def polish_confined_state(problem, case, output, label, *, initial_relaxation=0.
                 return record
             if counter.remeshes == before_remeshes:
                 raise RuntimeError("returned solve is not stationary and has no evidenced remesh")
-        raise RuntimeError("confined polish exhausted its aggregate Newton budget")
+        raise RuntimeError("confined polish exhausted its stage or total Newton budget")
     except Exception as error:  # Rollback, then propagate every failure.
         record.update(status="failed", error=f"{type(error).__name__}: {error}", rollback_verified=False)
         counter.active = False
@@ -546,7 +570,8 @@ def polish_confined_state(problem, case, output, label, *, initial_relaxation=0.
         counter.active = False
         for name, value in settings.items():
             setattr(problem, name, value)
-        record.update(updates_total=counter.updates, remeshes_total=counter.remeshes)
+        record.update(updates_total=counter.updates, stage_updates=counter.stage_updates,
+                      remeshes_total=counter.remeshes)
         with (directory / "polish.json").open("w") as stream:
             json.dump(record, stream, indent=2, allow_nan=False)
             stream.write("\n")
