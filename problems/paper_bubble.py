@@ -43,8 +43,8 @@ def validate_case(case: dict) -> dict:
     errors = []
     if case.get("schema") != "pyoomph-case-v1":
         errors.append("schema must be pyoomph-case-v1")
-    if case.get("benchmark_schema") != "herrada-paper-model-v1":
-        errors.append("benchmark_schema must be herrada-paper-model-v1")
+    if case.get("benchmark_schema") != "herrada-paper-model-v2":
+        errors.append("benchmark_schema must be herrada-paper-model-v2")
     if not isinstance(case.get("case_id"), str) or not case["case_id"].strip():
         errors.append("case_id must be nonempty")
     sections = {}
@@ -82,7 +82,8 @@ def validate_case(case: dict) -> dict:
                   "max_newton_iterations", "max_bond_steps"},
         "tolerances": {"newton", "temporal_error", "volume_relative", "flux_absolute",
                        "pressure_boundary_absolute", "velocity_reference_relative",
-                       "pressure_reference_relative", "laplace_relative", "sphere_radius_absolute"},
+                       "pressure_reference_relative", "laplace_relative", "sphere_radius_absolute",
+                       "static_velocity_absolute"},
     }
     for section, allowed in numerical_names.items():
         unknown = set(sections[section]) - allowed
@@ -134,7 +135,8 @@ def validate_case(case: dict) -> dict:
         errors.append("the bare-tube verification has a fixed mesh")
     for name in ("newton", "temporal_error", "volume_relative", "flux_absolute",
                  "pressure_boundary_absolute", "velocity_reference_relative",
-                 "pressure_reference_relative", "laplace_relative", "sphere_radius_absolute"):
+                 "pressure_reference_relative", "laplace_relative", "sphere_radius_absolute",
+                 "static_velocity_absolute"):
         _number(sections["tolerances"], name, errors, positive=True)
     if solve.get("mode") != "stationary":
         errors.append("solve.mode must be stationary")
@@ -211,6 +213,16 @@ def analytic_tube_fields(r, z, *, radius, ca_in, bond, frame_speed=0):
     return {"velocity_r": 0.0,
             "velocity_z": -frame_speed + 2 * ca_in * (1 - (r / radius)**2),
             "pressure_static": -(bond + 8 * ca_in) * z / radius**2}
+
+
+def bulk_velocity_rms(velocity_squared_integral, volume):
+    """Volume-weighted speed RMS from the bulk's coordinate-aware integrals."""
+    if (isinstance(velocity_squared_integral, bool) or isinstance(volume, bool)
+            or not all(isinstance(value, (int, float)) and math.isfinite(value)
+                       for value in (velocity_squared_integral, volume))
+            or velocity_squared_integral < 0 or volume <= 0):
+        raise ValueError("velocity RMS requires a finite nonnegative squared integral and positive volume")
+    return math.sqrt(velocity_squared_integral / volume)
 
 
 @lru_cache(maxsize=1)
@@ -445,9 +457,12 @@ def run_model(case, output):
         upper_flux = problem.observable("flux", "liquid/upper")
         pressure_rms = math.sqrt(max(problem.observable("pressure_squared", "liquid/lower")
                                     / problem.observable("area", "liquid/lower"), 0))
+        liquid_velocity_rms = bulk_velocity_rms(problem.observable("velocity_squared"),
+                                                problem.observable("volume"))
         summary = {"status": "completed", "completion_reached": False,
             "problem": p["problem"], "route": route, "ca_in": float(p["ca_in"]),
             "bond": bond, "frame_speed": problem.frame_speed(),
+            "liquid_velocity_rms": liquid_velocity_rms, "gas_velocity_rms": None,
             "stationary_residual_linf": residual, "lower_pressure_rms": pressure_rms,
             "lower_flux": lower_flux, "upper_flux": upper_flux,
             "flux_absolute_error": abs(lower_flux - upper_flux),
@@ -468,6 +483,8 @@ def run_model(case, output):
             surface_volume = problem.observable("surface_volume", "liquid/interface")
             volume_error = abs(gas_volume / problem.geometry.volume - 1)
             summary.update(gas_volume=gas_volume, surface_volume=surface_volume,
+                gas_velocity_rms=bulk_velocity_rms(problem.observable("velocity_squared", "gas"),
+                                                 gas_volume),
                 volume_relative_error=volume_error,
                 gas_pressure_mean=problem.observable("pressure", "gas") / gas_volume,
                 gas_volume_multiplier=float(problem.get_ode("gas_volume").get_value("pressure", as_float=True)))
@@ -486,7 +503,11 @@ def run_model(case, output):
                 summary.update(sphere_radius_max_error=radius_error, pressure_jump=jump,
                                laplace_relative_error=laplace_error)
                 checks.update(sphere=radius_error <= tol["sphere_radius_absolute"],
-                              laplace=laplace_error <= tol["laplace_relative"])
+                              laplace=laplace_error <= tol["laplace_relative"],
+                              liquid_static_velocity=liquid_velocity_rms <= tol["static_velocity_absolute"],
+                              gas_static_velocity=summary["gas_velocity_rms"] <= tol["static_velocity_absolute"],
+                              static_frame_speed=math.isfinite(summary["frame_speed"]) and
+                              abs(summary["frame_speed"]) <= tol["static_velocity_absolute"])
         transfer = output / "solver" / "final.dump"
         destination = output / "checkpoints" / "final.dump"
         destination.parent.mkdir()

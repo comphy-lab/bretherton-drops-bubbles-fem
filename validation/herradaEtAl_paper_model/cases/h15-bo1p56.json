@@ -1,6 +1,6 @@
 {
   "schema": "pyoomph-case-v1",
-  "benchmark_schema": "herrada-paper-model-v1",
+  "benchmark_schema": "herrada-paper-model-v2",
   "case_id": "herrada_paper_model_h15_bo1p56",
   "geometry": {"kind": "axisymmetric", "coordinates": ["r", "z"], "frame": "co-moving"},
   "nondimensionalization": {"surface_tension": 1.0, "liquid_viscosity": 1.0, "volume_equivalent_radius": 1.0},
@@ -9,7 +9,7 @@
   "boundaries": {"upper": "poiseuille", "lower": "static_pressure", "wall": "no_slip", "lower_tangential": "zero_velocity"},
   "closure": {"frame_speed": "front_tip", "gas_volume": "pressure_constraint"},
   "mesh": {"template": "PaperTwoPhaseMesh", "film_elements": 6.0, "bulk_resolution": 0.05333333333333334, "remeshing": true},
-  "tolerances": {"newton": 1e-8, "temporal_error": 1e-4, "volume_relative": 1e-6, "flux_absolute": 1e-8, "pressure_boundary_absolute": 1e-6, "velocity_reference_relative": 1e-6, "pressure_reference_relative": 1e-6, "laplace_relative": 0.002, "sphere_radius_absolute": 0.002},
+  "tolerances": {"newton": 1e-8, "temporal_error": 1e-4, "volume_relative": 1e-6, "flux_absolute": 1e-8, "pressure_boundary_absolute": 1e-6, "velocity_reference_relative": 1e-6, "pressure_reference_relative": 1e-6, "laplace_relative": 0.002, "sphere_radius_absolute": 0.002, "static_velocity_absolute": 1e-8},
   "solve": {"mode": "stationary", "initial_bond": 0.0, "bond_step": 0.1, "max_bond_steps": 32, "max_newton_iterations": 40, "relax_time": 8.0, "start_step": 0.0001},
   "output": {"cadence": 1.0, "write_states": true},
   "completion": {"kind": "event", "value": "stationary_and_checks"}

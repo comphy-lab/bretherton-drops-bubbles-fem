@@ -19,6 +19,17 @@ zero gravity and imposed flow, with the finite density and viscosity ratios.
 Its references are zero velocity, radius `R0=1`, volume `4*pi/3` and pressure
 jump `2`. It tests the interface stress, surface tension and gas-volume
 constraint. It does not test a translating bubble or gravitational buoyancy.
+The static case also requires each phase's volume-weighted velocity RMS and
+the absolute frame speed to be at most `static_velocity_absolute=1e-8` in
+the declared velocity units. The RMS is `sqrt(integral(|u|^2)/volume)`;
+the bulk integrals already include the axisymmetric measure. These zero-flow
+predicates apply only to the static case. Translating and bare-tube cases
+record the RMS without applying a zero-flow check; a bare tube has no gas RMS.
+
+These cases use `benchmark_schema: herrada-paper-model-v2`, which requires
+the explicit static velocity tolerance. The portable case schema remains
+`pyoomph-case-v1`. Earlier benchmark v1 cases require their corresponding
+pinned solver source; the new validator reports that version mismatch.
 
 Validate either case without native assembly:
 

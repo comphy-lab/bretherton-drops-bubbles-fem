@@ -701,7 +701,8 @@ def test_run_model_passes_case_cadence_to_transient_standin(tmp_path, monkeypatc
             solver_calls.append(("solve_standin", kwargs))
 
         def observable(self, name, domain="liquid"):
-            return 1.0 if name in ("area", "velocity_reference_squared", "pressure_reference_squared") else 0.0
+            return 1.0 if name in ("volume", "area", "velocity_reference_squared",
+                                  "pressure_reference_squared") else 0.0
 
         def frame_speed(self):
             return 0.0
@@ -745,3 +746,149 @@ def test_run_model_passes_case_cadence_to_transient_standin(tmp_path, monkeypatc
     assert summary["status"] == "completed"
     assert summary["completion_reached"] is True
     assert (tmp_path / summary["checkpoint"]).read_bytes() == b"software state stand-in"
+
+
+@pytest.mark.parametrize("integral,volume,expected", [(36.0, 4.0, 3.0), (0.0, 7.0, 0.0),
+                                                     (4e-18, 4.0, 1e-9)])
+def test_bulk_velocity_rms_uses_volume_weighted_integrals(integral, volume, expected):
+    assert paper_bubble.bulk_velocity_rms(integral, volume) == pytest.approx(expected)
+
+
+@pytest.mark.parametrize("integral,volume", [(-1e-18, 2.0), (1.0, 0.0), (float("nan"), 1.0),
+                                           (1.0, float("inf"))])
+def test_invalid_velocity_integrals_cannot_pass_as_zero_flow(integral, volume):
+    with pytest.raises(ValueError, match="velocity RMS"):
+        paper_bubble.bulk_velocity_rms(integral, volume)
+
+
+@pytest.mark.parametrize("tolerance", [0, -1, True, float("nan"), float("inf")])
+def test_static_velocity_tolerance_is_finite_and_positive(paper_case_path, tolerance):
+    case = paper_bubble.read_case(paper_case_path)
+    case["tolerances"]["static_velocity_absolute"] = tolerance
+    with pytest.raises(ValueError, match="static_velocity_absolute"):
+        paper_bubble.validate_case(case)
+
+
+@pytest.fixture
+def phase_velocity_summary_standin(tmp_path, monkeypatch):
+    """Run actual summary predicates with pure phase-integral and solver stand-ins."""
+    from types import ModuleType, SimpleNamespace
+
+    import numpy as np
+
+    def execute(case_path, liquid_rms, gas_rms, frame_speed):
+        case = paper_bubble.read_case(ROOT / case_path)
+        geom = paper_bubble.case_geometry(case)
+        gas_volume = getattr(geom, "volume", 4.0)
+        liquid_volume = 9.0
+
+        class ProblemStandin:
+            geometry = geom
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def set_output_directory(self, path):
+                assert Path(path) == tmp_path / "solver"
+
+            def set_linear_solver(self, name):
+                assert name == "superlu"
+
+            def set_c_compiler(self, name):
+                assert name == "system"
+
+            def initialise(self):
+                pass
+
+            def run(self, *args, **kwargs):
+                pass
+
+            def solve(self, **kwargs):
+                pass
+
+            def get_global_parameter(self, name):
+                return SimpleNamespace(value=case["solve"]["initial_bond"])
+
+            def get_ode(self, domain):
+                assert domain == "gas_volume"
+                return SimpleNamespace(get_value=lambda *args, **kwargs: 0.0)
+
+            def frame_speed(self):
+                return frame_speed
+
+            def observable(self, name, domain="liquid"):
+                if name == "volume":
+                    return gas_volume if domain == "gas" else liquid_volume
+                if name == "velocity_squared":
+                    return gas_rms**2 * gas_volume if domain == "gas" else liquid_rms**2 * liquid_volume
+                if name == "surface_volume":
+                    return gas_volume
+                if name == "pressure":
+                    return 2 * gas_volume if domain == "gas" else 0.0
+                return 1.0 if name in ("area", "velocity_reference_squared",
+                                      "pressure_reference_squared") else 0.0
+
+            def interface_polyline(self):
+                return np.asarray([geom.z_front - 2, geom.z_front - 1, geom.z_front]), np.asarray([0, 1, 0])
+
+            def save_state(self, path, **kwargs):
+                path = Path(path)
+                path.parent.mkdir()
+                path.write_bytes(b"phase velocity software stand-in")
+
+        def copy_state(source, destination, **kwargs):
+            Path(destination).write_bytes(Path(source).read_bytes())
+
+        package = ModuleType("pyoomph")
+        package.__path__ = []
+        output_package = ModuleType("pyoomph.output")
+        output_package.__path__ = []
+        states = ModuleType("pyoomph.output.states")
+        states.copy_state_file = copy_state
+        for name, module in (("pyoomph", package), ("pyoomph.output", output_package),
+                             ("pyoomph.output.states", states)):
+            monkeypatch.setitem(sys.modules, name, module)
+        monkeypatch.setattr(paper_bubble, "build_problem", lambda *args, **kwargs: ProblemStandin())
+        monkeypatch.setattr(paper_bubble, "_stationary_residual", lambda problem: 0.0)
+        runner.create_run_manifest(tmp_path, {"purpose": "phase velocity software fixture only"})
+        return paper_bubble.run_model(case, tmp_path)
+
+    return execute
+
+
+@pytest.mark.parametrize("liquid,gas,frame,failed_check", [
+    (3e-9, 4e-9, -5e-9, None),
+    (2e-8, 4e-9, -5e-9, "liquid_static_velocity"),
+    (3e-9, 2e-8, -5e-9, "gas_static_velocity"),
+    (3e-9, 4e-9, -2e-8, "static_frame_speed"),
+])
+def test_static_summary_records_rms_and_rejects_nonzero_phase_or_frame_velocity(
+    phase_velocity_summary_standin, liquid, gas, frame, failed_check,
+):
+    summary = phase_velocity_summary_standin("verification/paper_model/cases/static-laplace.json",
+                                             liquid, gas, frame)
+    assert summary["liquid_velocity_rms"] == pytest.approx(liquid, abs=1e-20)
+    assert summary["gas_velocity_rms"] == pytest.approx(gas, abs=1e-20)
+    assert summary["frame_speed"] == frame
+    assert summary["completion_reached"] is (failed_check is None)
+    assert summary["scientific_status"] == ("checks_passed" if failed_check is None else "checks_failed")
+    if failed_check:
+        assert summary["checks"][failed_check] is False
+        assert all(value for name, value in summary["checks"].items() if name != failed_check)
+
+
+@pytest.mark.parametrize("case_path,has_gas", [
+    ("verification/paper_model/cases/bare-tube.json", False),
+    ("validation/herradaEtAl_paper_model/cases/h15-bo1p56.json", True),
+])
+def test_translating_and_bare_cases_record_rms_without_zero_flow_gate(
+    phase_velocity_summary_standin, case_path, has_gas,
+):
+    summary = phase_velocity_summary_standin(case_path, 0.03, 0.02, -0.01)
+    assert summary["liquid_velocity_rms"] == pytest.approx(0.03)
+    assert summary["gas_velocity_rms"] == (pytest.approx(0.02) if has_gas else None)
+    assert not {"liquid_static_velocity", "gas_static_velocity", "static_frame_speed"} & set(summary["checks"])
+    assert summary["completion_reached"] is True
