@@ -10,6 +10,8 @@ when a caller constructs a problem.
 from __future__ import annotations
 
 import copy
+import hashlib
+import io
 import json
 import math
 from functools import lru_cache
@@ -319,7 +321,8 @@ def _native_problem_types():
             if not bare:
                 liquid += HyperelasticSmoothedMesh()
                 if self.case["mesh"]["remeshing"]:
-                    liquid += RemeshWhen(RemeshingOptions())
+                    liquid += RemeshWhen(RemeshingOptions(
+                        on_inverted_element=p["problem"] == "finite_gas_bubble"))
             for boundary in ("wall", "lower", "upper"):
                 if not bare:
                     liquid += DirichletBC(mesh_x=True, mesh_y=True) @ boundary
@@ -420,6 +423,135 @@ def _stationary_residual(problem):
                 stepper.undo_make_steady()
 
 
+def polish_confined_state(problem, case, output, label, *, initial_relaxation=0.5):
+    """Bounded damped solve with the pinned core's evidenced-inversion recovery.
+
+    The core restores its own full two-phase snapshot before remeshing, and
+    propagates failures without inversion reports. All retries share the case
+    iteration budget; post-remesh interpolation requires another steady check.
+    Gmsh files referenced by the snapshots must remain in their run directory.
+    """
+    import numpy as np
+    from pyoomph.generic.problem import GenericProblemHooks
+
+    class Budget(GenericProblemHooks):
+        def __init__(self):
+            super().__init__()
+            self.updates = self.remeshes = 0
+            self.active = True
+            self.remeshing = False
+            self.relaxation = initial_relaxation
+            self.trials = []
+
+        def actions_before_newton_solve(self):
+            if not self.active:
+                return
+            remaining = case["solve"]["max_newton_iterations"] - self.updates
+            if remaining <= 0:
+                raise RuntimeError("confined polish exhausted its aggregate Newton budget")
+            problem.max_newton_iterations = remaining
+            problem.newton_relaxation_factor = self.relaxation
+            self.trials.append({"relaxation": self.relaxation, "remaining_updates": remaining,
+                                "inversion_reports_before": problem._get_inversion_reports()})
+
+        def actions_after_newton_step(self):
+            if self.active:
+                self.updates += 1
+
+        def actions_before_remeshing(self, active_remeshers):
+            if self.active and self.remeshes >= 3:
+                raise RuntimeError("confined polish exhausted its three-remesh budget")
+            self.remeshing = self.active
+
+        def actions_after_remeshing(self):
+            # load_state also calls this hook, without actions_before_remeshing.
+            if self.active and self.remeshing:
+                self.remeshing = False
+                self.remeshes += 1
+                self.relaxation *= 0.5
+
+    settings = {name: getattr(problem, name) for name in (
+        "max_newton_iterations", "newton_relaxation_factor", "newton_solver_tolerance",
+        "inversion_remesh_max_retries", "eigen_data_in_states")}
+    flags = {name: getattr(problem, name) for name in (
+        "_last_bc_setting", "_first_step", "_taken_already_an_unsteady_step",
+        "_last_step_was_stationary")}
+    steady = [problem.time_stepper_pt(i).is_steady() for i in range(problem.ntime_stepper())]
+    parameters = {name: float(problem.get_global_parameter(name).value) for name in ("Ca_in", "Bo")}
+    fields = [np.asarray(value).copy() for value in problem.get_current_dofs()]
+    profile = [np.asarray(value).copy() for value in problem.interface_polyline()]
+    volume = problem.observable("volume", "gas")
+    frame = problem.frame_speed()
+    initial_residual = _stationary_residual(problem)
+    problem.eigen_data_in_states = True  # Also stores the BC mode in this pin.
+    try:
+        snapshot = problem._snapshot_state()
+        directory = Path(output) / "polish" / label
+        directory.mkdir(parents=True, exist_ok=False)
+        checkpoint = directory / "before.dump"
+        with checkpoint.open("xb") as stream:
+            stream.write(snapshot)
+    except Exception:  # No trial may run without a complete snapshot.
+        problem.eigen_data_in_states = settings["eigen_data_in_states"]
+        raise
+    counter = Budget()
+    problem += counter
+    problem.inversion_remesh_max_retries = 3
+    record = {"checkpoint": str(checkpoint.relative_to(output)),
+              "checkpoint_sha256": hashlib.sha256(snapshot).hexdigest(),
+              "initial_residual_linf": initial_residual, "parameters": parameters,
+              "status": "running", "trials": counter.trials}
+    try:
+        while counter.updates < case["solve"]["max_newton_iterations"]:
+            before_remeshes = counter.remeshes
+            problem.solve(max_newton_iterations=case["solve"]["max_newton_iterations"] - counter.updates,
+                          newton_relaxation_factor=counter.relaxation, do_not_set_IC=True)
+            residual = _stationary_residual(problem)
+            record["trials"][-1].update(residual_linf=residual, status="returned",
+                                        updates_total=counter.updates, remeshes_total=counter.remeshes)
+            if parameters != {name: float(problem.get_global_parameter(name).value) for name in parameters}:
+                raise RuntimeError("confined polish changed its physical forcing")
+            if residual <= case["tolerances"]["newton"]:
+                record.update(status="converged", residual_linf=residual)
+                return record
+            if counter.remeshes == before_remeshes:
+                raise RuntimeError("returned solve is not stationary and has no evidenced remesh")
+        raise RuntimeError("confined polish exhausted its aggregate Newton budget")
+    except Exception as error:  # Rollback, then propagate every failure.
+        record.update(status="failed", error=f"{type(error).__name__}: {error}", rollback_verified=False)
+        counter.active = False
+        for name, value in flags.items():
+            setattr(problem, name, value)
+        problem.load_state(io.BytesIO(snapshot), quiet=True)
+        for name, value in flags.items():
+            setattr(problem, name, value)
+        for index, was_steady in enumerate(steady):
+            stepper = problem.time_stepper_pt(index)
+            stepper.make_steady() if was_steady else stepper.undo_make_steady()
+        problem._domains_to_remesh.clear()
+        problem._remesh_requested_inside_solve = False
+        problem.invalidate_cached_mesh_data()
+        restored_fields = problem.get_current_dofs()
+        restored_profile = problem.interface_polyline()
+        restored = (all(np.array_equal(a, b) for a, b in zip(fields, restored_fields, strict=True))
+                    and all(np.array_equal(a, b) for a, b in zip(profile, restored_profile, strict=True))
+                    and parameters == {name: float(problem.get_global_parameter(name).value) for name in parameters}
+                    and volume == problem.observable("volume", "gas") and frame == problem.frame_speed()
+                    and math.isclose(_stationary_residual(problem), initial_residual, rel_tol=1e-12, abs_tol=1e-12))
+        record["rollback_verified"] = restored
+        if not restored:
+            raise RuntimeError("confined polish rollback failed its same-state checks") from error
+        raise
+    finally:
+        counter.active = False
+        for name, value in settings.items():
+            setattr(problem, name, value)
+        record.update(updates_total=counter.updates, remeshes_total=counter.remeshes)
+        with (directory / "polish.json").open("w") as stream:
+            json.dump(record, stream, indent=2, allow_nan=False)
+            stream.write("\n")
+
+
 def run_model(case, output):
     """Execute one bounded stationary case after its runner writes provenance."""
     import numpy as np
@@ -441,14 +573,21 @@ def run_model(case, output):
                 outstep=case["output"]["cadence"], maxstep=solve["relax_time"] / 8,
                 temporal_error=tol["temporal_error"])
             route.append("transient seed")
-        problem.solve(max_newton_iterations=solve["max_newton_iterations"])
+        if p["problem"] == "finite_gas_bubble":
+            route.append(polish_confined_state(problem, case, output, "seed"))
+        else:
+            problem.solve(max_newton_iterations=solve["max_newton_iterations"])
         bond = float(solve["initial_bond"])
         for _ in range(solve["max_bond_steps"]):
             if bond >= p["bond"]:
                 break
             bond = min(bond + solve["bond_step"], float(p["bond"]))
             problem.get_global_parameter("Bo").value = bond
-            problem.solve(max_newton_iterations=solve["max_newton_iterations"])
+            if p["problem"] == "finite_gas_bubble":
+                route.append(polish_confined_state(problem, case, output, f"bond_{len(route):03d}",
+                                                    initial_relaxation=1.0))
+            else:
+                problem.solve(max_newton_iterations=solve["max_newton_iterations"])
             route.append({"bond": bond})
         if bond != p["bond"]:
             raise ValueError("target Bond number not reached within max_bond_steps")

@@ -853,6 +853,8 @@ def phase_velocity_summary_standin(tmp_path, monkeypatch):
             monkeypatch.setitem(sys.modules, name, module)
         monkeypatch.setattr(paper_bubble, "build_problem", lambda *args, **kwargs: ProblemStandin())
         monkeypatch.setattr(paper_bubble, "_stationary_residual", lambda problem: 0.0)
+        monkeypatch.setattr(paper_bubble, "polish_confined_state", lambda *args, **kwargs:
+                            {"status": "software_standin"})
         runner.create_run_manifest(tmp_path, {"purpose": "phase velocity software fixture only"})
         return paper_bubble.run_model(case, tmp_path)
 
@@ -892,3 +894,219 @@ def test_translating_and_bare_cases_record_rms_without_zero_flow_gate(
     assert summary["gas_velocity_rms"] == (pytest.approx(0.02) if has_gas else None)
     assert not {"liquid_static_velocity", "gas_static_velocity", "static_frame_speed"} & set(summary["checks"])
     assert summary["completion_reached"] is True
+
+
+@pytest.fixture
+def confined_polish_standin(monkeypatch):
+    """Exercise the real pinned Python inversion recovery on a pure fake problem."""
+    from types import SimpleNamespace
+
+    from pyoomph.generic.problem import Problem
+
+    class FakeProblem:
+        _solve_with_inversion_remesh = Problem._solve_with_inversion_remesh
+
+        def __init__(self, failures=(), *, updates_needed=2, quality_remesh=False):
+            self.failures = list(failures)
+            self.updates_needed = updates_needed
+            self.quality_remesh = quality_remesh
+            self.max_newton_iterations = 40
+            self.newton_relaxation_factor = 1.0
+            self.newton_solver_tolerance = 1e-8
+            self.inversion_remesh_max_retries = 3
+            self.eigen_data_in_states = False
+            self._last_bc_setting = "transient"
+            self._first_step = False
+            self._taken_already_an_unsteady_step = True
+            self._last_step_was_stationary = False
+            self._domains_to_remesh = set()
+            self._remesh_requested_inside_solve = False
+            self._domains_remesh_on_inversion = {"shared_liquid_gas_template"}
+            self._inversion_reference_dt = None
+            self.inversion_remesh_dt_collapse = 1 / 16
+            self._inversion_remesh_threshold = 0
+            self.inversions = 0
+            self.fields = [1.0, 2.0]
+            self.pins = [0, 1]
+            self.parameters = {"Ca_in": SimpleNamespace(value=0.02), "Bo": SimpleNamespace(value=0.0)}
+            self.residual = 3e-4
+            self.volume = 4.0
+            self.speed = 0.01
+            self.steady = False
+            self.hooks = []
+            self.events = []
+
+        def __iadd__(self, hook):
+            hook._problem = self
+            self.hooks.append(hook)
+            return self
+
+        def ntime_stepper(self):
+            return 1
+
+        def time_stepper_pt(self, index):
+            return SimpleNamespace(is_steady=lambda: self.steady,
+                make_steady=lambda: setattr(self, "steady", True),
+                undo_make_steady=lambda: setattr(self, "steady", False))
+
+        def get_global_parameter(self, name):
+            return self.parameters[name]
+
+        def get_current_dofs(self):
+            return self.fields, self.pins
+
+        def interface_polyline(self):
+            return [0.0, 1.0, 2.0], [0.0, self.fields[0], 0.0]
+
+        def observable(self, name, domain):
+            assert (name, domain) == ("volume", "gas")
+            return self.volume
+
+        def frame_speed(self):
+            return self.speed
+
+        def _snapshot_state(self):
+            return json.dumps({"fields": self.fields, "pins": self.pins,
+                "parameters": {k: v.value for k, v in self.parameters.items()},
+                "residual": self.residual, "volume": self.volume, "speed": self.speed}).encode()
+
+        def load_state(self, snapshot, **kwargs):
+            value = json.loads(snapshot.read())
+            self.fields, self.pins = value["fields"], value["pins"]
+            for key, number in value["parameters"].items():
+                self.parameters[key].value = number
+            self.residual, self.volume, self.speed = value["residual"], value["volume"], value["speed"]
+            self.events.append("restore")
+            for hook in self.hooks:
+                hook.actions_after_remeshing()  # load_state notification is not a remake.
+
+        def _restore_state(self, snapshot):
+            import io
+
+            self.load_state(io.BytesIO(snapshot))
+
+        def invalidate_cached_mesh_data(self):
+            pass
+
+        def _get_inversion_reports(self):
+            return self.inversions
+
+        def get_current_time(self, **kwargs):
+            return 8.0
+
+        def is_quiet(self):
+            return True
+
+        def force_remesh(self, domains):
+            assert domains == self._domains_remesh_on_inversion
+            assert self.fields == [1.0, 2.0], "only restored two-phase geometry may be remeshed"
+            for hook in self.hooks:
+                hook.actions_before_remeshing(["shared_liquid_gas_template"])
+            self.events.append("remesh_both_phases")
+            for hook in self.hooks:
+                hook.actions_after_remeshing()
+
+        def solve(self, **kwargs):
+            self.max_newton_iterations = kwargs["max_newton_iterations"]
+            self.newton_relaxation_factor = kwargs["newton_relaxation_factor"]
+
+            def trial():
+                self.steady = True
+                self._last_bc_setting = "stationary"
+                for hook in self.hooks:
+                    hook.actions_before_newton_solve()
+                self.events.append(("trial", self.newton_relaxation_factor, self.max_newton_iterations))
+                failure = self.failures.pop(0) if self.failures else None
+                count = 1 if failure else min(self.updates_needed, self.max_newton_iterations)
+                for _ in range(count):
+                    for hook in self.hooks:
+                        hook.actions_after_newton_step()
+                if failure:
+                    self.fields = [float("inf"), 9.0]
+                    self.pins = [1, 0]
+                    self.parameters["Ca_in"].value = 99
+                    self.volume, self.speed, self.residual = 7.0, 8.0, float("inf")
+                    self._domains_to_remesh.add("stale_template")
+                    self._remesh_requested_inside_solve = True
+                    if failure == "inversion":
+                        self.inversions += 1
+                    raise RuntimeError("source setup failure" if failure == "setup" else "Newton solve failure")
+                if self.updates_needed > count:
+                    self.fields = [3.0, 4.0]
+                    self.residual = 0.1
+                    raise RuntimeError("iteration budget exhausted")
+                self.residual = 0.0
+                self._last_step_was_stationary = True
+                self.steady = False
+                return 0
+
+            self._solve_with_inversion_remesh(trial)
+            if self.quality_remesh:
+                self.quality_remesh = False
+                self.force_remesh(self._domains_remesh_on_inversion)
+                self.residual = 1e-3
+
+    monkeypatch.setattr(paper_bubble, "_stationary_residual", lambda problem: problem.residual)
+    return FakeProblem
+
+
+def test_confined_polish_uses_core_inversion_restore_damping_and_shared_remesh(
+    confined_polish_standin, tmp_path,
+):
+    case = paper_bubble.read_case(ROOT / "validation/herradaEtAl_paper_model/cases/h15-bo1p56.json")
+    problem = confined_polish_standin(["inversion"])
+    record = paper_bubble.polish_confined_state(problem, case, tmp_path, "seed")
+    assert problem.events[:4] == [("trial", 0.5, 40), "restore", "remesh_both_phases", ("trial", 0.25, 39)]
+    assert record["status"] == "converged" and record["updates_total"] == 3
+    assert record["remeshes_total"] == 1
+    assert problem.max_newton_iterations == 40 and problem.newton_relaxation_factor == 1
+    assert problem.eigen_data_in_states is False
+
+
+@pytest.mark.parametrize("failure", ["setup", "unclassified"])
+def test_noninversion_failure_propagates_after_full_state_and_control_restore(
+    confined_polish_standin, tmp_path, failure,
+):
+    case = paper_bubble.read_case(ROOT / "validation/herradaEtAl_paper_model/cases/h15-bo1p56.json")
+    problem = confined_polish_standin([failure])
+    with pytest.raises(RuntimeError, match="failure"):
+        paper_bubble.polish_confined_state(problem, case, tmp_path, "seed")
+    assert "remesh_both_phases" not in problem.events
+    assert problem.fields == [1.0, 2.0] and problem.pins == [0, 1]
+    assert problem.parameters["Ca_in"].value == 0.02 and problem.parameters["Bo"].value == 0
+    assert problem.volume == 4 and problem.speed == 0.01 and not problem.steady
+    assert problem._last_bc_setting == "transient" and not problem._last_step_was_stationary
+    assert not problem._domains_to_remesh and not problem._remesh_requested_inside_solve
+    assert problem.max_newton_iterations == 40 and problem.newton_relaxation_factor == 1
+    record = json.loads((tmp_path / "polish/seed/polish.json").read_text())
+    assert record["status"] == "failed" and record["rollback_verified"] is True
+
+
+def test_confined_polish_budgets_all_core_retries_together(confined_polish_standin, tmp_path):
+    case = paper_bubble.read_case(ROOT / "validation/herradaEtAl_paper_model/cases/h15-bo1p56.json")
+    problem = confined_polish_standin(["inversion"], updates_needed=50)
+    with pytest.raises(RuntimeError, match="budget"):
+        paper_bubble.polish_confined_state(problem, case, tmp_path, "seed")
+    record = json.loads((tmp_path / "polish/seed/polish.json").read_text())
+    assert record["updates_total"] == 40 and record["remeshes_total"] == 1
+    assert record["rollback_verified"] is True
+
+
+def test_post_remesh_interpolation_requires_another_stationary_solve(confined_polish_standin, tmp_path):
+    case = paper_bubble.read_case(ROOT / "validation/herradaEtAl_paper_model/cases/h15-bo1p56.json")
+    problem = confined_polish_standin(quality_remesh=True)
+    record = paper_bubble.polish_confined_state(problem, case, tmp_path, "seed")
+    assert record["status"] == "converged" and len(record["trials"]) == 2
+    assert record["trials"][0]["residual_linf"] == 1e-3
+    assert record["trials"][1]["residual_linf"] == 0 and record["updates_total"] == 4
+
+
+def test_core_inversion_retry_never_exceeds_three_shared_remeshes(confined_polish_standin, tmp_path):
+    case = paper_bubble.read_case(ROOT / "validation/herradaEtAl_paper_model/cases/h15-bo1p56.json")
+    problem = confined_polish_standin(["inversion"] * 4)
+    with pytest.raises(RuntimeError, match="kept folding"):
+        paper_bubble.polish_confined_state(problem, case, tmp_path, "seed")
+    record = json.loads((tmp_path / "polish/seed/polish.json").read_text())
+    assert record["updates_total"] == 4 and record["remeshes_total"] == 3
+    assert problem.events.count("remesh_both_phases") == 3
+    assert record["rollback_verified"] is True
