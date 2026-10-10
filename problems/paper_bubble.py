@@ -227,6 +227,21 @@ def bulk_velocity_rms(velocity_squared_integral, volume):
     return math.sqrt(velocity_squared_integral / volume)
 
 
+def _bulk_viscous_stress(velocity, viscosity, bulk):
+    """Trace the full bulk stress, retaining cylindrical and moving-mesh terms.
+
+    The pinned public grad defaults to the current interface dimensions.
+    Its underlying binding accepts the explicit dimensions of the parent bulk.
+    """
+    from pyoomph import _pyoomph_core
+    from pyoomph.expressions import Expression, evaluate_in_domain, sym
+
+    gradient = _pyoomph_core.GiNaC_grad(
+        velocity, Expression(bulk.get_nodal_dimension()), Expression(bulk.get_element_dimension()),
+        _pyoomph_core.GiNaC_wrap_coordinate_system(bulk.get_coordinate_system()), Expression(1))
+    return evaluate_in_domain(2 * viscosity * sym(gradient), bulk)
+
+
 @lru_cache(maxsize=1)
 def _native_problem_types():
     """Load the pinned native APIs without compiling or initialising a problem."""
@@ -256,9 +271,7 @@ def _native_problem_types():
     from pyoomph.expressions import (
         cartesian,
         dot,
-        grad,
         matproduct,
-        sym,
         testfunction,
         var,
         vector,
@@ -282,9 +295,10 @@ def _native_problem_types():
 
         def define_residuals(self):
             flow = self.get_parent_equations(StokesEquations)
-            velocity = var(flow.velocity_name, domain=self.get_parent_domain())
+            bulk = self.get_parent_domain()
+            velocity = var(flow.velocity_name, domain=bulk)
             normal = self.get_normal()
-            viscous = 2 * flow.dynamic_viscosity * sym(grad(velocity))
+            viscous = _bulk_viscous_stress(velocity, flow.dynamic_viscosity, bulk)
             normal_viscous = dot(normal, matproduct(viscous, normal))
             self.add_residual(weak(self.target - normal_viscous,
                                    dot(normal, testfunction(flow.velocity_name))))
@@ -577,8 +591,10 @@ def polish_confined_state(problem, case, output, label, *, initial_relaxation=0.
             stream.write("\n")
 
 
-def run_model(case, output):
+def run_model(case, output, *, azimuthal_stability=False):
     """Execute one bounded stationary case after its runner writes provenance."""
+    if not isinstance(azimuthal_stability, bool):
+        raise TypeError("azimuthal_stability must be a boolean")
     import numpy as np
     from pyoomph.output.states import copy_state_file
 
@@ -592,6 +608,8 @@ def run_model(case, output):
         problem.set_output_directory(str(output / "solver"))
         problem.set_linear_solver("superlu")
         problem.set_c_compiler("system")
+        if azimuthal_stability:
+            problem.setup_for_stability_analysis(azimuthal_stability=True, analytic_hessian=False)
         problem.initialise()
         if solve["relax_time"]:
             problem.run(solve["relax_time"], startstep=solve["start_step"],
@@ -624,6 +642,7 @@ def run_model(case, output):
         liquid_velocity_rms = bulk_velocity_rms(problem.observable("velocity_squared"),
                                                 problem.observable("volume"))
         summary = {"status": "completed", "completion_reached": False,
+            "azimuthal_stability": azimuthal_stability,
             "problem": p["problem"], "route": route, "ca_in": float(p["ca_in"]),
             "bond": bond, "frame_speed": problem.frame_speed(),
             "liquid_velocity_rms": liquid_velocity_rms, "gas_velocity_rms": None,

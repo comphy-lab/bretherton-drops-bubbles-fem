@@ -238,6 +238,36 @@ def test_manifest_precedes_progress_and_binds_actual_inputs(
     assert order == ["start", "model_standin", "final"]
 
 
+def test_azimuthal_cli_binds_flag_before_model_and_preserves_h15_case(
+    tmp_path, monkeypatch, clean_source_standin,
+):
+    case_path = ROOT / "validation/herradaEtAl_paper_model/cases/h15-bo1p56.json"
+    before = case_path.read_bytes()
+    expected = paper_bubble.read_case(case_path)
+    out = tmp_path / "azimuthal-h15"
+    calls = []
+
+    def model_standin(case, path, *, azimuthal_stability):
+        assert azimuthal_stability is True
+        assert case == expected and case_path.read_bytes() == before
+        assert case["physics"]["ca_in"] == 0.02
+        assert case["physics"]["domain_over_r"] == 15.0
+        assert path == out
+        manifest = json.loads((path / runner.MANIFEST).read_text())
+        assert manifest["azimuthal_stability"] is True
+        assert manifest["case_sha256"] == hashlib.sha256(before).hexdigest()
+        start = events(path)
+        assert len(start) == 1 and start[0]["event"] == "start"
+        assert start[0]["azimuthal_stability"] is True
+        calls.append(copy.deepcopy(case))
+        return {"status": "completed", "completion_reached": True,
+                "azimuthal_stability": True, "scientific_status": "software_standin"}
+
+    monkeypatch.setattr(runner, "run_model", model_standin)
+    assert runner.main([str(case_path), "--out", str(out), "--azimuthal-stability"]) == 0
+    assert calls == [expected] and case_path.read_bytes() == before
+
+
 @pytest.mark.parametrize("summary", [
     {"status": "completed", "completion_reached": False},
     {"status": "incomplete", "completion_reached": True},
@@ -666,12 +696,17 @@ def test_output_cadence_requires_a_finite_positive_number(paper_case_path, caden
         paper_bubble.validate_case(case)
 
 
-def test_run_model_passes_case_cadence_to_transient_standin(tmp_path, monkeypatch):
+@pytest.mark.parametrize("azimuthal_stability", [None, False, True],
+                         ids=["default", "ordinary", "azimuthal"])
+def test_run_model_passes_case_cadence_to_transient_standin(
+    tmp_path, monkeypatch, azimuthal_stability,
+):
     from types import ModuleType
 
     case = paper_bubble.read_case(ROOT / "verification/paper_model/cases/bare-tube.json")
     case["solve"]["relax_time"] = 8.0
     case["output"]["cadence"] = 0.4
+    before = copy.deepcopy(case)
     transient_calls = []
     solver_calls = []
 
@@ -690,6 +725,11 @@ def test_run_model_passes_case_cadence_to_transient_standin(tmp_path, monkeypatc
 
         def set_c_compiler(self, name):
             assert name == "system"
+
+        def setup_for_stability_analysis(self, **kwargs):
+            assert solver_calls == []
+            assert kwargs == {"azimuthal_stability": True, "analytic_hessian": False}
+            solver_calls.append(("azimuthal_setup_standin", kwargs))
 
         def initialise(self):
             solver_calls.append("initialise_standin")
@@ -714,8 +754,8 @@ def test_run_model_passes_case_cadence_to_transient_standin(tmp_path, monkeypatc
             state.write_bytes(b"software state stand-in")
 
     def build_standin(model_case, *, initial_bond):
-        assert model_case == case
-        assert initial_bond == case["solve"]["initial_bond"]
+        assert model_case == before
+        assert initial_bond == before["solve"]["initial_bond"]
         return ProblemStandin()
 
     def copy_state_standin(source, destination, *, copy_mesh_files):
@@ -735,23 +775,205 @@ def test_run_model_passes_case_cadence_to_transient_standin(tmp_path, monkeypatc
     monkeypatch.setattr(paper_bubble, "build_problem", build_standin)
     monkeypatch.setattr(paper_bubble, "_stationary_residual", lambda problem: 0.0)
     runner.create_run_manifest(tmp_path, {"purpose": "software cadence fixture only"})
-    summary = paper_bubble.run_model(case, tmp_path)
+    options = {} if azimuthal_stability is None else {"azimuthal_stability": azimuthal_stability}
+    summary = paper_bubble.run_model(case, tmp_path, **options)
     assert transient_calls == [(8.0, {
         "startstep": case["solve"]["start_step"], "outstep": 0.4, "maxstep": 1.0,
         "temporal_error": case["tolerances"]["temporal_error"],
     })]
-    assert solver_calls == ["initialise_standin", ("solve_standin", {
+    expected_setup = [("azimuthal_setup_standin", {
+        "azimuthal_stability": True, "analytic_hessian": False,
+    })] if azimuthal_stability else []
+    assert solver_calls == expected_setup + ["initialise_standin", ("solve_standin", {
         "max_newton_iterations": case["solve"]["max_newton_iterations"],
     })]
+    assert case == before
+    assert summary["azimuthal_stability"] is (azimuthal_stability is True)
     assert summary["status"] == "completed"
     assert summary["completion_reached"] is True
     assert (tmp_path / summary["checkpoint"]).read_bytes() == b"software state stand-in"
+
+
+@pytest.mark.parametrize("azimuthal_stability", [None, 0, 1, 0.0, "true"])
+def test_run_model_requires_bool_before_native_import(
+    tmp_path, monkeypatch, azimuthal_stability,
+):
+    import builtins
+
+    original_import = builtins.__import__
+
+    def forbid_pyoomph(name, *args, **kwargs):
+        if name == "pyoomph" or name.startswith("pyoomph."):
+            raise AssertionError("invalid stability option imported native APIs")
+        return original_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", forbid_pyoomph)
+    with pytest.raises(TypeError, match="azimuthal_stability must be a boolean"):
+        paper_bubble.run_model(None, tmp_path, azimuthal_stability=azimuthal_stability)
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_h15_azimuthal_setup_preserves_case_and_confined_solve_budget(tmp_path, monkeypatch):
+    from contextlib import contextmanager
+    from types import ModuleType, SimpleNamespace
+
+    case = paper_bubble.read_case(ROOT / "validation/herradaEtAl_paper_model/cases/h15-bo1p56.json")
+    before = copy.deepcopy(case)
+    order = []
+
+    class StopAtSoftwarePolish(Exception):
+        pass
+
+    def setup(**kwargs):
+        assert kwargs == {"azimuthal_stability": True, "analytic_hessian": False}
+        order.append("azimuthal_setup")
+
+    def transient(duration, **kwargs):
+        assert duration == before["solve"]["relax_time"]
+        assert kwargs == {"startstep": before["solve"]["start_step"],
+                          "outstep": before["output"]["cadence"], "maxstep": duration / 8,
+                          "temporal_error": before["tolerances"]["temporal_error"]}
+        order.append("transient")
+
+    problem = SimpleNamespace(set_output_directory=lambda path: None,
+        set_linear_solver=lambda name: None, set_c_compiler=lambda name: None,
+        setup_for_stability_analysis=setup, initialise=lambda: order.append("initialise"),
+        run=transient)
+
+    @contextmanager
+    def build_standin(model_case, *, initial_bond):
+        assert model_case == before
+        assert initial_bond == before["solve"]["initial_bond"]
+        yield problem
+
+    def polish_standin(model, model_case, directory, stage):
+        assert model is problem and model_case == before
+        assert model_case["solve"]["max_newton_iterations"] == 40
+        assert directory == tmp_path and stage == "seed"
+        order.append("confined_polish")
+        raise StopAtSoftwarePolish
+
+    package = ModuleType("pyoomph")
+    package.__path__ = []
+    output_package = ModuleType("pyoomph.output")
+    output_package.__path__ = []
+    states = ModuleType("pyoomph.output.states")
+    states.copy_state_file = lambda *args, **kwargs: None
+    for name, module in (("pyoomph", package), ("pyoomph.output", output_package),
+                         ("pyoomph.output.states", states)):
+        monkeypatch.setitem(sys.modules, name, module)
+    monkeypatch.setattr(paper_bubble, "build_problem", build_standin)
+    monkeypatch.setattr(paper_bubble, "polish_confined_state", polish_standin)
+    runner.create_run_manifest(tmp_path, {"purpose": "azimuthal H15 software fixture only"})
+    with pytest.raises(StopAtSoftwarePolish):
+        paper_bubble.run_model(case, tmp_path, azimuthal_stability=True)
+    assert order == ["azimuthal_setup", "initialise", "transient", "confined_polish"]
+    assert case == before
 
 
 @pytest.mark.parametrize("integral,volume,expected", [(36.0, 4.0, 3.0), (0.0, 7.0, 0.0),
                                                      (4e-18, 4.0, 1e-9)])
 def test_bulk_velocity_rms_uses_volume_weighted_integrals(integral, volume, expected):
     assert paper_bubble.bulk_velocity_rms(integral, volume) == pytest.approx(expected)
+
+
+@pytest.fixture
+def bulk_stress_binding_standin(monkeypatch):
+    """Check the exact pinned binding's arguments without native expression assembly."""
+    from types import ModuleType, SimpleNamespace
+
+    calls = []
+    coordinates = object()
+    bulk = SimpleNamespace(get_nodal_dimension=lambda: 2, get_element_dimension=lambda: 2,
+                           get_coordinate_system=lambda: coordinates)
+
+    def gradient(velocity, ndim, edim, coordsys, flags):
+        calls.append(("gradient", ndim, edim, coordsys, flags))
+        assert ndim == edim == 2
+        assert coordsys is coordinates and flags == 1
+        return velocity.gradient.copy()
+
+    def evaluate(expression, domain):
+        calls.append(("bulk_trace", domain))
+        assert domain is bulk
+        return expression
+
+    package = ModuleType("pyoomph")
+    package.__path__ = []
+    package._pyoomph_core = SimpleNamespace(
+        GiNaC_grad=gradient, GiNaC_wrap_coordinate_system=lambda coordsys: coordsys)
+    expressions = ModuleType("pyoomph.expressions")
+    expressions.Expression = lambda value: value
+    expressions.evaluate_in_domain = evaluate
+    expressions.sym = lambda tensor: (tensor + tensor.T) / 2
+    monkeypatch.setitem(sys.modules, "pyoomph", package)
+    monkeypatch.setitem(sys.modules, "pyoomph.expressions", expressions)
+    return bulk, calls
+
+
+def test_bulk_stress_passes_parent_dimensions_coordinate_system_and_full_tensor(
+    bulk_stress_binding_standin,
+):
+    from types import SimpleNamespace
+
+    import numpy as np
+
+    bulk, calls = bulk_stress_binding_standin
+    gradient = np.array([[.4, -.2, .9], [.6, -.7, -.3], [-.8, .5, .1]])
+    viscosity = .8
+    tensor = paper_bubble._bulk_viscous_stress(SimpleNamespace(gradient=gradient), viscosity, bulk)
+    expected = viscosity * (gradient + gradient.T)
+    assert tensor == pytest.approx(expected)
+    assert tensor.shape == (3, 3) and tensor[0, 2] != 0 and tensor[1, 2] != 0
+    assert calls[0][1:3] == (2, 2) and calls[1] == ("bulk_trace", bulk)
+
+
+@pytest.mark.parametrize("normal_strain", [-.7, 0., .9])
+def test_pressure_port_nonzero_normal_stress_cancels_to_static_pressure(
+    bulk_stress_binding_standin, normal_strain,
+):
+    """Execute the real port residual and compare independent Cauchy traction."""
+    import ast
+    from types import SimpleNamespace
+
+    import numpy as np
+
+    bulk, _calls = bulk_stress_binding_standin
+    source = ast.parse((ROOT / "problems/paper_bubble.py").read_text())
+    factory = next(node for node in source.body if isinstance(node, ast.FunctionDef)
+                   and node.name == "_native_problem_types")
+    port = next(node for node in factory.body if isinstance(node, ast.ClassDef)
+                and node.name == "StaticPressurePort")
+    method = next(node for node in port.body if isinstance(node, ast.FunctionDef)
+                  and node.name == "define_residuals")
+    gradient = np.array([[.4, -.2, .9], [.6, normal_strain, -.3], [-.8, .5, .1]])
+    viscosity, pressure, target = .8, 2.3, .6
+    normal, test = np.array([0., -1., 0.]), np.array([0., .37, 0.])
+    velocity = SimpleNamespace(gradient=gradient)
+
+    def variable(name, *, domain):
+        assert name == "velocity" and domain is bulk
+        return velocity
+
+    recorded = []
+    instance = SimpleNamespace(target=target, get_parent_domain=lambda: bulk,
+        get_parent_equations=lambda kind: SimpleNamespace(velocity_name="velocity", dynamic_viscosity=viscosity),
+        get_normal=lambda: normal, add_residual=recorded.append)
+    namespace = {"StokesEquations": object, "var": variable,
+        "_bulk_viscous_stress": paper_bubble._bulk_viscous_stress,
+        "dot": np.dot, "matproduct": np.matmul, "testfunction": lambda name: test,
+        "weak": lambda coefficient, test_value: coefficient * test_value}
+    exec(compile(ast.Module(body=[method], type_ignores=[]),  # noqa: S102 - Selected local method, pure stand-ins.
+                 "actual-pressure-port", "exec"), namespace)
+    namespace["define_residuals"](instance)
+    # Independent sigma_ij=-p*delta_ij+mu*(du_i/dx_j+du_j/dx_i).
+    stress = -pressure * np.eye(3) + viscosity * (gradient + gradient.T)
+    native_boundary = float(test @ stress @ normal)
+    assert native_boundary + recorded[0] == pytest.approx((target - pressure) * float(normal @ test))
+    assert recorded[0] == pytest.approx((target - 2 * viscosity * normal_strain) * float(normal @ test))
+    if normal_strain:
+        assert native_boundary + target * float(normal @ test) != pytest.approx(
+            (target - pressure) * float(normal @ test))
 
 
 @pytest.mark.parametrize("integral,volume", [(-1e-18, 2.0), (1.0, 0.0), (float("nan"), 1.0),

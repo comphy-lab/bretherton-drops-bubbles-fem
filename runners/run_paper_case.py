@@ -214,10 +214,12 @@ def append_progress(out: Path, payload: dict, *, first: bool = False) -> None:
         os.fsync(stream.fileno())
 
 
-def run_model(case: dict, output_path: Path) -> dict:
+def run_model(case: dict, output_path: Path, *, azimuthal_stability: bool = False) -> dict:
     """Import the native execution path only after the manifest and start event."""
     from problems.paper_bubble import run_model as execute
 
+    if azimuthal_stability:
+        return execute(case, output_path, azimuthal_stability=True)
     return execute(case, output_path)
 
 
@@ -230,6 +232,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("case", type=Path, help="portable paper-model case JSON")
     parser.add_argument("--out", type=Path, help="new or empty output directory outside the component")
     parser.add_argument("--check", action="store_true", help="validate without native execution or output")
+    parser.add_argument("--azimuthal-stability", action="store_true",
+                        help="prepare azimuthal fields before initialisation for later mode analysis")
     return parser
 
 
@@ -272,6 +276,7 @@ def main(argv: list[str] | None = None) -> int:
             "component_commit": component["commit"],
             "component": component,
             "pyoomph": environment,
+            "azimuthal_stability": options.azimuthal_stability,
         }
         # Check serialisability and custody before creating even a directory.
         json.dumps(manifest, allow_nan=False)
@@ -289,8 +294,12 @@ def main(argv: list[str] | None = None) -> int:
 
     started = time.monotonic()
     try:
-        append_progress(out, {"event": "start", "case_id": case["case_id"]}, first=True)
-        summary = run_model(case, out)
+        append_progress(out, {"event": "start", "case_id": case["case_id"],
+                              "azimuthal_stability": options.azimuthal_stability}, first=True)
+        if options.azimuthal_stability:
+            summary = run_model(case, out, azimuthal_stability=True)
+        else:
+            summary = run_model(case, out)
         if not isinstance(summary, Mapping):
             raise TypeError("model execution must return a summary mapping")
         _exclusive_json(out / "summary.json", summary)
