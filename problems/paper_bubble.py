@@ -629,6 +629,61 @@ def stationary_layout(problem, azimuthal_stability):
             "dof_layout_sha256": digest.hexdigest(), "base_mode": 0 if parameter is not None else None}
 
 
+def _stationary_state_signature(problem, azimuthal_stability):
+    """Capture actual values plus all native serialized fields, pins and histories."""
+    import numpy as np
+
+    from runners.run_paper_case import snapshot_bc_cache_signature
+
+    dofs, positional_dofs = problem.get_current_dofs()
+    z, r = problem.interface_polyline()
+    arrays = {"free_dofs": dofs, "positional_dof_mask": positional_dofs,
+              "pinned_values_with_positions": problem.get_current_pinned_values(True),
+              "interface_z": z, "interface_r": r}
+    eigen_setting = problem.eigen_data_in_states
+    try:
+        problem.eigen_data_in_states = True
+        snapshot = problem._snapshot_state()
+        serialized = snapshot_bc_cache_signature(snapshot, mesh_reference_base=Path.cwd())
+    finally:
+        problem.eigen_data_in_states = eigen_setting
+    if serialized["bc_cache_marker"] != problem._last_bc_setting:
+        raise ValueError("native snapshot changed its literal BC cache marker")
+    return {"arrays": {name: {"shape": list(np.asarray(value).shape),
+                             "dtype": str(np.asarray(value).dtype),
+                             "sha256": hashlib.sha256(np.asarray(value).tobytes()).hexdigest()}
+                        for name, value in arrays.items()},
+            "serialized_state": serialized,
+            "parameters": {name: float(problem.get_global_parameter(name).value) for name in ("Ca_in", "Bo")},
+            "volume": problem.observable("volume", "gas"), "frame_speed": problem.frame_speed(),
+            "time": float(problem.get_current_time(dimensional=False, as_float=True)),
+            "bc_cache_marker": problem._last_bc_setting,
+            "layout": stationary_layout(problem, azimuthal_stability)}
+
+
+def _prepare_stationary_bc_state(problem, azimuthal_stability):
+    """Use the native stationary hook and prove it preserves the loaded state.
+
+    _last_bc_setting is a cache label that may remain ``init`` after a steady
+    solve. Never assign it to pass a gate. Ordinary stationary preparation may
+    update only that serialized label; all other fields, pins, layout, forcing
+    and native history bytes must remain identical.
+    """
+    before = _stationary_state_signature(problem, azimuthal_stability)
+    problem.actions_before_stationary_solve(force_reassign_eqs=False)
+    after = _stationary_state_signature(problem, azimuthal_stability)
+
+    def physical_state(signature):
+        value = {key: item for key, item in signature.items() if key != "bc_cache_marker"}
+        value["serialized_state"] = {"payload_sha256": signature["serialized_state"]["payload_sha256"]}
+        return value
+
+    if physical_state(before) != physical_state(after):
+        raise ValueError("stationary BC preparation changed the loaded fields, pins, layout or history")
+    return {"verified": True, "method": "actions_before_stationary_solve(force_reassign_eqs=False)",
+            "before": before, "after": after}
+
+
 def _checkpoint_stationary_state(problem, case, output, bond_index, azimuthal_stability):
     """Save a self-contained post-polish state and prove its native round trip.
 
@@ -646,6 +701,7 @@ def _checkpoint_stationary_state(problem, case, output, bond_index, azimuthal_st
         _read_json,
         append_progress,
         sha256_file,
+        state_bc_cache_marker,
         state_mesh_references,
     )
 
@@ -656,9 +712,12 @@ def _checkpoint_stationary_state(problem, case, output, bond_index, azimuthal_st
     parameters = {name: float(problem.get_global_parameter(name).value) for name in ("Ca_in", "Bo")}
     if parameters != {"Ca_in": float(case["physics"]["ca_in"]), "Bo": bond}:
         raise ValueError("stationary checkpoint forcing differs from its case stage")
+    bc_preparation = _prepare_stationary_bc_state(problem, azimuthal_stability)
     residual = _stationary_residual(problem)
-    if residual > case["tolerances"]["newton"] or problem._last_bc_setting != "stationary":
+    if residual > case["tolerances"]["newton"]:
         raise ValueError("stationary checkpoint requires a converged bound polish")
+    before_signature = _stationary_state_signature(problem, azimuthal_stability)
+    bc_marker = problem._last_bc_setting
     layout = stationary_layout(problem, azimuthal_stability)
     fields = [np.asarray(value).copy() for value in problem.get_current_dofs()]
     pinned_values = np.asarray(problem.get_current_pinned_values(True)).copy()
@@ -675,12 +734,16 @@ def _checkpoint_stationary_state(problem, case, output, bond_index, azimuthal_st
         raise ValueError("stationary checkpoint transfer is occupied")
     state = directory / "state.dump"
     try:
-        problem.eigen_data_in_states = True  # Saves stationary BC mode at the exact source pin.
+        problem.eigen_data_in_states = True  # Saves the literal BC cache marker at this pin.
         problem.save_state(str(transfer), quiet=True)
+        if state_bc_cache_marker(transfer) != bc_marker:
+            raise ValueError("stationary checkpoint serialized a different BC cache marker")
         original_meshes = [(transfer.parent / value).resolve() for value in state_mesh_references(transfer)]
         original_hashes = [sha256_file(path) for path in original_meshes]
         copy_state_file(str(transfer), str(state), copy_mesh_files=True)
         references = state_mesh_references(state)
+        if state_bc_cache_marker(state) != bc_marker:
+            raise ValueError("stationary checkpoint relocation changed its BC cache marker")
         meshes = []
         for reference in references:
             path = (state.parent / reference).resolve()
@@ -698,18 +761,39 @@ def _checkpoint_stationary_state(problem, case, output, bond_index, azimuthal_st
                 or not all(np.array_equal(a, b) for a, b in zip(profile, problem.interface_polyline(), strict=True))
                 or parameters != {name: float(problem.get_global_parameter(name).value) for name in parameters}
                 or layout != stationary_layout(problem, azimuthal_stability)
-                or problem._last_bc_setting != "stationary"
+                or problem._last_bc_setting != bc_marker
                 or volume != problem.observable("volume", "gas") or speed != problem.frame_speed()
                 or not math.isclose(_stationary_residual(problem), residual, rel_tol=1e-12, abs_tol=1e-12)):
             raise ValueError("stationary checkpoint failed its native same-state round trip")
+        after_signature = _stationary_state_signature(problem, azimuthal_stability)
+        before_payload = {**before_signature, "serialized_state": {
+            "payload_sha256": before_signature["serialized_state"]["payload_sha256"]}}
+        after_payload = {**after_signature, "serialized_state": {
+            "payload_sha256": after_signature["serialized_state"]["payload_sha256"]}}
+        if before_payload != after_payload:
+            raise ValueError("stationary checkpoint changed its fields, pins, layout or history on load")
+        # The full fingerprint replaces only mesh-reference strings with their
+        # content identity and separates the literal BC cache trailer. Every
+        # other serialized field and history byte must round-trip exactly.
+        problem.eigen_data_in_states = True
+        snapshot = problem._snapshot_state()
+        problem._restore_state(snapshot)
+        restored_signature = _stationary_state_signature(problem, azimuthal_stability)
+        if after_signature != restored_signature:
+            raise ValueError("stationary checkpoint failed its full serialized-state restoration")
         packet = {"schema": RESUME_SCHEMA,
             "parent_manifest": {"path": str(manifest_path), "sha256": sha256_file(manifest_path)},
             "case_sha256": manifest["case_sha256"], "azimuthal_stability": azimuthal_stability,
             "state": {"path": str(state), "sha256": sha256_file(state), "format": "portable_file"},
             "mesh_reference_base": str(directory), "meshes": meshes,
             "stage": {"kind": "completed_polish", "bond_index": bond_index, "bond": bond,
-                      "ca_in": parameters["Ca_in"], "bc_mode": "stationary"},
-            "roundtrip": {"verified": True, "stationary_residual_linf": residual, "layout": layout}}
+                      "ca_in": parameters["Ca_in"], "bc_mode": bc_marker},
+            "roundtrip": {"verified": True, "stationary_residual_linf": residual, "layout": layout,
+                          "stationary_residual_operator": "native steppers temporarily steady",
+                          "bc_preparation": bc_preparation,
+                          "before": before_signature, "after": after_signature,
+                          "snapshot_restore": {"verified": True,
+                                               "before": after_signature, "after": restored_signature}}}
         receipt = directory / "resume.json"
         _exclusive_json(receipt, packet)
         append_progress(output, {"event": "stationary_checkpoint", "bond_index": bond_index,
@@ -736,31 +820,17 @@ def _load_stationary_restart(problem, case, output, restart, azimuthal_stability
     if parameters != {"Ca_in": stage["ca_in"], "Bo": stage["bond"]}:
         raise ValueError("loaded stationary restart differs from the bound forcing")
     if problem._last_bc_setting != stage["bc_mode"]:
-        raise ValueError("loaded stationary restart differs from the bound BC mode")
+        raise ValueError("loaded stationary restart differs from the bound BC cache marker")
+    loaded_marker = problem._last_bc_setting
     layout = stationary_layout(problem, azimuthal_stability)
+    bc_preparation = _prepare_stationary_bc_state(problem, azimuthal_stability)
+    residual = _stationary_residual(problem)
     if stage["kind"] == "completed_polish":
         roundtrip = restart.get("roundtrip", {})
         if (roundtrip.get("verified") is not True or roundtrip.get("layout") != layout
-                or _stationary_residual(problem) > case["tolerances"]["newton"]):
+                or residual > case["tolerances"]["newton"]):
             raise ValueError("loaded post-polish checkpoint is not a qualified stationary state")
-    import numpy as np
-
-    def signature():
-        dofs, positional_dofs = problem.get_current_dofs()
-        z, r = problem.interface_polyline()
-        arrays = {"free_dofs": dofs, "positional_dof_mask": positional_dofs,
-                  "pinned_values_with_positions": problem.get_current_pinned_values(True),
-                  "interface_z": z, "interface_r": r}
-        return {"arrays": {name: {"shape": list(np.asarray(value).shape),
-                             "dtype": str(np.asarray(value).dtype),
-                             "sha256": hashlib.sha256(np.asarray(value).tobytes()).hexdigest()}
-                            for name, value in arrays.items()},
-                "parameters": {name: float(problem.get_global_parameter(name).value) for name in parameters},
-                "volume": problem.observable("volume", "gas"), "frame_speed": problem.frame_speed(),
-                "bc_mode": problem._last_bc_setting,
-                "layout": stationary_layout(problem, azimuthal_stability)}
-
-    before = signature()
+    before = _stationary_state_signature(problem, azimuthal_stability)
     eigen_setting = problem.eigen_data_in_states
     flags = {name: getattr(problem, name) for name in (
         "_first_step", "_taken_already_an_unsteady_step", "_last_step_was_stationary")}
@@ -769,7 +839,7 @@ def _load_stationary_restart(problem, case, output, restart, azimuthal_stability
         problem.eigen_data_in_states = True
         snapshot = problem._snapshot_state()
         problem._restore_state(snapshot)
-        after = signature()
+        after = _stationary_state_signature(problem, azimuthal_stability)
         if before != after:
             raise ValueError("loaded restart failed its full in-process snapshot restoration")
     finally:
@@ -781,6 +851,9 @@ def _load_stationary_restart(problem, case, output, restart, azimuthal_stability
             stepper.make_steady() if was_steady else stepper.undo_make_steady()
     receipt = {"schema": "herrada-stationary-resume-load-v1", "verified": True,
                "parameters": parameters, "bc_mode": problem._last_bc_setting, "layout": layout,
+               "loaded_bc_cache_marker": loaded_marker, "bc_preparation": bc_preparation,
+               "stationary_residual_linf": residual,
+               "stationary_residual_operator": "native steppers temporarily steady",
                "parent_manifest": restart["parent_manifest"], "state": restart["state"], "stage": stage,
                "mesh_exchange": restart["mesh_exchange"],
                "snapshot_restore": {"verified": True, "before": before, "after": after,

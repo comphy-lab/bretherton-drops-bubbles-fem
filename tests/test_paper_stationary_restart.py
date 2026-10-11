@@ -20,7 +20,7 @@ PARENT_COMMIT = "acdcf57ec39124f0d418d5e1ab9ed4a8f84699b7"
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def dump_header(reference):
+def dump_header(reference, *, marker="init", payload=b"software fixture: no native fields"):
     def integer(number):
         return number.to_bytes(8, "little", signed=True)
 
@@ -30,7 +30,8 @@ def dump_header(reference):
     return (string("pyoomph_dump") + string("0.1.6") + string("global")
             + struct.pack("<d", 8.0) + integer(9) + integer(0) + integer(6)
             + integer(1) + string(reference) + integer(1) + integer(2)
-            + b"software fixture: no native fields" + string("EOF_pyoomph"))
+            + payload + integer(1) + string(marker) + integer(0) + integer(0)
+            + string("EOF_pyoomph"))
 
 
 @pytest.fixture
@@ -79,7 +80,7 @@ def restart_bundle(tmp_path, monkeypatch):
         "meshes": [{"stored_path": reference, "path": str(mesh), "sha256": runner.sha256_file(mesh)}],
         "stage": {"kind": "pending_polish", "bond_index": 9,
                   "bond": paper_bubble.stationary_bond_schedule(case)[9],
-                  "ca_in": 0.02, "bc_mode": "stationary"}}
+                  "ca_in": 0.02, "bc_mode": "init"}}
     packet_path = tmp_path / "resume.json"
     packet_path.write_text(json.dumps(packet))
     monkeypatch.setattr(runner, "component_revision", lambda: copy.deepcopy(current))
@@ -123,7 +124,8 @@ def test_incomplete_original_parent_is_admitted_with_explicit_stationary_compati
 @pytest.mark.parametrize("fault", ["state_bytes", "mesh_bytes", "mesh_missing", "parent_bytes",
     "parent_dirty", "unknown_source", "parent_source_hash", "case_bytes", "case_id",
     "case_sha", "azimuthal_packet", "azimuthal_parent", "core_bytes", "mesh_base",
-    "mesh_reference", "stage_index", "stage_bond", "stage_ca", "completed_without_receipt"])
+    "mesh_reference", "stage_index", "stage_bond", "stage_ca", "wrong_bc_cache_marker",
+    "completed_without_receipt"])
 def test_restart_tampering_refuses_before_any_new_output(restart_bundle, tmp_path, fault):
     bundle = restart_bundle
     if fault == "state_bytes":
@@ -169,6 +171,8 @@ def test_restart_tampering_refuses_before_any_new_output(restart_bundle, tmp_pat
         bundle.packet["stage"]["bond"] = 0.9  # Exact original ladder value is required.
     elif fault == "stage_ca":
         bundle.packet["stage"]["ca_in"] = -0.02
+    elif fault == "wrong_bc_cache_marker":
+        bundle.packet["stage"]["bc_mode"] = "stationary"
     else:
         bundle.packet["stage"]["kind"] = "completed_polish"
     write_packet(bundle)
@@ -227,6 +231,44 @@ def test_header_refuses_truncated_or_nonstate_files_without_native_import(tmp_pa
     path.write_bytes(bad)
     with pytest.raises(ValueError):
         runner.state_mesh_references(path)
+
+
+@pytest.mark.parametrize("marker", ["init", "transient", "stationary"])
+def test_serialized_bc_marker_is_literal_cache_metadata(tmp_path, marker):
+    path = tmp_path / "cache.dump"
+    path.write_bytes(dump_header("fixture.msh", marker=marker))
+    assert runner.state_bc_cache_marker(path) == marker
+
+
+def test_snapshot_fingerprint_normalizes_only_bound_mesh_identity_and_bc_label(tmp_path):
+    first, second = tmp_path / "original.msh", tmp_path / "copied.msh"
+    first.write_bytes(b"identical mesh bytes")
+    second.write_bytes(first.read_bytes())
+    a = dump_header(str(first), marker="init", payload=b"preserved native histories")
+    b = dump_header(str(second), marker="stationary", payload=b"preserved native histories")
+    sa = runner.snapshot_bc_cache_signature(a, mesh_reference_base=tmp_path)
+    sb = runner.snapshot_bc_cache_signature(b, mesh_reference_base=tmp_path)
+    assert sa["bc_cache_marker"] == "init" and sb["bc_cache_marker"] == "stationary"
+    assert sa["sha256"] != sb["sha256"] and sa["payload_sha256"] == sb["payload_sha256"]
+    changed_history = dump_header(str(second), marker="stationary", payload=b"changed native histories")
+    assert runner.snapshot_bc_cache_signature(changed_history,
+        mesh_reference_base=tmp_path)["payload_sha256"] != sa["payload_sha256"]
+    second.write_bytes(b"different mesh bytes")
+    assert runner.snapshot_bc_cache_signature(b,
+        mesh_reference_base=tmp_path)["payload_sha256"] != sa["payload_sha256"]
+
+
+def test_missing_bc_cache_or_nonzero_eigen_payload_is_refused(tmp_path):
+    path = tmp_path / "bad-cache.dump"
+    valid = dump_header("fixture.msh")
+    no_cache = valid[:-len(runner._bc_cache_trailer("init"))] + struct.pack("<q", 11) + b"EOF_pyoomph"
+    path.write_bytes(no_cache)
+    with pytest.raises(ValueError, match="serialized BC cache"):
+        runner.state_bc_cache_marker(path)
+    path.write_bytes(valid[:-len(runner._bc_cache_trailer("init"))]
+        + struct.pack("<qq", 1, 4) + b"init" + struct.pack("<qqq", 1, 0, 11) + b"EOF_pyoomph")
+    with pytest.raises(ValueError, match="zero eigen/continuation"):
+        runner.state_bc_cache_marker(path)
 
 
 @pytest.mark.parametrize("stage_kind,index", [("pending_polish", 0), ("pending_polish", 9),
@@ -341,7 +383,7 @@ def test_loaded_layout_refuses_missing_phase_phi_before_resumed_polish():
 
 
 @pytest.fixture
-def state_problem():
+def state_problem(tmp_path):
     """Minimal full-state API stand-in with explicit save/load fault injection."""
     class StateProblem:
         def __init__(self):
@@ -353,7 +395,7 @@ def state_problem():
             self._first_step = False
             self._taken_already_an_unsteady_step = True
             self._last_step_was_stationary = True
-            self._last_bc_setting = "stationary"
+            self._last_bc_setting = "init"
             self._azimuthal_mode_param_m = SimpleNamespace(value=0)
             self.steady = False
             self.loads = []
@@ -361,7 +403,15 @@ def state_problem():
             self.corrupt_restore = False
             self.corrupt_pin_load = False
             self.corrupt_pin_restore = False
-            self.mesh = None
+            self.corrupt_history_restore = False
+            self.corrupt_history_load = False
+            self.corrupt_bc_preparation = False
+            self.update_bc_cache_marker = False
+            self.bc_preparations = []
+            self.history = [np.asarray([0.1, 0.2]), np.asarray([0.3, 0.4])]
+            self.current_time = 8.0
+            self.mesh = tmp_path / "default-native-standin.msh"
+            self.mesh.write_bytes(b"native state software stand-in mesh")
 
         def get_global_parameter(self, name):
             return self.parameters[name]
@@ -382,6 +432,17 @@ def state_problem():
         def frame_speed(self):
             return 0.01
 
+        def get_current_time(self, **kwargs):
+            return self.current_time
+
+        def actions_before_stationary_solve(self, *, force_reassign_eqs):
+            assert force_reassign_eqs is False
+            self.bc_preparations.append(force_reassign_eqs)
+            if self.corrupt_bc_preparation:
+                self.pinned_values[0] += 1
+            if self.update_bc_cache_marker:
+                self._last_bc_setting = "stationary"
+
         def is_normal_mode_stability_set_up(self):
             return "azimuthal"
 
@@ -401,10 +462,13 @@ def state_problem():
 
         def _snapshot_state(self):
             assert self.eigen_data_in_states is True
-            return json.dumps({"fields": self.fields.tolist(),
-                               "positional_mask": self.positional_mask.tolist(),
-                               "pinned_values": self.pinned_values.tolist(),
-                               "parameters": {k: v.value for k, v in self.parameters.items()}}).encode()
+            record = {"fields": self.fields.tolist(),
+                      "positional_mask": self.positional_mask.tolist(),
+                      "pinned_values": self.pinned_values.tolist(),
+                      "parameters": {k: v.value for k, v in self.parameters.items()},
+                      "history": [value.tolist() for value in self.history], "time": self.current_time}
+            return dump_header(str(self.mesh), marker=self._last_bc_setting,
+                               payload=json.dumps(record, sort_keys=True).encode())
 
         def _restore_state(self, snapshot):
             import io
@@ -412,28 +476,45 @@ def state_problem():
             self.load_state(io.BytesIO(snapshot))
 
         def load_state(self, source, **kwargs):
+            import io
+
             self.loads.append((source, kwargs))
-            if hasattr(source, "read"):
-                record = json.loads(source.read())
+            memory = hasattr(source, "read")
+            raw = source.read() if memory else Path(source).read_bytes()
+            stream = io.BytesIO(raw)
+            entries = runner._state_mesh_entries(stream)
+            marker = runner.snapshot_bc_cache_signature(raw)["bc_cache_marker"]
+            payload = raw[stream.tell():-len(runner._bc_cache_trailer(marker))]
+            record = json.loads(payload) if payload.startswith(b"{") else None
+            self._last_bc_setting = marker
+            if record is not None:
                 self.fields = np.asarray(record["fields"])
                 self.positional_mask = np.asarray(record["positional_mask"], dtype=bool)
                 self.pinned_values = np.asarray(record["pinned_values"])
+                self.history = [np.asarray(value) for value in record["history"]]
+                self.current_time = record["time"]
                 for key, value in record["parameters"].items():
                     self.parameters[key].value = value
-                if self.corrupt_pin_restore:
+                if memory and self.corrupt_pin_restore:
                     self.pinned_values[0] += 1
             elif self.loaded_parameters:
                 for key, value in self.loaded_parameters.items():
                     self.parameters[key].value = value
-            if not hasattr(source, "read") and self.corrupt_pin_load:
+            if not memory:
+                reference = entries[0][2]
+                exchange = kwargs.get("additional_info", {}).get("exchange_msh_file", {})
+                self.mesh = Path(exchange.get(reference, str(Path(source).parent / reference))).resolve()
+            if not memory and self.corrupt_pin_load:
                 self.pinned_values[0] += 1
+            if (memory and self.corrupt_history_restore) or (not memory and self.corrupt_history_load):
+                self.history[0][0] += 1
             if self.corrupt_restore:
                 self.fields[0] += 1
             self._last_step_was_stationary = False
 
         def save_state(self, path, **kwargs):
             assert self.eigen_data_in_states is True
-            Path(path).write_bytes(dump_header(str(self.mesh)))
+            Path(path).write_bytes(self._snapshot_state())
 
     return StateProblem
 
@@ -447,9 +528,13 @@ def test_native_load_gate_records_bound_meshes_az_forcing_and_snapshot_restore(
     runner.append_progress(output, {"event": "start"}, first=True)
     problem = state_problem()
     problem.loaded_parameters = {"Ca_in": 0.02, "Bo": admitted["stage"]["bond"]}
+    monkeypatch.setattr(paper_bubble, "_stationary_residual", lambda problem: 1e-3)
     paper_bubble._load_stationary_restart(problem, restart_bundle.case, output, admitted, True)
     receipt = json.loads((output / "restart-load.json").read_text())
     assert receipt["verified"] is True and receipt["parameters"] == problem.loaded_parameters
+    assert receipt["loaded_bc_cache_marker"] == "init"
+    assert receipt["bc_mode"] == "init" and receipt["stationary_residual_linf"] == 1e-3
+    assert receipt["bc_preparation"]["verified"] is True
     assert receipt["snapshot_restore"]["before"] == receipt["snapshot_restore"]["after"]
     array_receipt = receipt["snapshot_restore"]["before"]["arrays"]
     assert array_receipt["positional_dof_mask"]["dtype"] == "bool"
@@ -463,9 +548,22 @@ def test_native_load_gate_records_bound_meshes_az_forcing_and_snapshot_restore(
     assert not problem.steady
 
 
-@pytest.mark.parametrize("fault", ["forcing", "snapshot_restore", "pinned_restore", "changed_artifact"])
+@pytest.mark.parametrize("update_cache", [False, True])
+def test_native_stationary_preparation_may_update_only_the_cache_label(state_problem, update_cache):
+    problem = state_problem()
+    problem.update_bc_cache_marker = update_cache
+    proof = paper_bubble._prepare_stationary_bc_state(problem, True)
+    assert proof["verified"] is True and problem.bc_preparations == [False]
+    assert proof["before"]["bc_cache_marker"] == "init"
+    assert proof["after"]["bc_cache_marker"] == ("stationary" if update_cache else "init")
+    assert proof["before"]["arrays"] == proof["after"]["arrays"]
+    assert proof["before"]["serialized_state"]["payload_sha256"] == proof["after"]["serialized_state"]["payload_sha256"]
+
+
+@pytest.mark.parametrize("fault", ["forcing", "snapshot_restore", "pinned_restore", "history_restore",
+                                 "bc_preparation", "changed_artifact"])
 def test_native_load_gate_refuses_mismatch_before_verified_receipt(
-    restart_bundle, tmp_path, state_problem, fault,
+    restart_bundle, tmp_path, monkeypatch, state_problem, fault,
 ):
     admitted = admit(restart_bundle)
     output = tmp_path / "native-refusal"
@@ -476,12 +574,17 @@ def test_native_load_gate_refuses_mismatch_before_verified_receipt(
     original_mask = problem.positional_mask.copy()
     original_profile = [value.copy() for value in problem.interface_polyline()]
     problem.loaded_parameters = {"Ca_in": 0.02, "Bo": admitted["stage"]["bond"]}
+    monkeypatch.setattr(paper_bubble, "_stationary_residual", lambda problem: 1e-3)
     if fault == "forcing":
         problem.loaded_parameters["Bo"] = 0.0
     elif fault == "snapshot_restore":
         problem.corrupt_restore = True
     elif fault == "pinned_restore":
         problem.corrupt_pin_restore = True
+    elif fault == "history_restore":
+        problem.corrupt_history_restore = True
+    elif fault == "bc_preparation":
+        problem.corrupt_bc_preparation = True
     else:
         restart_bundle.mesh.write_bytes(b"altered after admission")
     with pytest.raises(ValueError):
@@ -499,16 +602,19 @@ def test_native_load_gate_refuses_mismatch_before_verified_receipt(
         assert problem.pinned_values[0] == 8.0
 
 
-@pytest.mark.parametrize("corruption", [None, "free_dofs", "pinned_values"])
+@pytest.mark.parametrize("marker,corruption", [("init", None), ("transient", None),
+    ("stationary", None), ("init", "free_dofs"), ("init", "pinned_values"), ("init", "history")])
 def test_post_polish_checkpoint_is_exclusive_relocated_and_verified_before_progress(
-    tmp_path, monkeypatch, state_problem, corruption,
+    tmp_path, monkeypatch, state_problem, marker, corruption,
 ):
     import sys
 
     case = paper_bubble.read_case(ROOT / "validation/herradaEtAl_paper_model/cases/h15-bo1p56.json")
     problem = state_problem()
+    problem._last_bc_setting = marker
     problem.corrupt_restore = corruption == "free_dofs"
     problem.corrupt_pin_load = corruption == "pinned_values"
+    problem.corrupt_history_load = corruption == "history"
     original_fields = problem.fields.copy()
     original_mask = problem.positional_mask.copy()
     original_profile = [value.copy() for value in problem.interface_polyline()]
@@ -527,7 +633,11 @@ def test_post_polish_checkpoint_is_exclusive_relocated_and_verified_before_progr
     def copy_state(source, destination, **kwargs):
         destination = Path(destination)
         (destination.parent / "original.msh").write_bytes(problem.mesh.read_bytes())
-        destination.write_bytes(dump_header("original.msh"))
+        source_data = Path(source).read_bytes()
+        reference = str(problem.mesh).encode()
+        old = struct.pack("<q", len(reference)) + reference
+        new = struct.pack("<q", len(b"original.msh")) + b"original.msh"
+        destination.write_bytes(source_data.replace(old, new, 1))
 
     states.copy_state_file = copy_state
     for name, module in (("pyoomph", package), ("pyoomph.output", outputs),
@@ -535,7 +645,7 @@ def test_post_polish_checkpoint_is_exclusive_relocated_and_verified_before_progr
         monkeypatch.setitem(sys.modules, name, module)
     monkeypatch.setattr(paper_bubble, "_stationary_residual", lambda problem: 1e-12)
     if corruption is not None:
-        with pytest.raises(ValueError, match="same-state round trip"):
+        with pytest.raises(ValueError, match="same-state round trip|history on load"):
             paper_bubble._checkpoint_stationary_state(problem, case, tmp_path, 0, True)
         assert not (tmp_path / "checkpoints/bond_000/resume.json").exists()
         assert len((tmp_path / runner.PROGRESS).read_text().splitlines()) == 1
@@ -551,6 +661,8 @@ def test_post_polish_checkpoint_is_exclusive_relocated_and_verified_before_progr
         packet = json.loads(packet_path.read_text())
         assert packet["roundtrip"]["verified"] is True
         assert packet["stage"]["kind"] == "completed_polish" and packet["stage"]["bond_index"] == 0
+        assert packet["stage"]["bc_mode"] == marker
+        assert packet["roundtrip"]["bc_preparation"]["verified"] is True
         assert packet["meshes"][0]["sha256"] == runner.sha256_file(problem.mesh)
         assert Path(packet["meshes"][0]["path"]).parent == packet_path.parent
         before = packet_path.read_bytes()

@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import ast
 import hashlib
+import io
 import json
 import os
 import stat
@@ -188,61 +189,107 @@ def require_pinned_environment(revision: dict) -> None:
         raise ValueError("installed pyoomph provenance requires its URL and native-core digest")
 
 
+def _state_mesh_entries(stream) -> list[tuple[int, int, str]]:
+    """Bounded header entries at a186e07e output/states.py:241-273; no pickle decoding."""
+    stream.seek(0, os.SEEK_END)
+    size = stream.tell()
+
+    def integer():
+        value = stream.read(8)
+        if len(value) != 8:
+            raise ValueError("truncated restart state header")
+        return int.from_bytes(value, "little", signed=True)
+
+    def string():
+        length = integer()
+        if not 0 <= length <= 1024 * 1024 or length > size - stream.tell():
+            raise ValueError("invalid restart state string length")
+        try:
+            return stream.read(length).decode("ascii")
+        except UnicodeDecodeError as exc:
+            raise ValueError("restart state header must be ASCII") from exc
+
+    footer = b"EOF_pyoomph"
+    if size < len(footer) + 8:
+        raise ValueError("truncated restart state")
+    stream.seek(-len(footer) - 8, os.SEEK_END)
+    if integer() != len(footer) or stream.read(len(footer)) != footer:
+        raise ValueError("restart state has no complete pyoomph footer")
+    stream.seek(0)
+    if (string(), string(), string()) != ("pyoomph_dump", "0.1.6", "global"):
+        raise ValueError("restart requires the pinned global 0.1.6 state format")
+    if len(stream.read(struct.calcsize("<d"))) != 8:
+        raise ValueError("truncated restart state time")
+    for _ in range(3):
+        integer()  # output step, continue-section step, numpy compression.
+    count = integer()
+    if not 1 <= count <= 128:
+        raise ValueError("invalid restart mesh-template count")
+    entries = []
+    for _ in range(count):
+        start = stream.tell()
+        reference = string()
+        end = stream.tell()
+        if reference:
+            if "\0" in reference or Path(reference).suffix != ".msh":
+                raise ValueError("restart template must reference a Gmsh mesh")
+            entries.append((start, end, reference))
+        has_remesher = integer()
+        if has_remesher not in (0, 1):
+            raise ValueError("invalid restart remesher flag")
+        if has_remesher and integer() < 0:
+            raise ValueError("invalid restart remesher counter")
+    return entries
+
+
 def state_mesh_references(path: Path) -> list[str]:
-    """Read only the bounded mesh header of the exact pinned 0.1.6 dump format.
-
-    This is the header layout in a186e07e's output/states.py:241-273. It uses
-    no native imports or pickle decoding, and also refuses a missing footer.
-    Memory snapshots store mesh names relative to the writer's working
-    directory; portable file dumps store them relative to their own directory.
-    """
+    """Read full-file or CWD-relative memory-snapshot mesh names without native imports."""
     with path.open("rb") as stream:
-        size = os.fstat(stream.fileno()).st_size
+        return [reference for _, _, reference in _state_mesh_entries(stream)]
 
-        def integer():
-            value = stream.read(8)
-            if len(value) != 8:
-                raise ValueError("truncated restart state header")
-            return int.from_bytes(value, "little", signed=True)
 
-        def string():
-            length = integer()
-            if not 0 <= length <= 1024 * 1024 or length > size - stream.tell():
-                raise ValueError("invalid restart state string length")
-            try:
-                return stream.read(length).decode("ascii")
-            except UnicodeDecodeError as exc:
-                raise ValueError("restart state header must be ASCII") from exc
+def _bc_cache_trailer(marker: str) -> bytes:
+    encoded = marker.encode("ascii")
+    return (struct.pack("<qq", 1, len(encoded)) + encoded
+            + struct.pack("<qqq", 0, 0, 11) + b"EOF_pyoomph")
 
-        footer = b"EOF_pyoomph"
-        if size < len(footer) + 8:
-            raise ValueError("truncated restart state")
-        stream.seek(-len(footer) - 8, os.SEEK_END)
-        if integer() != len(footer) or stream.read(len(footer)) != footer:
-            raise ValueError("restart state has no complete pyoomph footer")
-        stream.seek(0)
-        if (string(), string(), string()) != ("pyoomph_dump", "0.1.6", "global"):
-            raise ValueError("restart requires the pinned global 0.1.6 state format")
-        if len(stream.read(struct.calcsize("<d"))) != 8:
-            raise ValueError("truncated restart state time")
-        for _ in range(3):
-            integer()  # output step, continue-section step, numpy compression.
-        count = integer()
-        if not 1 <= count <= 128:
-            raise ValueError("invalid restart mesh-template count")
-        references = []
-        for _ in range(count):
-            reference = string()
-            if reference:
-                if "\0" in reference or Path(reference).suffix != ".msh":
-                    raise ValueError("restart template must reference a Gmsh mesh")
-                references.append(reference)
-            has_remesher = integer()
-            if has_remesher not in (0, 1):
-                raise ValueError("invalid restart remesher flag")
-            if has_remesher and integer() < 0:
-                raise ValueError("invalid restart remesher counter")
-        return references
+
+def snapshot_bc_cache_signature(snapshot: bytes, *, mesh_reference_base: Path | None = None) -> dict:
+    """Fingerprint every serialized value/history, retaining the cache label separately."""
+    for marker in ("init", "stationary", "transient"):
+        trailer = _bc_cache_trailer(marker)
+        if snapshot.endswith(trailer):
+            payload = snapshot[:-len(trailer)]
+            if mesh_reference_base is not None:
+                parts, cursor = [], 0
+                for start, end, reference in _state_mesh_entries(io.BytesIO(snapshot)):
+                    mesh = (mesh_reference_base / reference).resolve(strict=True)
+                    if not mesh.is_file():
+                        raise ValueError("native snapshot has no referenced mesh")
+                    identity = ("sha256:" + sha256_file(mesh)).encode("ascii")
+                    parts.extend((snapshot[cursor:start], struct.pack("<q", len(identity)), identity))
+                    cursor = end
+                parts.append(payload[cursor:])
+                payload = b"".join(parts)
+            return {"bc_cache_marker": marker, "sha256": hashlib.sha256(snapshot).hexdigest(),
+                    "payload_sha256": hashlib.sha256(payload).hexdigest()}
+    raise ValueError("stationary restart requires a serialized BC cache with zero eigen/continuation data")
+
+
+def state_bc_cache_marker(path: Path) -> str:
+    """Bind the literal BC cache marker of a zero-eigenpair stationary dump.
+
+    At a186e07e problem.py:10442-10453 the marker is written whenever eigen
+    data are enabled, including zero eigenpairs. With no continuation data,
+    that block has the fixed trailer below. It is a cache label, not proof of
+    a stationary state: actions_before_stationary_solve updates it only when
+    equations actually need reassignment (problem.py:8707-8713).
+    """
+    state_mesh_references(path)  # Refuse a different format or incomplete file.
+    with path.open("rb") as stream:
+        stream.seek(-min(256, os.fstat(stream.fileno()).st_size), os.SEEK_END)
+        tail = stream.read()
+    return snapshot_bc_cache_signature(tail)["bc_cache_marker"]
 
 
 def _read_json(path: Path) -> dict:
@@ -385,10 +432,10 @@ def validate_restart(packet_path: Path, case: dict, case_sha256: str, *,
             or stage.get("kind") not in {"pending_polish", "completed_polish"}
             or isinstance(stage.get("bond"), bool) or stage.get("bond") != schedule[index]
             or isinstance(stage.get("ca_in"), bool) or stage.get("ca_in") != case["physics"]["ca_in"]
-            or stage.get("bc_mode") not in {"transient", "stationary"}):
+            or stage.get("bc_mode") not in {"init", "transient", "stationary"}):
         raise ValueError("restart stage differs from the unchanged case Bond schedule")
-    if stage["kind"] == "completed_polish" and stage["bc_mode"] != "stationary":
-        raise ValueError("a completed polish must retain stationary boundary conditions")
+    if stage["bc_mode"] != state_bc_cache_marker(state):
+        raise ValueError("restart stage differs from the literal serialized BC cache marker")
     if (state_format == "memory_snapshot" and (stage["kind"] != "pending_polish"
             or len(state.relative_to(runtime).parts) != 3
             or state.relative_to(runtime).parts[0] != "polish" or state.name != "before.dump")):
