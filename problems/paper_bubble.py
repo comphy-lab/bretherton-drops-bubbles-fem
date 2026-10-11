@@ -14,6 +14,7 @@ import hashlib
 import io
 import json
 import math
+import os
 from functools import lru_cache
 from pathlib import Path
 from types import SimpleNamespace
@@ -591,7 +592,205 @@ def polish_confined_state(problem, case, output, label, *, initial_relaxation=0.
             stream.write("\n")
 
 
-def run_model(case, output, *, azimuthal_stability=False):
+def stationary_bond_schedule(case):
+    """Retain the original repeated-addition Bond ladder and its step budget."""
+    solve, physics = case["solve"], case["physics"]
+    bond = float(solve["initial_bond"])
+    schedule = [bond]
+    for _ in range(solve["max_bond_steps"]):
+        if bond >= physics["bond"]:
+            break
+        bond = min(bond + solve["bond_step"], float(physics["bond"]))
+        schedule.append(bond)
+    if bond != physics["bond"]:
+        raise ValueError("target Bond number not reached within max_bond_steps")
+    return schedule
+
+
+def stationary_layout(problem, azimuthal_stability):
+    """Record the full native DOF labels and enforce the requested AZ setup."""
+    import numpy as np
+
+    mode = problem.is_normal_mode_stability_set_up()
+    parameter = problem._azimuthal_mode_param_m
+    expected = "azimuthal" if azimuthal_stability else False
+    if mode != expected or (azimuthal_stability and (parameter is None or parameter.value != 0)):
+        raise ValueError("loaded state does not retain the selected base-state azimuthal setup")
+    types, names = problem.get_dof_description()
+    types = np.asarray(types, dtype="<i8")
+    names = [str(name) for name in names]
+    if types.shape != (problem.ndof(),) or np.any(types < 0) or np.any(types >= len(names)):
+        raise ValueError("loaded state has an incomplete native DOF description")
+    if azimuthal_stability and any(not any(name.startswith(domain + "/")
+            and name.endswith("/velocity_phi") for name in names) for domain in ("liquid", "gas")):
+        raise ValueError("loaded state lacks a phase's azimuthal velocity layout")
+    digest = hashlib.sha256(json.dumps(names, separators=(",", ":")).encode() + types.tobytes())
+    return {"ndof": problem.ndof(), "mode_setup": mode, "dof_names": names,
+            "dof_layout_sha256": digest.hexdigest(), "base_mode": 0 if parameter is not None else None}
+
+
+def _checkpoint_stationary_state(problem, case, output, bond_index, azimuthal_stability):
+    """Save a self-contained post-polish state and prove its native round trip.
+
+    A receipt is written exclusively only after fields, positional masks, pinned values, profile,
+    parameters and full layout round-trip exactly. Steady/history flags are
+    restored after the load notification; inactive polish hooks stay inactive.
+    These are stationary restart checks, not a transient equivalence claim.
+    """
+    import numpy as np
+    from pyoomph.output.states import copy_state_file
+
+    from runners.run_paper_case import (
+        RESUME_SCHEMA,
+        _exclusive_json,
+        _read_json,
+        append_progress,
+        sha256_file,
+        state_mesh_references,
+    )
+
+    output = Path(output).resolve()
+    manifest_path = output / "run-manifest.json"
+    manifest = _read_json(manifest_path)
+    bond = stationary_bond_schedule(case)[bond_index]
+    parameters = {name: float(problem.get_global_parameter(name).value) for name in ("Ca_in", "Bo")}
+    if parameters != {"Ca_in": float(case["physics"]["ca_in"]), "Bo": bond}:
+        raise ValueError("stationary checkpoint forcing differs from its case stage")
+    residual = _stationary_residual(problem)
+    if residual > case["tolerances"]["newton"] or problem._last_bc_setting != "stationary":
+        raise ValueError("stationary checkpoint requires a converged bound polish")
+    layout = stationary_layout(problem, azimuthal_stability)
+    fields = [np.asarray(value).copy() for value in problem.get_current_dofs()]
+    pinned_values = np.asarray(problem.get_current_pinned_values(True)).copy()
+    profile = [np.asarray(value).copy() for value in problem.interface_polyline()]
+    volume, speed = problem.observable("volume", "gas"), problem.frame_speed()
+    flags = {name: getattr(problem, name) for name in (
+        "_first_step", "_taken_already_an_unsteady_step", "_last_step_was_stationary")}
+    steady = [problem.time_stepper_pt(i).is_steady() for i in range(problem.ntime_stepper())]
+    eigen_setting = problem.eigen_data_in_states
+    directory = output / "checkpoints" / f"bond_{bond_index:03d}"
+    directory.mkdir(parents=True, exist_ok=False)
+    transfer = output / "solver" / f"stationary_{bond_index:03d}.dump"
+    if transfer.exists():
+        raise ValueError("stationary checkpoint transfer is occupied")
+    state = directory / "state.dump"
+    try:
+        problem.eigen_data_in_states = True  # Saves stationary BC mode at the exact source pin.
+        problem.save_state(str(transfer), quiet=True)
+        original_meshes = [(transfer.parent / value).resolve() for value in state_mesh_references(transfer)]
+        original_hashes = [sha256_file(path) for path in original_meshes]
+        copy_state_file(str(transfer), str(state), copy_mesh_files=True)
+        references = state_mesh_references(state)
+        meshes = []
+        for reference in references:
+            path = (state.parent / reference).resolve()
+            if not path.is_relative_to(directory) or path.is_symlink() or not path.is_file():
+                raise ValueError("stationary checkpoint failed to retain a referenced mesh")
+            meshes.append({"stored_path": reference, "path": str(path), "sha256": sha256_file(path)})
+        if [mesh["sha256"] for mesh in meshes] != original_hashes:
+            raise ValueError("stationary checkpoint mesh copy differs from its source")
+        for path in (state, *(Path(mesh["path"]) for mesh in meshes)):
+            with path.open("rb") as stream:
+                os.fsync(stream.fileno())
+        problem.load_state(str(state), quiet=True, ignore_outstep=True)
+        if (not all(np.array_equal(a, b) for a, b in zip(fields, problem.get_current_dofs(), strict=True))
+                or not np.array_equal(pinned_values, problem.get_current_pinned_values(True))
+                or not all(np.array_equal(a, b) for a, b in zip(profile, problem.interface_polyline(), strict=True))
+                or parameters != {name: float(problem.get_global_parameter(name).value) for name in parameters}
+                or layout != stationary_layout(problem, azimuthal_stability)
+                or problem._last_bc_setting != "stationary"
+                or volume != problem.observable("volume", "gas") or speed != problem.frame_speed()
+                or not math.isclose(_stationary_residual(problem), residual, rel_tol=1e-12, abs_tol=1e-12)):
+            raise ValueError("stationary checkpoint failed its native same-state round trip")
+        packet = {"schema": RESUME_SCHEMA,
+            "parent_manifest": {"path": str(manifest_path), "sha256": sha256_file(manifest_path)},
+            "case_sha256": manifest["case_sha256"], "azimuthal_stability": azimuthal_stability,
+            "state": {"path": str(state), "sha256": sha256_file(state), "format": "portable_file"},
+            "mesh_reference_base": str(directory), "meshes": meshes,
+            "stage": {"kind": "completed_polish", "bond_index": bond_index, "bond": bond,
+                      "ca_in": parameters["Ca_in"], "bc_mode": "stationary"},
+            "roundtrip": {"verified": True, "stationary_residual_linf": residual, "layout": layout}}
+        receipt = directory / "resume.json"
+        _exclusive_json(receipt, packet)
+        append_progress(output, {"event": "stationary_checkpoint", "bond_index": bond_index,
+            "bond": bond, "stationary_residual_linf": residual,
+            "resume_packet": str(receipt.relative_to(output)), "resume_packet_sha256": sha256_file(receipt)})
+        return {"bond_index": bond_index, "bond": bond, "resume_packet": str(receipt.relative_to(output))}
+    finally:
+        problem.eigen_data_in_states = eigen_setting
+        for name, value in flags.items():
+            setattr(problem, name, value)
+        for index, was_steady in enumerate(steady):
+            stepper = problem.time_stepper_pt(index)
+            stepper.make_steady() if was_steady else stepper.undo_make_steady()
+
+
+def _load_stationary_restart(problem, case, output, restart, azimuthal_stability):
+    from runners.run_paper_case import _exclusive_json, append_progress, verify_restart_artifacts
+
+    verify_restart_artifacts(restart)
+    problem.load_state(restart["state"]["path"], quiet=True,
+                       additional_info={"exchange_msh_file": restart["mesh_exchange"]})
+    parameters = {name: float(problem.get_global_parameter(name).value) for name in ("Ca_in", "Bo")}
+    stage = restart["stage"]
+    if parameters != {"Ca_in": stage["ca_in"], "Bo": stage["bond"]}:
+        raise ValueError("loaded stationary restart differs from the bound forcing")
+    if problem._last_bc_setting != stage["bc_mode"]:
+        raise ValueError("loaded stationary restart differs from the bound BC mode")
+    layout = stationary_layout(problem, azimuthal_stability)
+    if stage["kind"] == "completed_polish":
+        roundtrip = restart.get("roundtrip", {})
+        if (roundtrip.get("verified") is not True or roundtrip.get("layout") != layout
+                or _stationary_residual(problem) > case["tolerances"]["newton"]):
+            raise ValueError("loaded post-polish checkpoint is not a qualified stationary state")
+    import numpy as np
+
+    def signature():
+        dofs, positional_dofs = problem.get_current_dofs()
+        z, r = problem.interface_polyline()
+        arrays = {"free_dofs": dofs, "positional_dof_mask": positional_dofs,
+                  "pinned_values_with_positions": problem.get_current_pinned_values(True),
+                  "interface_z": z, "interface_r": r}
+        return {"arrays": {name: {"shape": list(np.asarray(value).shape),
+                             "dtype": str(np.asarray(value).dtype),
+                             "sha256": hashlib.sha256(np.asarray(value).tobytes()).hexdigest()}
+                            for name, value in arrays.items()},
+                "parameters": {name: float(problem.get_global_parameter(name).value) for name in parameters},
+                "volume": problem.observable("volume", "gas"), "frame_speed": problem.frame_speed(),
+                "bc_mode": problem._last_bc_setting,
+                "layout": stationary_layout(problem, azimuthal_stability)}
+
+    before = signature()
+    eigen_setting = problem.eigen_data_in_states
+    flags = {name: getattr(problem, name) for name in (
+        "_first_step", "_taken_already_an_unsteady_step", "_last_step_was_stationary")}
+    steady = [problem.time_stepper_pt(i).is_steady() for i in range(problem.ntime_stepper())]
+    try:
+        problem.eigen_data_in_states = True
+        snapshot = problem._snapshot_state()
+        problem._restore_state(snapshot)
+        after = signature()
+        if before != after:
+            raise ValueError("loaded restart failed its full in-process snapshot restoration")
+    finally:
+        problem.eigen_data_in_states = eigen_setting
+        for name, value in flags.items():
+            setattr(problem, name, value)
+        for index, was_steady in enumerate(steady):
+            stepper = problem.time_stepper_pt(index)
+            stepper.make_steady() if was_steady else stepper.undo_make_steady()
+    receipt = {"schema": "herrada-stationary-resume-load-v1", "verified": True,
+               "parameters": parameters, "bc_mode": problem._last_bc_setting, "layout": layout,
+               "parent_manifest": restart["parent_manifest"], "state": restart["state"], "stage": stage,
+               "mesh_exchange": restart["mesh_exchange"],
+               "snapshot_restore": {"verified": True, "before": before, "after": after,
+                                    "snapshot_sha256": hashlib.sha256(snapshot).hexdigest()}}
+    _exclusive_json(Path(output) / "restart-load.json", receipt)
+    append_progress(Path(output), {"event": "restart_loaded", "bond_index": stage["bond_index"],
+                                  "bond": stage["bond"], "receipt": "restart-load.json"})
+
+
+def run_model(case, output, *, azimuthal_stability=False, restart=None):
     """Execute one bounded stationary case after its runner writes provenance."""
     if not isinstance(azimuthal_stability, bool):
         raise TypeError("azimuthal_stability must be a boolean")
@@ -611,24 +810,36 @@ def run_model(case, output, *, azimuthal_stability=False):
         if azimuthal_stability:
             problem.setup_for_stability_analysis(azimuthal_stability=True, analytic_hessian=False)
         problem.initialise()
-        if solve["relax_time"]:
+        schedule = stationary_bond_schedule(case)
+        start_index = 0
+        if restart is not None:
+            _load_stationary_restart(problem, case, output, restart, azimuthal_stability)
+            start_index = restart["stage"]["bond_index"]
+            route.append({"restart": restart["stage"]})
+            if restart["stage"]["kind"] == "pending_polish":
+                route.append(polish_confined_state(problem, case, output, f"resume_{start_index:03d}",
+                    initial_relaxation=0.5 if start_index == 0 else 1.0))
+                route.append(_checkpoint_stationary_state(problem, case, output,
+                                                          start_index, azimuthal_stability))
+        elif solve["relax_time"]:
             problem.run(solve["relax_time"], startstep=solve["start_step"],
                 outstep=case["output"]["cadence"], maxstep=solve["relax_time"] / 8,
                 temporal_error=tol["temporal_error"])
             route.append("transient seed")
-        if p["problem"] == "finite_gas_bubble":
-            route.append(polish_confined_state(problem, case, output, "seed"))
-        else:
-            problem.solve(max_newton_iterations=solve["max_newton_iterations"])
-        bond = float(solve["initial_bond"])
-        for _ in range(solve["max_bond_steps"]):
-            if bond >= p["bond"]:
-                break
-            bond = min(bond + solve["bond_step"], float(p["bond"]))
+        if restart is None:
+            if p["problem"] == "finite_gas_bubble":
+                route.append(polish_confined_state(problem, case, output, "seed"))
+                _checkpoint_stationary_state(problem, case, output, 0, azimuthal_stability)
+            else:
+                problem.solve(max_newton_iterations=solve["max_newton_iterations"])
+        bond = schedule[start_index]
+        for bond_index in range(start_index + 1, len(schedule)):
+            bond = schedule[bond_index]
             problem.get_global_parameter("Bo").value = bond
             if p["problem"] == "finite_gas_bubble":
                 route.append(polish_confined_state(problem, case, output, f"bond_{len(route):03d}",
                                                     initial_relaxation=1.0))
+                _checkpoint_stationary_state(problem, case, output, bond_index, azimuthal_stability)
             else:
                 problem.solve(max_newton_iterations=solve["max_newton_iterations"])
             route.append({"bond": bond})
@@ -693,7 +904,7 @@ def run_model(case, output, *, azimuthal_stability=False):
                               abs(summary["frame_speed"]) <= tol["static_velocity_absolute"])
         transfer = output / "solver" / "final.dump"
         destination = output / "checkpoints" / "final.dump"
-        destination.parent.mkdir()
+        destination.parent.mkdir(exist_ok=True)
         problem.save_state(str(transfer), quiet=True)
         copy_state_file(str(transfer), str(destination), copy_mesh_files=True)
         summary.update(checks=checks, completion_reached=all(checks.values()),

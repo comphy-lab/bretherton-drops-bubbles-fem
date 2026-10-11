@@ -1077,6 +1077,8 @@ def phase_velocity_summary_standin(tmp_path, monkeypatch):
         monkeypatch.setattr(paper_bubble, "_stationary_residual", lambda problem: 0.0)
         monkeypatch.setattr(paper_bubble, "polish_confined_state", lambda *args, **kwargs:
                             {"status": "software_standin"})
+        monkeypatch.setattr(paper_bubble, "_checkpoint_stationary_state", lambda *args, **kwargs:
+                            {"status": "software_standin"})
         runner.create_run_manifest(tmp_path, {"purpose": "phase velocity software fixture only"})
         return paper_bubble.run_model(case, tmp_path)
 

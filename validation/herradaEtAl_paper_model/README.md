@@ -40,3 +40,27 @@ pressure convention, material ratios, mesh, frame/volume constraints, solve
 limits, positive output cadence and completion checks. The cadence sets the
 transient output interval. The runner records their provenance before
 execution, and generated fields, state and check results belong in the run.
+
+The stationary path writes a resume packet and the referenced mesh files
+after each converged Bond-number step, under `checkpoints/bond_NNN/`.
+Restart into a fresh output directory:
+
+```sh
+python runners/run_paper_case.py validation/herradaEtAl_paper_model/cases/h15-bo1p56.json \
+  --azimuthal-stability --restart-from /path/to/checkpoints/bond_NNN/resume.json \
+  --out /path/to/new/run
+```
+
+Keep the same case and azimuthal setting as the parent. The packet binds the
+parent manifest, state, mesh files and continuation stage. Admission checks
+their hashes and requires compatible equations, layout, material properties,
+solver settings and the pinned native core. `--check` also validates this
+restart admission without native assembly. A resumed stationary calculation
+continues the declared Bond-number ladder without repeating the transient
+seed; it retains the original completion and consistency checks. Stationary
+restart checks do not establish equivalence of a time-dependent continuation.
+
+Restart admission and the source-compatibility tests require the parent's
+commit and ancestry in the local Git history. Use a complete clone, or fetch
+that history before checking a restart; a shallow checkout cannot establish
+compatibility by substituting the current source for its missing parent.
