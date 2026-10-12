@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import math
 import sys
@@ -383,3 +384,125 @@ def test_sampling_refusal_retains_full_phase_bound_delta(case, tmp_path, monkeyp
     assert not (tmp_path / "samples/after-remesh.json").exists()
     assert not (tmp_path / "samples/after-remesh.npz").exists()
     assert receipt_path.stat().st_mode & 0o777 == 0o600
+
+
+class DummyPressureNode:
+    """Synthetic two-field, two-history storage; never native evidence."""
+
+    def __init__(self, index):
+        self.data = np.zeros((2, 2))
+        if index < 3:
+            self.data[:, 1] = [index + 1.0, 2 * (index + 1.0)]
+        self.pins = [True, index >= 3]
+        self.equations = [-1, index if index < 3 else -1]
+
+    def nvalue(self):
+        return 2
+
+    def ntstorage(self):
+        return 2
+
+    def value_at_t(self, t, value):
+        return self.data[t, value]
+
+    def set_value_at_t(self, t, value, number):
+        self.data[t, value] = number
+
+    def is_pinned(self, value):
+        return self.pins[value]
+
+    def eqn_number(self, value):
+        return self.equations[value]
+
+    def is_hanging(self, value):
+        return False
+
+
+class DummyPressureMesh:
+    def __init__(self, physical_fault=False):
+        self.nodes = [DummyPressureNode(i) for i in range(6)]
+        self.physical_fault = physical_fault
+
+    def get_code_gen(self):
+        return SimpleNamespace(get_space_of_field=lambda name: "C1" if name == "pressure" else "C2")
+
+    def nnode(self):
+        return 6
+
+    def nelement(self):
+        return 1
+
+    def node_pt(self, index):
+        return self.nodes[index]
+
+    def element_pt(self, index):
+        return SimpleNamespace(
+            nnode=self.nnode,
+            node_pt=self.node_pt,
+            get_field_data_list=lambda name, full: [
+                (node, 0 if name == "velocity_x" else 1)
+                if name == "velocity_x" or i < 3
+                else (None, -1)
+                for i, node in enumerate(self.nodes)
+            ],
+        )
+
+    def _interpolate_hanging_values(self):
+        for a, b, middle in remesh.SIDES:
+            self.nodes[middle].data[:, 1] = (
+                self.nodes[a].data[:, 1] + self.nodes[b].data[:, 1]
+            ) / 2
+        if self.physical_fault:
+            # A physical pinned velocity HISTORY changes; current fields and pins stay equal.
+            self.nodes[0].data[1, 0] += 1
+
+
+@pytest.mark.parametrize("physical_fault", [False, True])
+def test_dummy_refresh_audits_every_history_and_refuses_physical_pinned_history(
+    tmp_path, monkeypatch, physical_fault
+):
+    meshes = {"liquid": DummyPressureMesh(physical_fault), "gas": DummyPressureMesh()}
+    problem = SimpleNamespace(get_mesh=lambda name: meshes[name], eigen_data_in_states=False)
+    problem._snapshot_state = lambda: b"".join(
+        node.data.tobytes() for mesh in meshes.values() for node in mesh.nodes
+    )
+
+    def signature(*args):
+        digest = hashlib.sha256(problem._snapshot_state()).hexdigest()
+        return {
+            "arrays": {
+                "free_dofs": {"sha256": "unchanged-current-fields"},
+                "pinned_values_with_positions": {"sha256": digest},
+            },
+            "serialized_state": {"sha256": digest, "payload_sha256": digest},
+        }
+
+    model = SimpleNamespace(_stationary_state_signature=signature)
+    monkeypatch.setattr(
+        remesh.diagnostic,
+        "actual_pins",
+        lambda problem: {
+            "sha256": hashlib.sha256(
+                repr([node.pins for mesh in meshes.values() for node in mesh.nodes]).encode()
+            ).hexdigest()
+        },
+    )
+    if physical_fault:
+        with pytest.raises(ValueError, match="changed physical state"):
+            remesh.normalize_pressure_dummies(problem, model, tmp_path, np)
+    else:
+        remesh.normalize_pressure_dummies(problem, model, tmp_path, np)
+    receipt = json.loads((tmp_path / "normalization/receipt.json").read_text())
+    assert receipt["verified"] is not physical_fault
+    assert receipt["checks"]["physical_serialized_state_preserved"] is not physical_fault
+    assert receipt["checks"]["normalized_snapshot_restored"] is True
+    assert receipt["checks"]["actual_pins_preserved"] is True
+    assert receipt["checks"]["all_dummy_histories_equal_vertex_pressure_averages"] is True
+    assert len(receipt["slots"]) == 6 and len(receipt["differences"]) == 12
+    assert all(
+        slot["history_count"] == 2 and slot["equation_number"] < 0 for slot in receipt["slots"]
+    )
+    with np.load(tmp_path / "normalization/dummy-histories.npz", allow_pickle=False) as saved:
+        assert np.array_equal(saved["before"], np.zeros(12))
+        assert np.array_equal(saved["after"], np.array([1.5, 3.0, 2.5, 5.0, 2.0, 4.0] * 2))
+    assert problem.eigen_data_in_states is False

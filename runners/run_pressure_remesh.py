@@ -312,6 +312,204 @@ def differing_keys(before, after, prefix=""):
     return [] if before == after else [prefix]
 
 
+def pressure_dummy_slots(problem):
+    """Identify pinned C1 pressure storage absent from triangle6 field incidence."""
+    slots, physical, retained_nodes = {}, set(), {}
+    for domain in ("liquid", "gas"):
+        mesh = problem.get_mesh(domain)
+        code = mesh.get_code_gen()
+        require(
+            code.get_space_of_field("pressure") == "C1"
+            and code.get_space_of_field("velocity_x") == "C2",
+            "TH field spaces required",
+        )
+        retained_nodes[domain] = [mesh.node_pt(i) for i in range(mesh.nnode())]
+        nodes = {id(node): i for i, node in enumerate(retained_nodes[domain])}
+        require(len(nodes) == mesh.nnode(), "duplicate native node wrappers")
+        for index in range(mesh.nelement()):
+            element = mesh.element_pt(index)
+            require(element.nnode() == 6, "normalization requires triangle6 elements")
+            incidence = element.get_field_data_list("pressure", True)
+            velocity = element.get_field_data_list("velocity_x", True)
+            require(len(incidence) == len(velocity) == 6, "incomplete native field incidence")
+            value_indices = set()
+            for local in range(6):
+                node = element.node_pt(local)
+                require(
+                    id(node) in nodes and retained_nodes[domain][nodes[id(node)]] is node,
+                    "element node lacks a retained native mesh identity",
+                )
+                require(
+                    velocity[local][0] is node, "C2 velocity incidence differs from native node"
+                )
+                data, value = incidence[local]
+                if local < 3:
+                    require(
+                        data is node and 0 <= value < node.nvalue(),
+                        "invalid real pressure incidence",
+                    )
+                    value_indices.add(value)
+                    physical.add((id(node), value))
+                else:
+                    require(data is None and value == -1, "midside carries physical pressure")
+            require(len(value_indices) == 1, "pressure storage index varies within element")
+            value = value_indices.pop()
+            for a, b, middle in SIDES:
+                node, masters = element.node_pt(middle), (element.node_pt(a), element.node_pt(b))
+                require(
+                    0 <= value < node.nvalue()
+                    and node.is_pinned(value)
+                    and node.eqn_number(value) < 0
+                    and not node.is_hanging(value),
+                    "dummy pressure is not a pinned non-hanging slot",
+                )
+                require(
+                    all(not master.is_hanging(value) for master in masters),
+                    "hanging pressure master unsupported",
+                )
+                key = (id(node), value)
+                if key in slots:
+                    require(
+                        {id(n) for n in slots[key]["masters"]} == {id(n) for n in masters},
+                        "dummy pressure has inconsistent vertex masters",
+                    )
+                else:
+                    slots[key] = {
+                        "node": node,
+                        "masters": masters,
+                        "value": value,
+                        "label": {
+                            "mesh": domain,
+                            "node": nodes[id(node)],
+                            "value_index": value,
+                            "equation_number": node.eqn_number(value),
+                            "master_nodes": [nodes[id(n)] for n in masters],
+                        },
+                    }
+    require(slots and not slots.keys() & physical, "dummy and physical pressure incidence overlap")
+    return list(slots.values())
+
+
+def normalize_pressure_dummies(problem, model, output, np):
+    """Refresh only evidenced dummy storage and prove full physical/history preservation.
+
+    The native interpolation writes dummy histories. A comparative snapshot
+    temporarily substitutes only those proven dummy slots with their original
+    values; exact equality then checks every other serialized byte. Normalized
+    values are restored in finally and checked against the full final snapshot.
+    """
+
+    def snapshot():
+        setting = problem.eigen_data_in_states
+        try:
+            problem.eigen_data_in_states = True
+            return problem._snapshot_state()
+        finally:
+            problem.eigen_data_in_states = setting
+
+    def histories(slot):
+        node, value = slot["node"], slot["value"]
+        return [float(node.value_at_t(t, value)) for t in range(node.ntstorage())]
+
+    def set_histories(values):
+        for slot, stored in zip(slots, values, strict=True):
+            require(slot["node"].ntstorage() == len(stored), "normalization changed history layout")
+            for t, value in enumerate(stored):
+                slot["node"].set_value_at_t(t, slot["value"], value)
+
+    slots = pressure_dummy_slots(problem)
+    before = model._stationary_state_signature(problem, True)
+    before_pins = diagnostic.actual_pins(problem)
+    before_values = [histories(slot) for slot in slots]
+    before_dump = snapshot()
+    for domain in ("liquid", "gas"):
+        problem.get_mesh(domain)._interpolate_hanging_values()
+    after = model._stationary_state_signature(problem, True)
+    after_pins = diagnostic.actual_pins(problem)
+    after_values = [histories(slot) for slot in slots]
+    after_dump = snapshot()
+    expected = []
+    for slot in slots:
+        values = []
+        for t in range(slot["node"].ntstorage()):
+            total = 0.0
+            for master in slot["masters"]:
+                total += float(master.value_at_t(t, slot["value"]))
+            values.append(total / 2)
+        expected.append(values)
+    try:
+        set_histories(before_values)
+        physical_snapshot_preserved = snapshot() == before_dump
+    finally:
+        set_histories(after_values)
+    normalized_snapshot_restored = snapshot() == after_dump
+    permitted = {
+        "arrays.pinned_values_with_positions.sha256",
+        "serialized_state.sha256",
+        "serialized_state.payload_sha256",
+    }
+    signature_changes = differing_keys(before, after)
+    pressure_history_correct = all(
+        np.asarray(actual, dtype="<f8").tobytes() == np.asarray(reference, dtype="<f8").tobytes()
+        and all(math.isfinite(value) for value in actual)
+        for actual, reference in zip(after_values, expected, strict=True)
+    )
+    checks = {
+        "physical_serialized_state_preserved": physical_snapshot_preserved,
+        "normalized_snapshot_restored": normalized_snapshot_restored,
+        "actual_pins_preserved": before_pins == after_pins,
+        "signature_changes_confined_to_dummy_storage": set(signature_changes) <= permitted,
+        "all_dummy_histories_equal_vertex_pressure_averages": pressure_history_correct,
+    }
+    directory = output / "normalization"
+    directory.mkdir(exist_ok=False)
+    diagnostic.atomic(directory / "before.dump", before_dump)
+    diagnostic.atomic(directory / "after.dump", after_dump)
+    records, differences, offset = [], [], 0
+    for index, (slot, old, new) in enumerate(zip(slots, before_values, after_values, strict=True)):
+        records.append({**slot["label"], "history_offset": offset, "history_count": len(old)})
+        for t, (a, b) in enumerate(zip(old, new, strict=True)):
+            if np.asarray(a, dtype="<f8").tobytes() != np.asarray(b, dtype="<f8").tobytes():
+                differences.append({"slot": index, "history_index": t, "before": a, "after": b})
+        offset += len(old)
+    data = io.BytesIO()
+    np.savez_compressed(
+        data,
+        before=np.array([v for row in before_values for v in row]),
+        after=np.array([v for row in after_values for v in row]),
+    )
+    diagnostic.atomic(directory / "dummy-histories.npz", data.getvalue())
+    result = {
+        "schema": "private-pressure-dummy-normalization-v1",
+        "phase": "after-remesh",
+        "verified": all(checks.values()),
+        "checks": checks,
+        "method": "liquid/gas mesh._interpolate_hanging_values; no solve, renumber or pin change",
+        "source": {
+            "pyoomph_commit": diagnostic.PYOOMPH,
+            "binding": "src/nanobind/mesh.cpp:1349",
+            "histories": "src/elements_hanging.cpp:1143",
+        },
+        "before": before,
+        "after": after,
+        "actual_pins": {"before": before_pins, "after": after_pins},
+        "differing_signature_keys": signature_changes,
+        "slots": records,
+        "differences": differences,
+        "files": {
+            name: sha(directory / name)
+            for name in ("before.dump", "after.dump", "dummy-histories.npz")
+        },
+        "numerical_acceptance": False,
+    }
+    write_json(directory / "receipt.json", result)
+    require(
+        all(checks.values()),
+        "dummy-pressure normalization changed physical state or failed its history audit",
+    )
+    return result
+
+
 def sample(problem, model, case, output, phase, np):
     """Sample one phase and prove that observations preserve that phase's state."""
     before = model._stationary_state_signature(problem, True)
@@ -564,7 +762,19 @@ def execute(args, prepared, output):
 
         def observe(phase):
             stable_inputs()
+            if phase == "after-remesh":
+                normalization = normalize_pressure_dummies(problem, model, output, np)
+                emit(
+                    "dummy-pressure-normalized",
+                    receipt="normalization/receipt.json",
+                    changed_history_values=len(normalization["differences"]),
+                )
             value = sample(problem, model, case, output, phase, np)
+            if phase == "after-remesh":
+                value["dummy_pressure_normalization"] = {
+                    "receipt": "normalization/receipt.json",
+                    "verified": normalization["verified"],
+                }
             if phase != "after-polish":
                 value["retained_state"] = retain_portable_sample(problem, model, output, phase)
             stable_inputs()
