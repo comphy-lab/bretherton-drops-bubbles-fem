@@ -31,6 +31,7 @@ from problems import paper_bubble as model
 from runners import run_paper_anchor as anchor
 from runners import run_paper_anchor_i as anchor_i
 from runners import run_paper_anchor_i_prefix as anchor_i_prefix
+from runners import run_paper_anchor_iii_from_stationary as anchor_iii
 from runners import run_paper_case as runner
 from runners import run_paper_prefix_qualify as prefix_qualification
 from runners import run_paper_seed_requalify as requalification
@@ -43,7 +44,7 @@ write_json = diagnostic.write_json
 MODES = (0, 1)
 SHIFTS = (-0.001, 0.001)
 NEIGEN = 8
-ANCHORS = {-0.0016: "I", -0.00315: "III"}
+ANCHORS = {-0.0016: "I", -0.00315: "III", anchor_iii.TARGET_CA: "III"}
 GLOBALS = ("globals/U", "gas_volume/pressure")
 EIGENDATA_FIELDS = (
     "_last_eigenvalues",
@@ -219,6 +220,23 @@ def qualified_parent(runtime, case, *, parent=None, restart=None):
                 "I completion changed parent acceptance",
             )
             records.extend(qualified_i_parent(runtime, case, parent, restart, summary, cold, files))
+    if case["physics"]["ca_in"] == anchor_iii.TARGET_CA:
+        require(
+            parent is not None and restart is not None,
+            "exact typed III producer and packet required",
+        )
+        records.extend(
+            anchor_iii.admit_terminal(
+                runtime, parent, restart, case, summary, cold, files, completion
+            )
+        )
+        result = runner._read_json(runtime / "result.json")
+        terminal = result["terminal"]
+        records.extend(bind_pressure_history_audit(runtime, terminal, files))
+        for phase in ("before", "after_remesh"):
+            records.extend(
+                bind_portable_observation(terminal[phase], phase.replace("_", "-"), runtime, files)
+            )
     return summary, cold, records
 
 
@@ -965,7 +983,7 @@ def is_prefix_i_producer(parent):
     return Path(parent.get("runner", {}).get("path", "")).name == "run_paper_anchor_i_prefix.py"
 
 
-def source_contract(parent, component, *, metadata_reference=False, typed_i=False):
+def source_contract(parent, component, *, metadata_reference=False, typed_i=False, typed_iii=False):
     """Check exact parent/current method inventories without fixing a parent revision."""
     runner.require_clean_source(component)
     runner.require_clean_source(parent["component"])
@@ -990,6 +1008,16 @@ def source_contract(parent, component, *, metadata_reference=False, typed_i=Fals
             "parent/current method differs: " + name,
         )
     implementation = {}
+    exact_iii = (
+        Path(parent.get("runner", {}).get("path", "")).name == Path(anchor_iii.ENTRYPOINT).name
+    )
+    require(exact_iii == typed_iii, "exact III target and producer must be paired")
+    if exact_iii:
+        require(
+            parent.get("anchor_stage") == {"kind": anchor_iii.KIND}
+            and parent.get("qualification_schema") == anchor_iii.SCHEMA,
+            "exact III producer kind/schema differs",
+        )
     prefix_i = is_prefix_i_producer(parent)
     require(not prefix_i or typed_i, "prefix I producer requires the declared typed I request")
     if prefix_i:
@@ -999,7 +1027,9 @@ def source_contract(parent, component, *, metadata_reference=False, typed_i=Fals
             "prefix I producer kind/schema differs",
         )
     helpers = (
-        (*HELPERS, *PREFIX_I_HELPERS)
+        (*HELPERS, *anchor_iii.NEW_HELPERS, anchor_iii.ENTRYPOINT)
+        if exact_iii
+        else (*HELPERS, *PREFIX_I_HELPERS)
         if prefix_i
         else (*HELPERS, *I_HELPERS)
         if typed_i
@@ -1026,7 +1056,7 @@ def source_contract(parent, component, *, metadata_reference=False, typed_i=Fals
                     parent["implementation"][name]["sha256"] == digest,
                     "parent helper declaration differs",
                 )
-            if typed_i:
+            if typed_i or typed_iii:
                 declaration = parent.get("implementation", {}).get(name, {})
                 require(
                     declaration.get("sha256") == digest
@@ -1084,6 +1114,7 @@ def preflight(args):
         (anchor, HELPERS[2]),
         (anchor_i, anchor_i.ENTRYPOINT),
         (anchor_i_prefix, anchor_i_prefix.ENTRYPOINT),
+        (anchor_iii, anchor_iii.ENTRYPOINT),
         (prefix_qualification, prefix_qualification.ENTRYPOINT),
         (requalification, requalification.ENTRYPOINT),
         (requalification.cold, "runners/run_paper_cold_history.py"),
@@ -1118,6 +1149,7 @@ def preflight(args):
         component,
         metadata_reference=request["reference_metadata_only"],
         typed_i=request["branch_candidate"] == "I",
+        typed_iii=case["physics"]["ca_in"] == anchor_iii.TARGET_CA,
     )
     environment = runner.pyoomph_revision()
     environment_contract(environment, parent["pyoomph"])
@@ -1901,6 +1933,15 @@ def compare_searches(first, second, mode):
 
 
 def parent_load_contract(prepared):
+    if prepared["case"]["physics"]["ca_in"] == anchor_iii.TARGET_CA:
+        return {
+            "kind": "preserved-stationary-III-history",
+            "module": anchor_iii.ENTRYPOINT,
+            "callable": "restore_checked",
+            "sha256": prepared["implementation"][anchor_iii.ENTRYPOINT]["sha256"],
+            "packet": prepared["restart"]["packet"],
+            "payload_sha256": prepared["cold"]["loaded"]["serialized_state"]["payload_sha256"],
+        }
     typed = prepared["case"]["physics"]["ca_in"] == anchor_i.TARGET_CA
     module = requalification.ENTRYPOINT if typed else "runners/run_paper_anchor.py"
     return {
@@ -1916,6 +1957,9 @@ def parent_load_contract(prepared):
 def restore_parent(problem, prepared, output):
     case, restart, cold = prepared["case"], prepared["restart"], prepared["cold"]
     restore = anchor.restore_checked
+    if case["physics"]["ca_in"] == anchor_iii.TARGET_CA:
+        problem._stationary_iii_receipts_directory = output / "stationary-loads"
+        restore = anchor_iii.restore_checked
     if case["physics"]["ca_in"] == anchor_i.TARGET_CA:
         problem._seed_requalification_receipts_directory = output / "typed-loads"
         restore = requalification.restore_checked
