@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import json
+import math
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -318,3 +319,67 @@ def test_occupied_output_preserves_existing_content(case, tmp_path, monkeypatch)
         remesh.main(arguments(args))
     assert sentinel.read_bytes() == b"unchanged software fixture"
     assert list(args.out.iterdir()) == [sentinel]
+
+
+@pytest.mark.parametrize("changed", ["signature", "pins"])
+def test_sampling_refusal_retains_full_phase_bound_delta(case, tmp_path, monkeypatch, changed):
+    """A first-read mutation remains a refusal and leaves its direct signature evidence."""
+    lower, bulk = fields()
+    before = {
+        "arrays": {"pinned_values_with_positions": {"sha256": "software-before"}},
+        "serialized_state": {"payload_sha256": "software-payload"},
+    }
+    after = copy.deepcopy(before)
+    pins_before = {"sha256": "software-pins", "flags_count_with_shared_node_repeats": 6}
+    pins_after = copy.deepcopy(pins_before)
+    if changed == "signature":
+        after["arrays"]["pinned_values_with_positions"]["sha256"] = "software-after"
+        message = "sampling changed native state"
+    else:
+        pins_after["sha256"] = "software-changed-pins"
+        message = "sampling changed actual pins"
+    signatures, pin_records = iter((before, after)), iter((pins_before, pins_after))
+    model = SimpleNamespace(
+        _stationary_state_signature=lambda *args: next(signatures),
+        _stationary_residual=lambda problem: 2e-9,
+    )
+
+    def observable(name, domain="liquid"):
+        if domain == "liquid/lower":
+            return {
+                "area": math.pi,
+                "pressure_squared": math.pi / 2,
+                "pressure": 2 * math.pi / 3,
+                "flux": 0.03,
+            }[name]
+        return {"volume": 1.0, "surface_volume": 1.0, "pressure": 1.0, "flux": 0.03}[name]
+
+    problem = SimpleNamespace(
+        observable=observable,
+        frame_speed=lambda: 0.02,
+        geometry=SimpleNamespace(volume=1.0),
+        get_ode=lambda name: SimpleNamespace(get_value=lambda *args, **kwargs: 0.0),
+        interface_polyline=lambda: (np.array([0.0, 1.0]), np.array([0.0, 0.0])),
+    )
+    monkeypatch.setattr(remesh, "configuration", lambda *args: {})
+    monkeypatch.setattr(remesh.diagnostic, "actual_pins", lambda problem: next(pin_records))
+    monkeypatch.setattr(
+        remesh.diagnostic,
+        "extract",
+        lambda problem, domain, np: (lower if domain == "liquid/lower" else bulk, {}),
+    )
+    with pytest.raises(ValueError, match=message):
+        remesh.sample(problem, model, case, tmp_path, "after-remesh", np)
+    receipt_path = tmp_path / "samples/after-remesh-preservation-failure.json"
+    receipt = json.loads(receipt_path.read_text())
+    assert receipt["status"] == "failed" and receipt["numerical_acceptance"] is False
+    assert receipt["phase"] == "after-remesh"
+    assert receipt["before"] == before and receipt["after"] == after
+    assert receipt["actual_pins"] == {"before": pins_before, "after": pins_after}
+    assert receipt["differing_signature_keys"] == (
+        ["arrays.pinned_values_with_positions.sha256"] if changed == "signature" else []
+    )
+    assert receipt["differing_pin_keys"] == (["sha256"] if changed == "pins" else [])
+    assert not (tmp_path / "samples/after-remesh.json").exists()
+    assert not (tmp_path / "samples/after-remesh.npz").exists()
+    assert receipt_path.stat().st_mode & 0o777 == 0o600

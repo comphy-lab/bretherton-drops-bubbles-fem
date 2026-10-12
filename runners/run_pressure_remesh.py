@@ -298,6 +298,20 @@ def configuration(problem, case, model):
     }
 
 
+def differing_keys(before, after, prefix=""):
+    """Name changed JSON signature members without omitting any full record."""
+    if isinstance(before, dict) and isinstance(after, dict):
+        changed = []
+        for key in sorted(before.keys() | after.keys()):
+            name = f"{prefix}.{key}" if prefix else key
+            if key not in before or key not in after:
+                changed.append(name)
+            else:
+                changed.extend(differing_keys(before[key], after[key], name))
+        return changed
+    return [] if before == after else [prefix]
+
+
 def sample(problem, model, case, output, phase, np):
     """Sample one phase and prove that observations preserve that phase's state."""
     before = model._stationary_state_signature(problem, True)
@@ -344,8 +358,28 @@ def sample(problem, model, case, output, phase, np):
     geometry = port_adjacent_geometry(lower, bulk, np)
     z, r = (np.asarray(value).copy() for value in problem.interface_polyline())
     after = model._stationary_state_signature(problem, True)
+    after_pins = diagnostic.actual_pins(problem)
+    if before != after or pins != after_pins:
+        directory = output / "samples"
+        directory.mkdir(exist_ok=True)
+        write_json(
+            directory / f"{phase}-preservation-failure.json",
+            {
+                "schema": "private-pressure-remesh-preservation-failure-v1",
+                "phase": phase,
+                "status": "failed",
+                "before": before,
+                "after": after,
+                "actual_pins": {"before": pins, "after": after_pins},
+                "differing_signature_keys": differing_keys(before, after),
+                "differing_pin_keys": differing_keys(pins, after_pins),
+                "sampling_preserved_state": before == after,
+                "sampling_preserved_actual_pins": pins == after_pins,
+                "numerical_acceptance": False,
+            },
+        )
     require(before == after, "sampling changed native state")
-    require(pins == diagnostic.actual_pins(problem), "sampling changed actual pins")
+    require(pins == after_pins, "sampling changed actual pins")
     data = io.BytesIO()
     np.savez_compressed(
         data,
