@@ -9,6 +9,7 @@ Metadata preflight imports no native solver and creates no output.
 from __future__ import annotations
 
 import argparse
+import ast
 import hashlib
 import io
 import json
@@ -16,6 +17,7 @@ import math
 import os
 import struct
 import sys
+import zipfile
 from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -28,7 +30,9 @@ if str(ROOT) not in sys.path:
 from problems import paper_bubble as model
 from runners import run_paper_anchor as anchor
 from runners import run_paper_anchor_i as anchor_i
+from runners import run_paper_anchor_i_prefix as anchor_i_prefix
 from runners import run_paper_case as runner
+from runners import run_paper_prefix_qualify as prefix_qualification
 from runners import run_paper_seed_requalify as requalification
 from runners import run_pressure_diagnostic as diagnostic
 from runners import run_pressure_remesh as remesh
@@ -60,6 +64,13 @@ I_HELPERS = (
     requalification.ENTRYPOINT,
     "runners/run_paper_case.py",
 )
+PREFIX_I_HELPERS = (*I_HELPERS, prefix_qualification.ENTRYPOINT, anchor_i_prefix.ENTRYPOINT)
+UNESTABLISHED_CLAIMS = {
+    **prefix_qualification.NO_CLAIMS,
+    "finite_spectrum_complete": False,
+    "global_dominance_certified": False,
+    "unique_family_identity_certified": False,
+}
 GATES = {"stationary", "lower_static_pressure", "flux", "volume", "volume_integrals"}
 LIMITS = {
     "backward": 1e-7,
@@ -196,11 +207,18 @@ def qualified_parent(runtime, case, *, parent=None, restart=None):
     )
     if case["physics"]["ca_in"] == anchor_i.TARGET_CA:
         require(parent is not None and restart is not None, "typed I parent and packet required")
-        require(
-            completion.get("parent_acceptance_changed") is False,
-            "I completion changed parent acceptance",
-        )
-        records.extend(qualified_i_parent(runtime, case, parent, restart, summary, cold, files))
+        if is_prefix_i_producer(parent):
+            records.extend(
+                qualified_prefix_i_parent(
+                    runtime, case, parent, restart, summary, cold, files, completion
+                )
+            )
+        else:
+            require(
+                completion.get("parent_acceptance_changed") is False,
+                "I completion changed parent acceptance",
+            )
+            records.extend(qualified_i_parent(runtime, case, parent, restart, summary, cold, files))
     return summary, cold, records
 
 
@@ -303,6 +321,650 @@ def qualified_i_parent(runtime, case, parent, restart, summary, cold, files):
     return admitted["records"]
 
 
+def bound_parent_file(record, runtime, files):
+    """Bind each direct proof pointer to the producer's immutable completion."""
+    actual = regular_record(record["path"])
+    path = Path(actual["path"])
+    require(
+        path.is_relative_to(runtime)
+        and actual["sha256"] == record["sha256"]
+        and files.get(str(path.relative_to(runtime))) == actual["sha256"],
+        "prefix I direct proof is unbound or escaped its runtime",
+    )
+    return actual
+
+
+def physical_signature(signature):
+    """Keep full opaque history; only BC-cache labels and raw mesh paths are separate."""
+    return {
+        **{
+            key: value
+            for key, value in signature.items()
+            if key not in {"serialized_state", "bc_cache_marker"}
+        },
+        "payload_sha256": signature["serialized_state"]["payload_sha256"],
+    }
+
+
+def refuse_unestablished_claims(value):
+    require(
+        all(value.get(key, False) is False for key in UNESTABLISHED_CLAIMS),
+        "prefix I producer claims an unestablished branch, dynamic or spectral certificate",
+    )
+
+
+def original_polish_bounds(polish):
+    return polish.get("status") == "converged" and all(
+        type(polish.get(key)) is int and 0 <= polish[key] <= limit
+        for key, limit in (("stage_updates", 40), ("updates_total", 160), ("remeshes_total", 3))
+    )
+
+
+def pressure_history_arrays(path):
+    """Read only the producer's two plain little-endian f64 NPY arrays; no pickle."""
+    result = {}
+    with zipfile.ZipFile(path) as archive:
+        require(
+            len(archive.namelist()) == 2 and set(archive.namelist()) == {"before.npy", "after.npy"},
+            "pressure-history archive inventory differs",
+        )
+        for phase in ("before", "after"):
+            stream = io.BytesIO(archive.read(phase + ".npy"))
+            require(stream.read(6) == b"\x93NUMPY", "pressure-history array format differs")
+            version = stream.read(2)
+            require(version in {b"\x01\x00", b"\x02\x00"}, "unsupported pressure-history header")
+            width = 2 if version == b"\x01\x00" else 4
+            length = int.from_bytes(stream.read(width), "little")
+            require(0 < length <= 65536, "pressure-history header size differs")
+            header = ast.literal_eval(stream.read(length).decode("latin1"))
+            require(
+                set(header) == {"descr", "fortran_order", "shape"}
+                and header["descr"] == "<f8"
+                and header["fortran_order"] is False
+                and isinstance(header["shape"], tuple)
+                and len(header["shape"]) == 1
+                and type(header["shape"][0]) is int
+                and header["shape"][0] > 0,
+                "pressure-history dtype/layout differs",
+            )
+            raw = stream.read()
+            require(len(raw) == 8 * header["shape"][0], "pressure-history payload size differs")
+            values = [value[0] for value in struct.iter_unpack("<d", raw)]
+            require(
+                all(math.isfinite(value) for value in values), "nonfinite dummy-pressure history"
+            )
+            result[phase] = values
+    require(len(result["before"]) == len(result["after"]), "pressure-history lengths differ")
+    return result
+
+
+def bind_pressure_history_audit(runtime, terminal, files):
+    """Bind the original native full-history normalization proof and its slot changes."""
+    directory = runtime / "terminal/normalization"
+    receipt_path = directory / "receipt.json"
+    records = [bound_parent_file(regular_record(receipt_path), runtime, files)]
+    receipt = runner._read_json(receipt_path)
+    expected_checks = {
+        "physical_serialized_state_preserved",
+        "normalized_snapshot_restored",
+        "actual_pins_preserved",
+        "signature_changes_confined_to_dummy_storage",
+        "all_dummy_histories_equal_vertex_pressure_averages",
+    }
+    require(
+        receipt.get("schema") == "private-pressure-dummy-normalization-v1"
+        and receipt.get("phase") == "after-remesh"
+        and receipt.get("verified") is True
+        and receipt.get("numerical_acceptance") is False
+        and set(receipt.get("checks", {})) == expected_checks
+        and all(value is True for value in receipt["checks"].values())
+        and receipt.get("method")
+        == "liquid/gas mesh._interpolate_hanging_values; no solve, renumber or pin change"
+        and receipt.get("source")
+        == {
+            "pyoomph_commit": diagnostic.PYOOMPH,
+            "binding": "src/nanobind/mesh.cpp:1349",
+            "histories": "src/elements_hanging.cpp:1143",
+        },
+        "prefix I pressure-dummy full-history audit failed or differs",
+    )
+    refuse_unestablished_claims(receipt)
+    permitted = {
+        "arrays.pinned_values_with_positions.sha256",
+        "serialized_state.sha256",
+        "serialized_state.payload_sha256",
+    }
+    changed = remesh.differing_keys(receipt["before"], receipt["after"])
+    require(
+        changed == receipt["differing_signature_keys"]
+        and set(changed) <= permitted
+        and receipt["actual_pins"]["before"]
+        == receipt["actual_pins"]["after"]
+        == terminal["after_remesh"]["actual_pins"]
+        and physical_signature(receipt["after"])
+        == physical_signature(terminal["after_remesh"]["signature"]),
+        "pressure audit changed physical fields/pins or belongs to another remesh",
+    )
+    require(
+        set(receipt["files"]) == {"before.dump", "after.dump", "dummy-histories.npz"},
+        "pressure audit raw proofs missing",
+    )
+    for name, digest in receipt["files"].items():
+        records.append(
+            bound_parent_file({"path": str(directory / name), "sha256": digest}, runtime, files)
+        )
+    # The producer's snapshots use its attempt cwd. Retained observation meshes
+    # bind those original references even though solver files are excluded from completion.
+    retained = terminal["after_remesh"]["retained_state"]
+    require(
+        retained["phase"] == "after-remesh" and retained["numerical_acceptance"] is False,
+        "remesh observation cannot be an accepted anchor",
+    )
+    authority = {item["sha256"] for item in retained["meshes"]}
+    records.extend(
+        bound_parent_file(item, runtime, files) for item in (retained["state"], *retained["meshes"])
+    )
+    after_references = runner.state_mesh_references(directory / "after.dump")
+    for phase in ("before", "after"):
+        raw_path = directory / (phase + ".dump")
+        raw = raw_path.read_bytes()
+        for _, _, reference in requalification.cold.serialized_metadata(raw)["meshes"]:
+            path = (runtime.parent / reference).resolve(strict=True)
+            record = regular_record(path)
+            require(
+                record["sha256"] in authority,
+                "pressure snapshot mesh lacks retained content authority",
+            )
+            records.append(record)
+        fingerprint = runner.snapshot_bc_cache_signature(raw, mesh_reference_base=runtime.parent)
+        if phase == "after":
+            require(
+                fingerprint == receipt[phase]["serialized_state"],
+                "pressure audit raw snapshot and signature differ",
+            )
+        else:
+            # The producer records the before signature before taking before.dump.
+            require(
+                fingerprint["bc_cache_marker"] == receipt[phase]["bc_cache_marker"]
+                and runner.state_mesh_references(raw_path) == after_references,
+                "pressure audit before snapshot cache or mesh references differ",
+            )
+    values = pressure_history_arrays(directory / "dummy-histories.npz")
+    offset, differences = 0, []
+    require(
+        receipt["slots"] and {item["mesh"] for item in receipt["slots"]} == {"liquid", "gas"},
+        "both phase dummy-pressure incidence required",
+    )
+    for index, item in enumerate(receipt["slots"]):
+        count = item["history_count"]
+        require(
+            type(count) is int
+            and count > 0
+            and item["history_offset"] == offset
+            and type(item["equation_number"]) is int
+            and item["equation_number"] < 0
+            and type(item["node"]) is int
+            and item["node"] >= 0
+            and type(item["value_index"]) is int
+            and item["value_index"] >= 0
+            and isinstance(item["master_nodes"], list)
+            and len(item["master_nodes"]) == 2
+            and all(type(node) is int and node >= 0 for node in item["master_nodes"])
+            and offset + count <= len(values["before"]),
+            "pressure audit slot/history incidence differs",
+        )
+        for history in range(count):
+            before, after = values["before"][offset + history], values["after"][offset + history]
+            if struct.pack("<d", before) != struct.pack("<d", after):
+                differences.append(
+                    {"slot": index, "history_index": history, "before": before, "after": after}
+                )
+        offset += count
+    require(
+        offset == len(values["before"]) and differences == receipt["differences"],
+        "pressure audit history changes differ from retained arrays",
+    )
+    return records
+
+
+def bind_typed_proof_inventory(receipt, runtime, files):
+    records, fingerprints, bases = [], {}, {}
+    directory = Path(receipt["intervention"]["after"]["path"]).parent
+    for phase in ("before", "after", "after-bc"):
+        record = bound_parent_file(
+            receipt["intervention"][phase]
+            if phase != "after-bc"
+            else regular_record(directory / "after-bc.dump"),
+            runtime,
+            files,
+        )
+        records.append(record)
+        path = Path(record["path"])
+        retention_path = path.parent / (phase + "-retention.json")
+        records.append(bound_parent_file(regular_record(retention_path), runtime, files))
+        retained = runner._read_json(retention_path)
+        require(
+            set(retained) == {"state", "mesh_reference_base", "meshes", "mesh_exchange"}
+            and retained["state"] == {**record, "format": "memory_snapshot"}
+            and [item["stored_path"] for item in retained["meshes"]]
+            == runner.state_mesh_references(path)
+            and retained["mesh_exchange"]
+            == {item["stored_path"]: item["path"] for item in retained["meshes"]},
+            "typed snapshot retention or mesh exchange differs",
+        )
+        records.extend(bound_parent_file(item, runtime, files) for item in retained["meshes"])
+        bases[phase] = Path(retained["mesh_reference_base"]).resolve(strict=True)
+        for item in retained["meshes"]:
+            reference = regular_record(bases[phase] / item["stored_path"])
+            require(reference["sha256"] == item["sha256"], "typed retained mesh content differs")
+            records.append(reference)
+        fingerprints[phase] = runner.snapshot_bc_cache_signature(
+            path.read_bytes(), mesh_reference_base=bases[phase]
+        )
+    preparation = receipt["bc_preparation"]
+    require(
+        len(set(bases.values())) == 1
+        and preparation["verified"] is True
+        and preparation["method"] == "actions_before_stationary_solve(force_reassign_eqs=False)"
+        and preparation["before"] == receipt["loaded"]
+        and physical_signature(preparation["before"]) == physical_signature(preparation["after"])
+        and fingerprints["after"] == preparation["before"]["serialized_state"]
+        and fingerprints["after-bc"] == preparation["after"]["serialized_state"],
+        "BC preparation signatures or full native history differ",
+    )
+    return records
+
+
+def bind_prefix_stage(runtime, stage, case, parent, admitted, files):
+    """Bind each provisional suffix row to its actual source, case and checkpoint."""
+    index = stage["index"]
+    directory = runtime / "stages" / f"ca_{index:03d}"
+    case_path, manifest_path = directory / "case.json", directory / "run-manifest.json"
+    records = [
+        bound_parent_file(regular_record(path), runtime, files)
+        for path in (case_path, manifest_path)
+    ]
+    current = anchor.stage_case(case, stage["ca_in"], index, index == 5)
+    manifest = runner._read_json(manifest_path)
+    require(
+        runner.read_case(case_path) == current
+        and stage["case"] == regular_record(case_path)
+        and manifest["anchor_stage"]
+        == {
+            "kind": "ascending_ca_continuation_from_prefix",
+            "index": index,
+            "ca_in": stage["ca_in"],
+        }
+        and all(
+            manifest[key] == parent[key]
+            for key in (
+                "schema",
+                "runner",
+                "runner_path",
+                "runner_sha256",
+                "component_commit",
+                "component",
+                "pyoomph",
+                "implementation",
+                "lineage",
+                "qualification_schema",
+                "case_transition_contract",
+                "construction_case",
+                "parent_restart",
+                "qualified_prefix",
+                "original_acceptance_changed",
+                "azimuthal_stability",
+            )
+        ),
+        "remaining I stage case or producer lineage differs",
+    )
+    restart = runner.validate_restart(
+        directory / relative_path(stage["checkpoint"]["resume_packet"]),
+        current,
+        sha(case_path),
+        component=admitted["component"],
+        environment=admitted["environment"],
+        azimuthal_stability=True,
+    )
+    require(
+        restart["parent_manifest"] == regular_record(manifest_path)
+        and restart["state"]["format"] == "portable_file"
+        and restart["stage"]["kind"] == "completed_polish"
+        and restart["stage"]["bond_index"] == len(model.stationary_bond_schedule(current)) - 1
+        and stage["resume_packet_sha256"] == restart["packet"]["sha256"],
+        "remaining I stage checkpoint differs",
+    )
+    records.extend(
+        bound_parent_file(item, runtime, files)
+        for item in (restart["packet"], restart["state"], *restart["meshes"])
+    )
+    transition_path = directory / "transition.json"
+    sample_path = directory / "samples/after-polish.json"
+    polish_path = directory / "polish/ca_step/polish.json"
+    records.extend(
+        bound_parent_file(regular_record(path), runtime, files)
+        for path in (transition_path, sample_path, polish_path)
+    )
+    sample = runner._read_json(sample_path)
+    require(
+        stage["transition"] == runner._read_json(transition_path)
+        and stage["transition"]["verified"] is True
+        and stage["polish"] == runner._read_json(polish_path)
+        and sample["sampling_preserved_state"] is True
+        and physical_signature(sample["signature"])
+        == physical_signature(restart["roundtrip"]["after"])
+        and stage["canonical_checks_observed"]
+        == remesh.canonical_checks(current, sample["metrics"]),
+        "remaining I stage transition, polish or sampled state differs",
+    )
+    # Intermediate observations remain provisional; only terminal warm/cold
+    # checks determine the unchanged anchor acceptance.
+    return records
+
+
+def bind_portable_observation(observed, phase, runtime, files):
+    retained = observed["retained_state"]
+    path = runtime / "terminal/states" / phase / "retention.json"
+    records = [bound_parent_file(regular_record(path), runtime, files)]
+    require(
+        retained == runner._read_json(path)
+        and retained["schema"] == "private-pressure-remesh-observation-state-v1"
+        and retained["phase"] == phase
+        and retained["numerical_acceptance"] is False
+        and retained["state"]["format"] == "portable_file"
+        and retained["signature"] == observed["signature"]
+        and retained["actual_pins"] == observed["actual_pins"],
+        "terminal retained observation differs",
+    )
+    records.extend(
+        bound_parent_file(item, runtime, files) for item in (retained["state"], *retained["meshes"])
+    )
+    state = Path(retained["state"]["path"])
+    base = Path(retained["mesh_reference_base"]).resolve(strict=True)
+    require(
+        base == state.parent
+        and [item["stored_path"] for item in retained["meshes"]]
+        == runner.state_mesh_references(state)
+        and all(
+            (base / item["stored_path"]).resolve(strict=True) == Path(item["path"])
+            for item in retained["meshes"]
+        )
+        and runner.snapshot_bc_cache_signature(state.read_bytes(), mesh_reference_base=base)[
+            "payload_sha256"
+        ]
+        == retained["signature"]["serialized_state"]["payload_sha256"],
+        "terminal portable observation mesh or full history differs",
+    )
+    return records
+
+
+def qualified_prefix_i_parent(runtime, case, parent, restart, summary, cold, files, completion):
+    """Admit exactly a terminal prefix-descended I candidate, preserving the old route."""
+    require(not (runtime / "failure.json").exists(), "prefix I parent has a failure receipt")
+    require(
+        set(completion)
+        == {
+            "schema",
+            "status",
+            "numerical_acceptance",
+            "anchor_accepted",
+            "original_acceptance_changed",
+            "qualification_schema",
+            "scope",
+            "files",
+        }
+        and completion["schema"] == anchor_i_prefix.SCHEMA
+        and completion["anchor_accepted"] is True
+        and completion["original_acceptance_changed"] is False
+        and completion["qualification_schema"] == prefix_qualification.SCHEMA
+        and completion["scope"] == anchor_i_prefix.SCOPE
+        and {
+            "result.json",
+            "preparation.json",
+            "parent-load.json",
+            "terminal/normalization/receipt.json",
+        }
+        <= set(files),
+        "prefix I terminal completion/schema is absent or differs",
+    )
+    require(
+        prefix_qualification.completion_inventory(runtime, exclude_solver=True) == files,
+        "prefix I complete proof inventory differs",
+    )
+    result = runner._read_json(runtime / "result.json")
+    preparation = runner._read_json(runtime / "preparation.json")
+    expected_result_fields = {
+        "schema",
+        "stages",
+        "terminal",
+        "ca_in",
+        "canonical_checks",
+        "cold_load_checks",
+        "cold_load_verified",
+        "completion_reached",
+        "numerical_acceptance",
+        "anchor_accepted",
+        "causal_predictions",
+        "checkpoint",
+        "original_acceptance_changed",
+        "parents_unchanged",
+        "qualified_prefix",
+        "lineage",
+        "carried",
+        "new_updates_total",
+        "total_newton_update_bound",
+        *prefix_qualification.NO_CLAIMS,
+    }
+    require(
+        set(result) == expected_result_fields
+        and parent.get("schema") == "pyoomph-runner-manifest-v1"
+        and is_prefix_i_producer(parent)
+        and parent.get("anchor_stage") == {"kind": "stationary_I_candidate_from_prefix"}
+        and parent.get("qualification_schema") == prefix_qualification.SCHEMA
+        and parent.get("original_acceptance_changed") is False
+        and result.get("schema") == anchor_i_prefix.SCHEMA
+        and result.get("anchor_accepted") is True
+        and result.get("numerical_acceptance") is True
+        and result.get("completion_reached") is True
+        and result.get("cold_load_verified") is True
+        and result.get("original_acceptance_changed") is False
+        and result.get("parents_unchanged") is True
+        and result.get("ca_in") == case["physics"]["ca_in"] == anchor_i.TARGET_CA,
+        "prefix I producer/result is not a qualified terminal candidate",
+    )
+    for value in (parent, result, summary, completion):
+        refuse_unestablished_claims(value)
+    prefix_restart = parent["parent_restart"]
+    admitted = anchor_i_prefix.preflight(
+        SimpleNamespace(
+            source=ROOT,
+            case=Path(parent["case_path"]),
+            manifest=Path(prefix_restart["parent_manifest"]["path"]),
+            packet=Path(prefix_restart["packet"]["path"]),
+            state=Path(prefix_restart["state"]["path"]),
+        )
+    )
+    historical_restart = {
+        **admitted["restart"],
+        "compatibility": {
+            **admitted["restart"]["compatibility"],
+            "current_commit": parent["component_commit"],
+        },
+    }
+    contract = admitted["contract"]
+    require(
+        historical_restart == prefix_restart
+        and admitted["target"] == case
+        and parent["case_transition_contract"] == preparation["contract"] == contract
+        and parent["lineage"] == preparation["lineage"] == result["lineage"] == admitted["lineage"]
+        and parent["construction_case"] == contract["parent_case"]
+        and parent["qualified_prefix"] == result["qualified_prefix"] == contract["qualified_prefix"]
+        and preparation["inputs"] == admitted["records"]
+        and preparation["numerical_acceptance"] is False
+        and preparation["implementation"] == parent["implementation"]
+        and set(parent["implementation"]) == set(admitted["implementation"])
+        and all(
+            parent["implementation"][name]["sha256"] == declaration["sha256"]
+            for name, declaration in admitted["implementation"].items()
+        )
+        and result["carried"] == contract["carried"] == {"updates": 2, "remeshes": 0}
+        and result["total_newton_update_bound"] == contract["total_newton_update_bound"] == 478
+        and type(result["new_updates_total"]) is int
+        and 0 <= result["new_updates_total"] <= 478,
+        "prefix I immutable admission, source contract, lineage or carried bounds differ",
+    )
+    records = list(admitted["records"])
+    for record in (restart["packet"], restart["state"], *restart["meshes"]):
+        records.append(bound_parent_file(record, runtime, files))
+    require(
+        restart["parent_manifest"] == regular_record(runtime / "run-manifest.json")
+        and (runtime / relative_path(result["checkpoint"]["resume_packet"])).resolve(strict=True)
+        == Path(restart["packet"]["path"])
+        and restart["state"]["format"] == "portable_file"
+        and restart["stage"]["kind"] == "completed_polish",
+        "prefix I terminal checkpoint lineage differs",
+    )
+    terminal = result["terminal"]
+    require(len(result["stages"]) == 2, "only the remaining original I stages are admissible")
+    new_updates = 0
+    for index, value, stage in zip((4, 5), (-0.002, -0.0016), result["stages"], strict=True):
+        path = runtime / "stages" / f"ca_{index:03d}" / "stage.json"
+        records.append(bound_parent_file(regular_record(path), runtime, files))
+        require(
+            runner._read_json(path) == stage
+            and stage["index"] == index
+            and stage["ca_in"] == value
+            and stage["numerical_acceptance"] is False
+            and original_polish_bounds(stage["polish"]),
+            "remaining I stage identity or original polish bound differs",
+        )
+        records.extend(bind_prefix_stage(runtime, stage, case, parent, admitted, files))
+        refuse_unestablished_claims(stage)
+        if index == 4:
+            carry = stage["carry"]
+            require(
+                carry["carried"] == {"updates": 2, "remeshes": 0}
+                and carry["counter_seeded_once"] is True
+                and carry["deactivated"] is True
+                and carry["first_bound_trial_remaining_updates"] == 38
+                and stage["polish"]["trials"][0]["remaining_updates"] == 38
+                and stage["polish"]["updates_total"] >= 2
+                and all(
+                    type(carry["new_spent"][key]) is int and carry["new_spent"][key] >= 0
+                    for key in ("updates", "remeshes")
+                )
+                and carry["new_spent"]["updates"] == stage["polish"]["updates_total"] - 2
+                and carry["new_spent"]["remeshes"] == stage["polish"]["remeshes_total"],
+                "first I stage lost its certified debit",
+            )
+            records.append(bound_parent_file(carry["journal"], runtime, files))
+            new_updates += carry["new_spent"]["updates"]
+        else:
+            require(
+                stage["carry"] is None, "later I stage must retain its original independent budget"
+            )
+            new_updates += stage["polish"]["updates_total"]
+    for phase in ("before", "after_remesh", "after_polish"):
+        observed = terminal[phase]
+        name = phase.replace("_", "-")
+        path = runtime / "terminal/samples" / (name + ".json")
+        records.append(bound_parent_file(regular_record(path), runtime, files))
+        require(
+            runner._read_json(path)
+            == {key: item for key, item in observed.items() if key != "retained_state"}
+            and observed["sampling_preserved_state"] is True,
+            "terminal phase observation differs from its direct sample",
+        )
+        if phase != "after_polish":
+            records.extend(bind_portable_observation(observed, name, runtime, files))
+    warm = terminal["after_polish"]
+    terminal_polish_path = runtime / "terminal/polish/terminal_remesh/polish.json"
+    records.append(bound_parent_file(regular_record(terminal_polish_path), runtime, files))
+    require(
+        terminal["polish"] == runner._read_json(terminal_polish_path),
+        "terminal I polish differs from its direct receipt",
+    )
+    expected_summary = {
+        "status": "completed",
+        "completion_reached": True,
+        "scientific_status": "checks_passed",
+        "checks": result["canonical_checks"],
+        "cold_load_checks": result["cold_load_checks"],
+        "cold_load_verified": True,
+        **warm["metrics"],
+        "checkpoint": result["checkpoint"]["resume_packet"],
+        "ca_in": anchor_i.TARGET_CA,
+        "anchor_accepted": True,
+        "original_acceptance_changed": False,
+        **prefix_qualification.NO_CLAIMS,
+    }
+    require(
+        summary == expected_summary
+        and set(result["canonical_checks"]) == set(result["cold_load_checks"]) == GATES
+        and result["canonical_checks"] == remesh.canonical_checks(case, warm["metrics"])
+        and all(
+            value is True
+            for value in (
+                *result["canonical_checks"].values(),
+                *result["cold_load_checks"].values(),
+            )
+        )
+        and type(terminal["explicit_force_remesh_calls"]) is int
+        and terminal["explicit_force_remesh_calls"] == 1
+        and original_polish_bounds(terminal["polish"])
+        and new_updates + terminal["polish"]["updates_total"] == result["new_updates_total"]
+        and physical_signature(warm["signature"])
+        == physical_signature(restart["roundtrip"]["after"]),
+        "prefix I terminal remesh, warm gates or full state differs",
+    )
+    records.extend(bind_pressure_history_audit(runtime, terminal, files))
+    expected = restart["roundtrip"]["after"]["serialized_state"]["payload_sha256"]
+    pins = warm["actual_pins"]
+    anchor_i_prefix.validate_typed_receipt(cold, restart, case, pins, expected, runtime)
+    records.extend(bind_typed_proof_inventory(cold, runtime, files))
+    cold_sample_path = runtime / "target-cold/samples/cold-load.json"
+    records.append(bound_parent_file(regular_record(cold_sample_path), runtime, files))
+    cold_sample = runner._read_json(cold_sample_path)
+    require(
+        cold_sample["sampling_preserved_state"] is True
+        and cold_sample["actual_pins"] == pins
+        and physical_signature(cold_sample["signature"]) == physical_signature(cold["loaded"])
+        and remesh.canonical_checks(case, cold_sample["metrics"])
+        == result["cold_load_checks"]
+        == cold["canonical_checks"],
+        "prefix I fresh cold sample/gates/pins/history differs",
+    )
+    parent_load = runner._read_json(runtime / "parent-load.json")
+    initial_expected = admitted["restart"]["roundtrip"]["after"]["serialized_state"][
+        "payload_sha256"
+    ]
+    anchor_i_prefix.validate_typed_receipt(
+        parent_load,
+        admitted["restart"],
+        admitted["parent"],
+        admitted["parent_cold"]["actual_pins"],
+        initial_expected,
+        runtime,
+    )
+    records.extend(bind_typed_proof_inventory(parent_load, runtime, files))
+    initial_sample_path = runtime / "parent-observation/samples/cold-load.json"
+    records.append(bound_parent_file(regular_record(initial_sample_path), runtime, files))
+    initial_sample = runner._read_json(initial_sample_path)
+    require(
+        initial_sample["sampling_preserved_state"] is True
+        and initial_sample["actual_pins"] == parent_load["actual_pins"]
+        and physical_signature(initial_sample["signature"])
+        == physical_signature(parent_load["loaded"])
+        and all(remesh.canonical_checks(admitted["parent"], initial_sample["metrics"]).values()),
+        "prefix I initial fresh-load observation differs or fails original gates",
+    )
+    return records
+
+
+def is_prefix_i_producer(parent):
+    return Path(parent.get("runner", {}).get("path", "")).name == "run_paper_anchor_i_prefix.py"
+
+
 def source_contract(parent, component, *, metadata_reference=False, typed_i=False):
     """Check exact parent/current method inventories without fixing a parent revision."""
     runner.require_clean_source(component)
@@ -328,7 +990,21 @@ def source_contract(parent, component, *, metadata_reference=False, typed_i=Fals
             "parent/current method differs: " + name,
         )
     implementation = {}
-    helpers = (*HELPERS, *I_HELPERS) if typed_i else HELPERS
+    prefix_i = is_prefix_i_producer(parent)
+    require(not prefix_i or typed_i, "prefix I producer requires the declared typed I request")
+    if prefix_i:
+        require(
+            parent.get("anchor_stage") == {"kind": "stationary_I_candidate_from_prefix"}
+            and parent.get("qualification_schema") == prefix_qualification.SCHEMA,
+            "prefix I producer kind/schema differs",
+        )
+    helpers = (
+        (*HELPERS, *PREFIX_I_HELPERS)
+        if prefix_i
+        else (*HELPERS, *I_HELPERS)
+        if typed_i
+        else HELPERS
+    )
     for name in (*helpers, "runners/run_paper_modes.py"):
         path = ROOT / name
         digest = hashlib.sha256(
@@ -361,7 +1037,8 @@ def source_contract(parent, component, *, metadata_reference=False, typed_i=Fals
     producer = parent["runner"]
     producer_path = Path(producer["path"])
     if typed_i:
-        require(producer_path.name == "run_paper_anchor_i.py", "unsupported typed I producer")
+        expected = "run_paper_anchor_i_prefix.py" if prefix_i else "run_paper_anchor_i.py"
+        require(producer_path.name == expected, "unsupported typed I producer")
     require(
         producer_path.name
         in {"run_paper_anchor.py", "run_pressure_remesh.py", "run_paper_seed_i.py"}
@@ -406,6 +1083,8 @@ def preflight(args):
         (remesh, HELPERS[1]),
         (anchor, HELPERS[2]),
         (anchor_i, anchor_i.ENTRYPOINT),
+        (anchor_i_prefix, anchor_i_prefix.ENTRYPOINT),
+        (prefix_qualification, prefix_qualification.ENTRYPOINT),
         (requalification, requalification.ENTRYPOINT),
         (requalification.cold, "runners/run_paper_cold_history.py"),
     ):
