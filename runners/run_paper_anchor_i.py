@@ -456,6 +456,7 @@ def execute(args, prepared, output):
 
     with model.build_problem(parent, initial_bond=parent["physics"]["bond"]) as problem:
         anchor.configure(problem, output, prepared)
+        problem._seed_requalification_receipts_directory = output / "typed-loads"
         restored = requalification.restore_checked(
             problem,
             parent,
@@ -590,6 +591,7 @@ def execute(args, prepared, output):
     cold_output.mkdir()
     with model.build_problem(target, initial_bond=target["physics"]["bond"]) as cold:
         anchor.configure(cold, cold_output, prepared)
+        cold._seed_requalification_receipts_directory = cold_output / "typed-loads"
         cold_receipt = requalification.restore_checked(
             cold,
             target,

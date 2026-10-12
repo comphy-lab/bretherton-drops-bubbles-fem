@@ -870,6 +870,11 @@ def test_ascending_orchestration_uses_one_terminal_remesh_and_original_gates(
     monkeypatch.setattr(lane.anchor, "stable_inputs", lambda *args: None)
 
     def restore(problem, case, restart, expected_pins, expected_history):
+        expected_directory = output if case == prepared["parent"] else output / "target-cold"
+        assert (
+            problem._seed_requalification_receipts_directory == expected_directory / "typed-loads"
+        )
+        assert "solver" not in problem._seed_requalification_receipts_directory.parts
         assert expected_pins == pins
         assert (
             expected_history
