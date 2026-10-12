@@ -142,7 +142,7 @@ def parent_bundle(cases, tmp_path):
         },
         "cold-load.json": cold,
         "result.json": {
-            "schema": "private-fresh-negative-paper-seed-v1",
+            "schema": "paper-seed-recovery-result-v1",
             "numerical_acceptance": True,
             "terminal": {"explicit_force_remesh_calls": 1},
         },
@@ -179,6 +179,8 @@ def parent_bundle(cases, tmp_path):
         "no_remesh",
         "dummy_false",
         "not_accepted",
+        "old_schema",
+        "unknown_schema",
     ],
 )
 def test_failed_or_unbound_parent_is_refused(parent_bundle, fault):
@@ -212,6 +214,10 @@ def test_failed_or_unbound_parent_is_refused(parent_bundle, fault):
             bundle.files["result.json"]["terminal"]["explicit_force_remesh_calls"] = 0
         elif fault == "dummy_false":
             bundle.files["terminal/normalization/receipt.json"]["verified"] = False
+        elif fault == "old_schema":
+            bundle.files["result.json"]["schema"] = "private-fresh-negative-paper-seed-v1"
+        elif fault == "unknown_schema":
+            bundle.files["result.json"]["schema"] = "unreviewed-seed-result-v1"
         for name, value in bundle.files.items():
             (bundle.runtime / name).write_text(json.dumps(value))
         bind_completion(bundle.runtime, bundle.files)
@@ -229,6 +235,19 @@ def test_qualified_parent_records_every_bound_byte(parent_bundle):
     assert cold == bundle.cold
     assert len(records) == len(bundle.files) + 1
     assert lane.diagnostic.parents_unchanged(records) is True
+
+
+def test_recovery_predictions_are_not_additional_target_acceptance_gates(parent_bundle):
+    bundle = parent_bundle
+    result = bundle.files["result.json"]
+    result["initial_polish_predictions"] = {"checks": {"software_diagnostic": False}}
+    result["predictions_define_numerical_acceptance"] = False
+    (bundle.runtime / "result.json").write_text(json.dumps(result))
+    bind_completion(bundle.runtime, bundle.files)
+    cold, _ = lane.qualified_parent(
+        bundle.runtime / "run-manifest.json", bundle.parent, bundle.restart
+    )
+    assert cold["canonical_checks"] == dict.fromkeys(lane.GATES, True)
 
 
 @pytest.mark.parametrize("fault", [None, "core", "interpreter", "dirty", "producer"])
@@ -282,7 +301,12 @@ def test_preflight_binds_parent_case_clean_source_and_exact_environment(
         "runner_path": producer["path"],
         "runner_sha256": producer["sha256"],
         "implementation": {lane.PRODUCER: producer},
-        "fresh_seed_stage": {"kind": "fresh_negative_seed"},
+        "fresh_seed_stage": {"kind": "fresh_negative_seed_recovery"},
+        "seed_recovery_method": {
+            "policy": copy.deepcopy(lane.recovery.POLICY),
+            "api": copy.deepcopy(lane.recovery.API),
+            "scope": "initial Bo=0 seed polish only; later methods unchanged",
+        },
         "parent_state_used": False,
         "azimuthal_stability": True,
         "pyoomph": copy.deepcopy(environment),
@@ -358,7 +382,23 @@ def test_preflight_binds_parent_case_clean_source_and_exact_environment(
     assert not args.out.exists()
 
 
-@pytest.mark.parametrize("fault", [None, "source", "producer", "hash", "stage"])
+@pytest.mark.parametrize(
+    "fault",
+    [
+        None,
+        "source",
+        "old_source",
+        "producer",
+        "old_producer",
+        "hash",
+        "stage",
+        "old_stage",
+        "policy",
+        "api",
+        "scope",
+        "missing_method",
+    ],
+)
 def test_only_the_hash_bound_fresh_seed_producer_is_allowed(fault):
     digest = hashlib.sha256(
         lane.diagnostic.git(
@@ -375,18 +415,40 @@ def test_only_the_hash_bound_fresh_seed_producer_is_allowed(fault):
         "runner_path": path,
         "runner_sha256": digest,
         "implementation": {lane.PRODUCER: {"path": path, "sha256": digest}},
-        "fresh_seed_stage": {"kind": "fresh_negative_seed"},
+        "fresh_seed_stage": {"kind": "fresh_negative_seed_recovery"},
+        "seed_recovery_method": {
+            "policy": copy.deepcopy(lane.recovery.POLICY),
+            "api": copy.deepcopy(lane.recovery.API),
+            "scope": "initial Bo=0 seed polish only; later methods unchanged",
+        },
         "parent_state_used": False,
         "azimuthal_stability": True,
     }
     if fault == "source":
         value["component_commit"] = "0" * 40
+    elif fault == "old_source":
+        old = "e5bc7126a274e8e4cfd946c5c32c0ad83f042304"
+        value["component_commit"] = value["component"]["commit"] = old
     elif fault == "producer":
         value["runner"]["path"] = str(lane.ROOT / "runners/run_paper_anchor.py")
+    elif fault == "old_producer":
+        old_path = str(lane.ROOT / "runners/run_paper_seed_i.py")
+        value["runner"]["path"] = value["runner_path"] = old_path
+        value["implementation"][lane.PRODUCER]["path"] = old_path
     elif fault == "hash":
         value["runner"]["sha256"] = "0" * 64
     elif fault == "stage":
         value["fresh_seed_stage"]["kind"] = "stationary_bo_stage"
+    elif fault == "old_stage":
+        value["fresh_seed_stage"]["kind"] = "fresh_negative_seed"
+    elif fault == "policy":
+        value["seed_recovery_method"]["policy"]["total_update_cap"] = 161
+    elif fault == "api":
+        value["seed_recovery_method"]["api"]["callback_residual_assembly_performed"] = True
+    elif fault == "scope":
+        value["seed_recovery_method"]["scope"] = "all Bo polishes"
+    elif fault == "missing_method":
+        del value["seed_recovery_method"]
     if fault:
         with pytest.raises(ValueError):
             lane.check_parent_producer(value)

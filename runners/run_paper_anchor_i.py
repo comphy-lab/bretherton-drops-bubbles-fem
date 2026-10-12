@@ -25,15 +25,16 @@ if str(ROOT) not in sys.path:
 
 from runners import run_paper_anchor as anchor
 from runners import run_paper_seed_i as seed
+from runners import run_paper_seed_recovery as recovery
 
 model, runner, diagnostic, remesh = anchor.model, anchor.runner, anchor.diagnostic, anchor.remesh
 require, sha, write_json = diagnostic.require, diagnostic.sha, diagnostic.write_json
-PARENT_SOURCE = "e5bc7126a274e8e4cfd946c5c32c0ad83f042304"
+PARENT_SOURCE = "cc2dcfe644169f7c2a4ca8353f5743dc287afbd1"
 PARENT_CASE_SHA = "f9f0e44ff573c1c9cb37ad22d85b2ea3b5625e45dd0c64ddf854749708a9ae1d"
 PARENT_CA, TARGET_CA, MAX_CA_STEPS = -0.02, -0.0016, 8
 GATES = anchor.GATES
 ENTRYPOINT = "runners/run_paper_anchor_i.py"
-PRODUCER = "runners/run_paper_seed_i.py"
+PRODUCER = "runners/run_paper_seed_recovery.py"
 
 
 def transition_contract(parent, target):
@@ -90,16 +91,22 @@ def check_parent_producer(parent_manifest):
     record = parent_manifest.get("runner", {})
     implementation = parent_manifest.get("implementation", {}).get(PRODUCER, {})
     require(
-        Path(record.get("path", "")).name == "run_paper_seed_i.py"
+        Path(record.get("path", "")).name == "run_paper_seed_recovery.py"
         and record.get("path") == parent_manifest.get("runner_path") == implementation.get("path")
         and expected
         == record.get("sha256")
         == parent_manifest.get("runner_sha256")
         == implementation.get("sha256")
-        and parent_manifest.get("fresh_seed_stage") == {"kind": "fresh_negative_seed"}
+        and parent_manifest.get("fresh_seed_stage") == {"kind": "fresh_negative_seed_recovery"}
+        and parent_manifest.get("seed_recovery_method")
+        == {
+            "policy": recovery.POLICY,
+            "api": recovery.API,
+            "scope": "initial Bo=0 seed polish only; later methods unchanged",
+        }
         and parent_manifest.get("parent_state_used") is False
         and parent_manifest.get("azimuthal_stability") is True,
-        "parent producer or producer hash differs from the qualified fresh seed",
+        "parent producer, hash or recovery method differs from the reviewed fresh seed",
     )
 
 
@@ -154,7 +161,7 @@ def qualified_parent(parent_path, parent, restart):
         and all(value is True for value in summary["cold_load_checks"].values())
         and cold.get("verified") is True
         and cold.get("canonical_checks") == summary["cold_load_checks"]
-        and result.get("schema") == "private-fresh-negative-paper-seed-v1"
+        and result.get("schema") == "paper-seed-recovery-result-v1"
         and result.get("numerical_acceptance") is True
         and result.get("terminal", {}).get("explicit_force_remesh_calls") == 1
         and normalization.get("verified") is True
@@ -181,7 +188,8 @@ def preflight(args):
         (diagnostic, "runners/run_pressure_diagnostic.py"),
         (remesh, "runners/run_pressure_remesh.py"),
         (anchor, "runners/run_paper_anchor.py"),
-        (seed, PRODUCER),
+        (seed, "runners/run_paper_seed_i.py"),
+        (recovery, PRODUCER),
     )
     for module, relative in modules:
         require(
