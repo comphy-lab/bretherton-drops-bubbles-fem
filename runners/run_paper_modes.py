@@ -32,6 +32,7 @@ from runners import run_paper_anchor as anchor
 from runners import run_paper_anchor_i as anchor_i
 from runners import run_paper_anchor_i_prefix as anchor_i_prefix
 from runners import run_paper_case as runner
+from runners import run_paper_i_cold_target_qualify as cold_target_i
 from runners import run_paper_prefix_qualify as prefix_qualification
 from runners import run_paper_seed_requalify as requalification
 from runners import run_pressure_diagnostic as diagnostic
@@ -43,7 +44,7 @@ write_json = diagnostic.write_json
 MODES = (0, 1)
 SHIFTS = (-0.001, 0.001)
 NEIGEN = 8
-ANCHORS = {-0.0016: "I", -0.00315: "III"}
+ANCHORS = {-0.0016: "I", -0.002: "I", -0.00315: "III"}
 GLOBALS = ("globals/U", "gas_volume/pressure")
 EIGENDATA_FIELDS = (
     "_last_eigenvalues",
@@ -205,7 +206,18 @@ def qualified_parent(runtime, case, *, parent=None, restart=None):
         == {"Ca_in": case["physics"]["ca_in"], "Bo": case["physics"]["bond"]},
         "parent cold-load forcing differs",
     )
-    if case["physics"]["ca_in"] == anchor_i.TARGET_CA:
+    if (
+        parent is not None
+        and Path(parent["runner"]["path"]).name == Path(cold_target_i.ENTRYPOINT).name
+    ):
+        require(
+            restart is not None and case["physics"]["ca_in"] in cold_target_i.TARGETS.values(),
+            "exact I cold-target packet required",
+        )
+        records.extend(
+            cold_target_i.admit(runtime, case, parent, restart, summary, cold, files, completion)
+        )
+    elif case["physics"]["ca_in"] == anchor_i.TARGET_CA:
         require(parent is not None and restart is not None, "typed I parent and packet required")
         if is_prefix_i_producer(parent):
             records.extend(
@@ -991,6 +1003,16 @@ def source_contract(parent, component, *, metadata_reference=False, typed_i=Fals
         )
     implementation = {}
     prefix_i = is_prefix_i_producer(parent)
+    cold_i = Path(parent["runner"]["path"]).name == Path(cold_target_i.ENTRYPOINT).name
+    require(not cold_i or typed_i, "cold-target I producer requires the declared typed I request")
+    if cold_i:
+        identity = cold_target_i.stage_type(parent["lineage"]["type"]["index"])
+        require(
+            parent["lineage"]["type"] == identity
+            and parent["anchor_stage"] == {"kind": identity["kind"]}
+            and parent["qualification_schema"] == identity["schema"],
+            "cold-target I producer kind/schema differs",
+        )
     require(not prefix_i or typed_i, "prefix I producer requires the declared typed I request")
     if prefix_i:
         require(
@@ -999,7 +1021,9 @@ def source_contract(parent, component, *, metadata_reference=False, typed_i=Fals
             "prefix I producer kind/schema differs",
         )
     helpers = (
-        (*HELPERS, *PREFIX_I_HELPERS)
+        (*HELPERS, *PREFIX_I_HELPERS, cold_target_i.ENTRYPOINT)
+        if cold_i
+        else (*HELPERS, *PREFIX_I_HELPERS)
         if prefix_i
         else (*HELPERS, *I_HELPERS)
         if typed_i
@@ -1037,12 +1061,19 @@ def source_contract(parent, component, *, metadata_reference=False, typed_i=Fals
     producer = parent["runner"]
     producer_path = Path(producer["path"])
     if typed_i:
-        expected = "run_paper_anchor_i_prefix.py" if prefix_i else "run_paper_anchor_i.py"
+        expected = (
+            Path(cold_target_i.ENTRYPOINT).name
+            if cold_i
+            else "run_paper_anchor_i_prefix.py"
+            if prefix_i
+            else "run_paper_anchor_i.py"
+        )
         require(producer_path.name == expected, "unsupported typed I producer")
     require(
         producer_path.name
         in {"run_paper_anchor.py", "run_pressure_remesh.py", "run_paper_seed_i.py"}
-        or producer_path.name.startswith("run_paper_anchor_"),
+        or producer_path.name.startswith("run_paper_anchor_")
+        or cold_i,
         "unsupported parent producer",
     )
     producer_name = "runners/" + producer_path.name
@@ -1085,6 +1116,7 @@ def preflight(args):
         (anchor_i, anchor_i.ENTRYPOINT),
         (anchor_i_prefix, anchor_i_prefix.ENTRYPOINT),
         (prefix_qualification, prefix_qualification.ENTRYPOINT),
+        (cold_target_i, cold_target_i.ENTRYPOINT),
         (requalification, requalification.ENTRYPOINT),
         (requalification.cold, "runners/run_paper_cold_history.py"),
     ):
@@ -1096,6 +1128,11 @@ def preflight(args):
     parent = json.loads(parent_path.read_text())
     case = model.read_case(args.case)
     request = request_contract(case, args.shifts, args.neigen, metadata_only=args.check)
+    require(
+        case["physics"]["ca_in"] != -0.002
+        or Path(parent["runner"]["path"]).name == Path(cold_target_i.ENTRYPOINT).name,
+        "Ca=-0.002 requires the exact new cold-target I producer",
+    )
     require(
         sha(args.case) == parent["case_sha256"] and parent["case_id"] == case["case_id"],
         "parent belongs to a different case",
@@ -1901,9 +1938,10 @@ def compare_searches(first, second, mode):
 
 
 def parent_load_contract(prepared):
-    typed = prepared["case"]["physics"]["ca_in"] == anchor_i.TARGET_CA
+    selected = cold_target_i.ENTRYPOINT in prepared["implementation"]
+    typed = prepared["case"]["physics"]["ca_in"] == anchor_i.TARGET_CA or selected
     module = requalification.ENTRYPOINT if typed else "runners/run_paper_anchor.py"
-    return {
+    result = {
         "kind": "typed-I-stationary-descendant" if typed else "plain-anchor",
         "module": module,
         "callable": "restore_checked",
@@ -1911,12 +1949,21 @@ def parent_load_contract(prepared):
         "packet": prepared["restart"]["packet"],
         "payload_sha256": prepared["cold"]["loaded"]["serialized_state"]["payload_sha256"],
     }
+    if selected:
+        result.update(
+            kind="typed-I-cold-target-stationary-only",
+            qualification_type=prepared["cold"]["qualification_type"],
+            spatial_convergence_certificate=False,
+        )
+    return result
 
 
 def restore_parent(problem, prepared, output):
     case, restart, cold = prepared["case"], prepared["restart"], prepared["cold"]
     restore = anchor.restore_checked
-    if case["physics"]["ca_in"] == anchor_i.TARGET_CA:
+    if case["physics"]["ca_in"] == anchor_i.TARGET_CA or cold_target_i.ENTRYPOINT in prepared.get(
+        "implementation", {}
+    ):
         problem._seed_requalification_receipts_directory = output / "typed-loads"
         restore = requalification.restore_checked
     return restore(
