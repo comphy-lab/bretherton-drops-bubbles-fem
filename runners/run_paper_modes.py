@@ -819,8 +819,9 @@ def compare_normals(first, second, mode):
     }
 
 
-def returned_families(pairs):
+def returned_families(pairs, mode):
     """Retain every possible conjugate relation, without choosing a unique family."""
+    require(mode in MODES, "unsupported family sector")
     qualified = [p for p in pairs if p["physical_qualified"]]
     families = []
     for pair in qualified:
@@ -843,6 +844,11 @@ def returned_families(pairs):
                 "kind": "numerically_real" if real else "oscillatory",
                 "possible_conjugate_partners": partners,
                 "conjugate_complete_returned": real or bool(partners),
+                "conjugate_requirement_satisfied": mode == 1 or real or bool(partners),
+                "conjugate_requirement": "within-sector returned partner for oscillatory m=0"
+                if mode == 0
+                else "no within-sector conjugate requirement for m=+1",
+                "negative_sector": {"mode": -1, "searched": False, "conjugacy_verified": False},
                 "paper_growth": pair["paper_growth"],
                 "unique_identity_certified": False,
             }
@@ -905,7 +911,15 @@ def compare_searches(first, second, mode):
     complete_conjugates = all(
         any(
             f["representative"] == p["index"] and f["conjugate_complete_returned"]
-            for f in returned_families(physical[side])
+            for f in returned_families(physical[side], mode)
+        )
+        for side, group in enumerate(leaders)
+        for p in group
+    )
+    conjugate_requirement_satisfied = all(
+        any(
+            f["representative"] == p["index"] and f["conjugate_requirement_satisfied"]
+            for f in returned_families(physical[side], mode)
         )
         for side, group in enumerate(leaders)
         for p in group
@@ -922,8 +936,10 @@ def compare_searches(first, second, mode):
             for search, group in zip((first, second), leaders, strict=True)
         ],
         "unqualified_higher_or_unresolved_returns": unknown,
-        "matched_returned_envelope": eligible and not unknown and complete_conjugates,
+        "matched_returned_envelope": eligible and not unknown and conjugate_requirement_satisfied,
         "returned_envelope_conjugate_complete": complete_conjugates,
+        "conjugate_requirement_satisfied": conjugate_requirement_satisfied,
+        "negative_sector": {"mode": -1, "searched": False, "conjugacy_verified": False},
         "finite_spectrum_complete": False,
         "global_dominance_certified": False,
         "unique_family_identity_certified": False,
@@ -1058,7 +1074,7 @@ def spectral_stage(prepared, output, mode, shift):
             "mode": mode,
             "shift": shift,
             "pairs": pairs,
-            "families": returned_families(pairs),
+            "families": returned_families(pairs, mode),
             "support": support,
             "pencil_origin": "matrices returned by the actual Spectra.solve call",
             "base_restoration_verified": True,
@@ -1200,7 +1216,6 @@ def execute(prepared, output):
         if result["numerical_acceptance"]
         else "inconclusive_returned_envelopes"
     )
-    result["plot"] = plot_returned(all_searches, prepared["case"], output)
     write_json(output / "result.json", result)
     write_json(
         output / "summary.json",
@@ -1214,6 +1229,39 @@ def execute(prepared, output):
             "scope": SCOPE,
         },
     )
+    scientific_files = [regular_record(output / name) for name in ("result.json", "summary.json")]
+    try:
+        plot = {
+            "schema": "paper-returned-modes-plot-v1",
+            "status": "complete",
+            "scientific_results": scientific_files,
+            **plot_returned(all_searches, prepared["case"], output),
+        }
+    except Exception as error:  # noqa: BLE001 - renderer failures cannot erase completed searches
+        plot = {
+            "schema": "paper-returned-modes-plot-v1",
+            "status": "failed",
+            "error_type": type(error).__name__,
+            "error": str(error),
+            "scientific_results": scientific_files,
+            "scientific_results_preserved": True,
+            "native_replay_required": False,
+        }
+        runner.append_progress(
+            output,
+            {
+                "event": "plot-failed",
+                "error_type": plot["error_type"],
+                "error": plot["error"],
+                "scientific_results_preserved": True,
+            },
+        )
+        print(
+            f"Plot failed; scientific results retained: {type(error).__name__}: {error}",
+            file=sys.stderr,
+        )
+    require(diagnostic.parents_unchanged(scientific_files), "plotting changed scientific results")
+    write_json(output / "plot-receipt.json", plot)
     return result
 
 

@@ -395,6 +395,75 @@ def test_phase_invariance_preserves_complex_families_and_unqualified_competitors
         modes.compare_normals(first, wrong, 0)
 
 
+@pytest.mark.parametrize("mode,accepted", [(0, False), (1, True)])
+def test_oscillatory_conjugate_requirement_is_sector_specific(mode, accepted):
+    normal = normal_fixture([0j, 1 + 2j, 0j])
+    left = {"shift": -0.001, "pairs": [pair(0, -2 + 3j, normal)]}
+    right = {"shift": 0.001, "pairs": [pair(0, -2 + 3j, normal)]}
+    result = modes.compare_searches(left, right, mode)
+    assert result["matched_returned_envelope"] is accepted
+    assert result["conjugate_requirement_satisfied"] is accepted
+    assert result["returned_envelope_conjugate_complete"] is False
+    family = modes.returned_families(left["pairs"], mode)[0]
+    assert family["possible_conjugate_partners"] == []
+    assert family["conjugate_requirement_satisfied"] is accepted
+    assert family["negative_sector"] == {"mode": -1, "searched": False, "conjugacy_verified": False}
+    assert not result["global_dominance_certified"]
+    # An actual returned opposite-frequency candidate is retained even in the complex +1 sector.
+    both = [*left["pairs"], pair(1, -2 - 3j, normal)]
+    assert modes.returned_families(both, mode)[0]["possible_conjugate_partners"] == [1]
+
+
+def test_plot_failure_preserves_four_completed_searches_and_scientific_results(
+    tmp_path, case, monkeypatch, capsys
+):
+    normal = normal_fixture([0j, 1 + 2j, 0j])
+    searches = []
+
+    def search(prepared, output, mode, shift):
+        searches.append((mode, shift))
+        output.mkdir()
+        stage = {
+            "mode": mode,
+            "shift": shift,
+            "pairs": [pair(0, -2 + (3j if mode else 0j), normal)],
+            "software_fixture": True,
+        }
+        modes.write_json(output / "status.json", stage)
+        return stage
+
+    recorded = {}
+
+    def broken_plot(searches, case, output):
+        assert all(
+            (output / f"m{mode}-shift-{index}" / "status.json").is_file()
+            for mode in modes.MODES
+            for index in range(2)
+        )
+        for name in ("result.json", "summary.json"):
+            recorded[name] = (output / name).read_bytes()
+        raise RuntimeError("software rendering failure")
+
+    monkeypatch.setattr(modes, "spectral_stage", search)
+    monkeypatch.setattr(modes, "plot_returned", broken_plot)
+    prepared = {"case": case, "request": modes.request_contract(case, modes.SHIFTS, 8)}
+    modes.runner.append_progress(tmp_path, {"event": "software-prepared"}, first=True)
+    result = modes.execute(prepared, tmp_path)
+    assert searches == [(mode, shift) for mode in modes.MODES for shift in modes.SHIFTS]
+    assert result["numerical_acceptance"] is True
+    assert result["scientific_status"] == "qualified_returned_envelopes_at_one_anchor"
+    for name, before in recorded.items():
+        assert (tmp_path / name).read_bytes() == before
+        assert json.loads(before)["numerical_acceptance"] is True
+    receipt = json.loads((tmp_path / "plot-receipt.json").read_text())
+    assert receipt["status"] == "failed"
+    assert receipt["error"] == "software rendering failure"
+    assert receipt["scientific_results_preserved"] is True
+    assert receipt["native_replay_required"] is False
+    assert "Plot failed; scientific results retained" in capsys.readouterr().err
+    assert "plot-failed" in (tmp_path / "progress.jsonl").read_text()
+
+
 def test_complex_m0_comparison_uses_real_two_dimensional_span():
     def normal(values):
         weights = np.array([0.0, 1.0, 1.0, 1.0, 0.0])
