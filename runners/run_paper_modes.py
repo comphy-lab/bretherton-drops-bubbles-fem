@@ -10,9 +10,11 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import io
 import json
 import math
 import os
+import struct
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
@@ -36,6 +38,12 @@ SHIFTS = (-0.001, 0.001)
 NEIGEN = 8
 ANCHORS = {-0.0016: "I", -0.00315: "III"}
 GLOBALS = ("globals/U", "gas_volume/pressure")
+EIGENDATA_FIELDS = (
+    "_last_eigenvalues",
+    "_last_eigenvectors",
+    "_last_eigenvalues_m",
+    "_last_eigenvalues_k",
+)
 HELPERS = (
     "runners/run_pressure_diagnostic.py",
     "runners/run_pressure_remesh.py",
@@ -57,6 +65,8 @@ API = {
     "spectra_pencils": "pyoomph/solvers/spectra.py:231,309,413",
     "normal_mode_numbering": "pyoomph/generic/problem.py:8632-8704",
     "full_snapshot_restore": "pyoomph/generic/problem.py:10769-10813",
+    "full_eigen_snapshot_stream": "pyoomph/generic/problem.py:10442-10508",
+    "cached_eigendata": "pyoomph/generic/problem.py:1142-1145,6343-6360",
     "official_field_incidence": "pyoomph/solvers/generic.py:EigenMatrixManipulatorBase",
     "kinematic_mass": "pyoomph/equations/navier_stokes.py:811-818",
     "gas_volume_constraint": "pyoomph/equations/ALE.py:596-614",
@@ -398,7 +408,105 @@ def array_record(value):
     }
 
 
-def take_state(problem):
+def full_mode_snapshot_signature(
+    snapshot, *, mesh_reference_base, mode, bc_marker, mesh_authority=None
+):
+    """Bind the whole 0.1.6 stream, including all eigen/continuation/history bytes.
+
+    Only length-prefixed mesh-reference strings are replaced by their admitted
+    content identities. Compression flags and every other header/body/trailer
+    byte, including the serialized BC label, remain unchanged and hashed.
+    Parent meshes outside CWD require the exact restart path/hash authority.
+    """
+    require(isinstance(snapshot, bytes), "full memory snapshot bytes required")
+    require(not isinstance(mode, bool) and mode in MODES, "unsupported snapshot mode")
+    require(
+        bc_marker in {"init", "stationary", "transient", "eigen"}, "unknown native BC cache marker"
+    )
+    base = Path(mesh_reference_base).resolve(strict=True)
+    require(base.is_dir(), "snapshot mesh base must be a directory")
+    authority = {}
+    if mesh_authority is not None:
+        require(
+            isinstance(mesh_authority, (list, tuple)) and mesh_authority, "empty mesh authority"
+        )
+        for record in mesh_authority:
+            verified = regular_record(record["path"])
+            require(verified["sha256"] == record["sha256"], "snapshot mesh authority bytes changed")
+            authority[verified["path"]] = verified["sha256"]
+    parts, cursor, identities = [], 0, []
+    entries = runner._state_mesh_entries(io.BytesIO(snapshot))
+    require(entries, "mode snapshot lacks referenced meshes")
+    for start, end, reference in entries:
+        path = base / reference
+        verified = regular_record(path)
+        resolved = Path(verified["path"])
+        if mesh_authority is None:
+            require(resolved.is_relative_to(base), "snapshot mesh reference escaped its base")
+        else:
+            require(
+                authority.get(verified["path"]) == verified["sha256"],
+                "snapshot mesh reference escaped its bound authority",
+            )
+        identity = ("sha256:" + verified["sha256"]).encode("ascii")
+        parts.extend((snapshot[cursor:start], struct.pack("<q", len(identity)), identity))
+        cursor = end
+        identities.append(verified["sha256"])
+    parts.append(snapshot[cursor:])  # includes full eigen/continuation blocks and the intact footer
+    normalised = b"".join(parts)
+    return {
+        "schema": "pyoomph-full-mode-snapshot-v1",
+        "native_format": "0.1.6/global",
+        "mode": mode,
+        "bc_cache_marker": bc_marker,
+        "full_stream_sha256": hashlib.sha256(normalised).hexdigest(),
+        "normalised_byte_count": len(normalised),
+        "mesh_content_sha256": identities,
+        "scope": "complete serialized history/eigen/BC/continuation stream; only admitted mesh names normalised",
+    }
+
+
+def copy_eigendata(problem):
+    """Copy serialized values/vectors/m labels and the separately retained k cache."""
+    import numpy as np
+
+    result = {}
+    for name in EIGENDATA_FIELDS:
+        value = getattr(problem, name)
+        require(
+            value is None or isinstance(value, np.ndarray), "unsupported native eigen cache type"
+        )
+        if value is not None:
+            require(np.isfinite(value).all(), "nonfinite native eigen cache")
+        result[name] = None if value is None else value.copy()
+    return result
+
+
+def eigendata_signature(data):
+    require(set(data) == set(EIGENDATA_FIELDS), "incomplete saved eigen cache")
+    return {
+        name: None if data[name] is None else array_record(data[name]) for name in EIGENDATA_FIELDS
+    }
+
+
+def restore_eigendata(problem, saved):
+    """Restore exactly the captured cache, including a genuinely empty pre-solve state.
+
+    At a186 the loader reads nonzero eigen blocks but leaves existing arrays
+    intact for a zero-count block. The pinned solver assigns all four caches;
+    its snapshot writer serializes values/vectors/m labels and omits k, which
+    is captured and restored separately here.
+    """
+    eigendata_signature(saved)
+    for name, value in saved.items():
+        setattr(problem, name, None if value is None else value.copy())
+    require(
+        eigendata_signature(copy_eigendata(problem)) == eigendata_signature(saved),
+        "saved eigen cache did not restore exactly",
+    )
+
+
+def take_state(problem, *, mesh_authority=None):
     """Capture mode-aware fields, actual pins and the complete native history stream."""
     import numpy as np
 
@@ -414,6 +522,7 @@ def take_state(problem):
     finally:
         problem.eigen_data_in_states = setting
     require(isinstance(payload, bytes), "full memory snapshot required")
+    eigendata = copy_eigendata(problem)
     types, names = problem.get_dof_description()
     arrays = {
         "free_values": np.asarray(problem.get_current_dofs()[0]).copy(),
@@ -428,9 +537,14 @@ def take_state(problem):
         "arrays": {key: array_record(value) for key, value in arrays.items()},
         "dof_names": names,
         "actual_pins": diagnostic.actual_pins(problem),
-        "serialized_state": runner.snapshot_bc_cache_signature(
-            payload, mesh_reference_base=Path.cwd()
+        "serialized_state": full_mode_snapshot_signature(
+            payload,
+            mesh_reference_base=Path.cwd(),
+            mode=int(problem._azimuthal_mode_param_m.value),
+            bc_marker=problem._last_bc_setting,
+            mesh_authority=mesh_authority,
         ),
+        "last_eigendata": eigendata_signature(eigendata),
         "parameters": {
             name: float(problem.get_global_parameter(name).value) for name in ("Ca_in", "Bo")
         },
@@ -443,7 +557,15 @@ def take_state(problem):
         "flags": flags,
         "eigen_data_in_states": setting,
     }
-    return {"signature": signature, "payload": payload, "arrays": arrays, "names": names}
+    return {
+        "signature": signature,
+        "payload": payload,
+        "arrays": arrays,
+        "names": names,
+        "eigendata": eigendata,
+        "mesh_authority": mesh_authority,
+        "raw_snapshot_sha256": hashlib.sha256(payload).hexdigest(),
+    }
 
 
 def restore_state(problem, saved):
@@ -457,6 +579,7 @@ def restore_state(problem, saved):
             problem.actions_before_eigen_solve(force_reassign_eqs=True)
         problem.eigen_data_in_states = True
         problem._restore_state(saved["payload"])
+        restore_eigendata(problem, saved["eigendata"])
         problem._azimuthal_mode_param_m.value = signature["mode"]
         for name, value in signature["flags"].items():
             setattr(problem, name, value)
@@ -465,7 +588,11 @@ def restore_state(problem, saved):
             stepper.make_steady() if was_steady else stepper.undo_make_steady()
         problem.eigen_data_in_states = signature["eigen_data_in_states"]
         problem.invalidate_cached_mesh_data()
-        after = take_state(problem)
+        after = (
+            take_state(problem)
+            if saved.get("mesh_authority") is None
+            else take_state(problem, mesh_authority=saved["mesh_authority"])
+        )
         if after["signature"] != signature:
             raise RestorationFailure("complete state/pins/layout/forcing/history did not restore")
         return {"verified": True, "before": signature, "after": after["signature"]}
@@ -481,9 +608,15 @@ def save_state_receipt(directory, name, saved):
     diagnostic.atomic(directory / (name + ".dump"), saved["payload"])
     with (directory / (name + ".npz")).open("xb") as stream:
         np.savez_compressed(
-            stream, **saved["arrays"], dof_names=np.asarray(saved["names"], dtype=str)
+            stream,
+            **saved["arrays"],
+            dof_names=np.asarray(saved["names"], dtype=str),
+            **{name: value for name, value in saved["eigendata"].items() if value is not None},
         )
-    write_json(directory / (name + ".json"), saved["signature"])
+    write_json(
+        directory / (name + ".json"),
+        {**saved["signature"], "raw_snapshot_sha256": saved["raw_snapshot_sha256"]},
+    )
 
 
 def validate_layout(types, names, incidence, forced, selectors, n, mode):
@@ -712,10 +845,14 @@ def geometry(points):
     return np.r_[0.0, np.cumsum(ds)], normals, weights
 
 
-def normal_samples(problem, vector, mode):
+def normal_samples(problem, vector, mode, *, mesh_authority=None):
     import numpy as np
 
-    saved = take_state(problem)
+    saved = (
+        take_state(problem)
+        if mesh_authority is None
+        else take_state(problem, mesh_authority=mesh_authority)
+    )
     base = saved["arrays"]["interface"]
     epsilon = LIMITS["epsilon"]
     motions = []
@@ -973,7 +1110,8 @@ def spectral_stage(prepared, output, mode, shift):
         require(
             all(remesh.canonical_checks(case, metrics).values()), "cold-loaded base gates failed"
         )
-        base = take_state(problem)
+        mesh_authority = prepared["restart"]["meshes"]
+        base = take_state(problem, mesh_authority=mesh_authority)
         save_state_receipt(output, "base-before", base)
         write_json(output / "parent-load.json", loaded)
         problem._azimuthal_mode_param_m.value = mode
@@ -1043,7 +1181,7 @@ def spectral_stage(prepared, output, mode, shift):
             output / "layout.json",
             {k: v.tolist() if isinstance(v, np.ndarray) else v for k, v in layout.items()},
         )
-        mode_state = take_state(problem)
+        mode_state = take_state(problem, mesh_authority=mesh_authority)
         save_state_receipt(output, "mode-state", mode_state)
         pairs = []
         try:
@@ -1054,7 +1192,9 @@ def spectral_stage(prepared, output, mode, shift):
                 record.update(index=index, mode=mode, physical_qualified=False)
                 if record["pencil_qualified"]:
                     try:
-                        normal = normal_samples(problem, vector, mode)
+                        normal = normal_samples(
+                            problem, vector, mode, mesh_authority=mesh_authority
+                        )
                         record.update(
                             normal=normal,
                             geometric_normal_action=normal["raw_normal_surface_l2"],
@@ -1069,7 +1209,9 @@ def spectral_stage(prepared, output, mode, shift):
         finally:
             restored = restore_state(problem, base)
             write_json(output / "base-restoration.json", restored)
-            save_state_receipt(output, "base-after", take_state(problem))
+            save_state_receipt(
+                output, "base-after", take_state(problem, mesh_authority=mesh_authority)
+            )
         stage = {
             "mode": mode,
             "shift": shift,

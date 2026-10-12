@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import io
 import json
+import struct
 import subprocess
 import sys
+import zlib
 from types import SimpleNamespace
 
 import numpy as np
@@ -331,7 +334,11 @@ def test_full_restoration_mismatch_is_fatal(monkeypatch):
         "eigen_data_in_states": True,
         "actual_pins": {"sha256": "before"},
     }
-    saved = {"signature": expected, "payload": b"software"}
+    saved = {
+        "signature": expected,
+        "payload": b"software",
+        "eigendata": {name: None for name in modes.EIGENDATA_FIELDS},
+    }
     problem = SimpleNamespace(
         _azimuthal_mode_param_m=SimpleNamespace(value=1),
         actions_before_eigen_solve=lambda **kwargs: None,
@@ -507,3 +514,199 @@ def test_manifest_binds_own_entrypoint_not_an_imported_helper(case):
     assert actual["runner"] == own
     assert actual["argv"][1] == own["path"]
     assert actual["qualification_scope"] == modes.SCOPE
+
+
+def mode_stream(
+    reference,
+    marker="init",
+    pairs=0,
+    *,
+    history=b"synthetic-history-A",
+    eigen_values=None,
+    vectors=None,
+    labels=None,
+):
+    """Real pinned header/eigen-block framing around synthetic software-only fields."""
+
+    def integer(value):
+        return struct.pack("<q", value)
+
+    def string(value):
+        return integer(len(value)) + value.encode("ascii")
+
+    def array(value):
+        data = io.BytesIO()
+        np.save(data, value, allow_pickle=False)
+        compressed = zlib.compress(data.getvalue(), 6)
+        return integer(len(compressed)) + compressed
+
+    head = (
+        string("pyoomph_dump")
+        + string("0.1.6")
+        + string("global")
+        + struct.pack("<d", 8.0)
+        + integer(9)
+        + integer(0)
+        + integer(6)
+        + integer(1)
+        + string(reference)
+        + integer(1)
+        + integer(2)
+    )
+    body = history + integer(1) + string(marker) + integer(pairs)
+    if pairs:
+        body += array(np.arange(pairs, dtype=complex) if eigen_values is None else eigen_values)
+        body += array(np.ones((pairs, 2), dtype=complex) if vectors is None else vectors)
+        body += integer(1) + array(np.zeros(pairs, dtype=np.int32) if labels is None else labels)
+    return head + body + integer(0) + string("EOF_pyoomph")
+
+
+@pytest.mark.parametrize("marker", ["init", "stationary", "transient", "eigen"])
+@pytest.mark.parametrize("pairs", [0, 8])
+def test_full_mode_stream_covers_zero_and_eight_pair_payloads(tmp_path, marker, pairs):
+    mesh = tmp_path / "mesh.msh"
+    mesh.write_bytes(b"synthetic-mesh-only")
+    stream = mode_stream("mesh.msh", marker, pairs)
+    signature = modes.full_mode_snapshot_signature(
+        stream, mesh_reference_base=tmp_path, mode=0, bc_marker=marker
+    )
+    assert signature["schema"] == "pyoomph-full-mode-snapshot-v1"
+    assert signature["bc_cache_marker"] == marker
+    assert signature["mesh_content_sha256"] == [modes.sha(mesh)]
+    history_changed = stream.replace(b"synthetic-history-A", b"synthetic-history-B")
+    assert (
+        modes.full_mode_snapshot_signature(
+            history_changed, mesh_reference_base=tmp_path, mode=0, bc_marker=marker
+        )["full_stream_sha256"]
+        != signature["full_stream_sha256"]
+    )
+    if pairs:
+        changed = mode_stream(
+            "mesh.msh", marker, pairs, eigen_values=np.arange(pairs, dtype=complex) + 0.5j
+        )
+        assert (
+            modes.full_mode_snapshot_signature(
+                changed, mesh_reference_base=tmp_path, mode=0, bc_marker=marker
+            )["full_stream_sha256"]
+            != signature["full_stream_sha256"]
+        )
+        with pytest.raises(ValueError, match="zero eigen/continuation"):
+            modes.runner.snapshot_bc_cache_signature(stream, mesh_reference_base=tmp_path)
+    elif marker != "eigen":
+        assert (
+            modes.runner.snapshot_bc_cache_signature(stream, mesh_reference_base=tmp_path)[
+                "bc_cache_marker"
+            ]
+            == marker
+        )
+
+
+def test_reference_normalization_preserves_full_stream_and_requires_escape_authority(tmp_path):
+    base = tmp_path / "cwd"
+    base.mkdir()
+    mesh = base / "mesh.msh"
+    mesh.write_bytes(b"synthetic-mesh")
+
+    def signature(reference, authority=None):
+        return modes.full_mode_snapshot_signature(
+            mode_stream(reference, "eigen", 8),
+            mesh_reference_base=base,
+            mode=1,
+            bc_marker="eigen",
+            mesh_authority=authority,
+        )
+
+    assert signature("mesh.msh") == signature(str(mesh))
+    external = tmp_path / "outside.msh"
+    external.write_bytes(b"bound-parent-mesh")
+    with pytest.raises(ValueError, match="escaped"):
+        signature("../outside.msh")
+    authority = [{"path": str(external), "sha256": modes.sha(external)}]
+    assert signature("../outside.msh", authority) == signature(str(external), authority)
+    with pytest.raises(ValueError, match="authority"):
+        signature("mesh.msh", authority)
+    with pytest.raises(ValueError, match="footer"):
+        modes.full_mode_snapshot_signature(
+            mode_stream("mesh.msh")[:-1], mesh_reference_base=base, mode=0, bc_marker="init"
+        )
+    with pytest.raises(ValueError, match="regular"):
+        signature("missing.msh")
+    alias = base / "alias.msh"
+    alias.symlink_to(mesh)
+    with pytest.raises(ValueError, match="regular"):
+        signature("alias.msh")
+
+
+@pytest.mark.parametrize("pairs", [0, 8])
+def test_known_zero_or_eight_pair_cache_and_full_state_restore_exactly(
+    tmp_path, monkeypatch, pairs
+):
+    mesh = tmp_path / "mesh.msh"
+    mesh.write_bytes(b"synthetic-mesh")
+    monkeypatch.chdir(tmp_path)
+    physical = {"values": np.array([1.0, 2.0])}
+    saved_payloads = {}
+    problem = SimpleNamespace(
+        eigen_data_in_states=False,
+        _first_step=False,
+        _taken_already_an_unsteady_step=True,
+        _last_step_was_stationary=True,
+        _last_bc_setting="eigen" if pairs else "init",
+        _azimuthal_mode_param_m=SimpleNamespace(value=1 if pairs else 0),
+        _last_eigenvalues=np.arange(pairs, dtype=np.complex128),
+        _last_eigenvectors=np.ones((pairs, 2), dtype=np.complex128)
+        if pairs
+        else np.array([], dtype=np.complex128),
+        _last_eigenvalues_m=np.ones(pairs, dtype=np.int32) if pairs else None,
+        _last_eigenvalues_k=None,
+        ntime_stepper=lambda: 0,
+        get_dof_description=lambda: (np.array([0, 1]), ["field/a", "field/b"]),
+        get_current_dofs=lambda: (physical["values"].copy(), np.array([False, True])),
+        get_current_pinned_values=lambda positions: np.array([0.0]),
+        interface_polyline=lambda: (np.array([0.0, 1.0]), np.array([0.0, 0.5])),
+        get_global_parameter=lambda name: SimpleNamespace(value=1.56 if name == "Bo" else -0.00315),
+        observable=lambda *args: 4.0,
+        frame_speed=lambda: 0.02,
+        get_current_time=lambda **kwargs: 8.0,
+        invalidate_cached_mesh_data=lambda: None,
+        actions_before_stationary_solve=lambda **kwargs: None,
+        actions_before_eigen_solve=lambda **kwargs: None,
+    )
+
+    def snapshot():
+        count = len(problem._last_eigenvalues)
+        stream = mode_stream(
+            "mesh.msh",
+            problem._last_bc_setting,
+            count,
+            history=physical["values"].tobytes(),
+            eigen_values=problem._last_eigenvalues,
+            vectors=problem._last_eigenvectors,
+            labels=problem._last_eigenvalues_m,
+        )
+        saved_payloads[stream] = (physical["values"].copy(), problem._last_bc_setting)
+        return stream
+
+    def load(stream):
+        # Mirrors the relevant pinned zero-count loader behaviour: cache remains stale.
+        physical["values"], problem._last_bc_setting = saved_payloads[stream]
+
+    problem._snapshot_state = snapshot
+    problem._restore_state = load
+    monkeypatch.setattr(
+        modes.diagnostic, "actual_pins", lambda problem: {"sha256": "unchanged-pins"}
+    )
+    saved = modes.take_state(problem)
+    assert saved["signature"]["last_eigendata"]["_last_eigenvalues"]["shape"] == [pairs]
+    original_cache_signature = modes.eigendata_signature(saved["eigendata"])
+    problem._last_eigenvalues = np.full(8, 99 + 2j, dtype=np.complex128)
+    problem._last_eigenvectors = np.full((8, 2), -3 + 7j, dtype=np.complex128)
+    problem._last_eigenvalues_m = np.full(8, 7, dtype=np.int32)
+    physical["values"] += 5
+    assert modes.eigendata_signature(modes.copy_eigendata(problem)) != original_cache_signature
+    receipt = modes.restore_state(problem, saved)
+    assert receipt["verified"] is True
+    assert modes.eigendata_signature(modes.copy_eigendata(problem)) == original_cache_signature
+    assert np.array_equal(physical["values"], [1.0, 2.0])
+    problem._last_eigenvalues_k = np.array([], dtype=np.float64)
+    assert modes.take_state(problem)["signature"] != saved["signature"]
