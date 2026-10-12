@@ -194,8 +194,12 @@ def test_actual_anchor_summary_can_omit_only_redundant_bond(tmp_path, case, faul
             modes.qualified_parent(tmp_path, case)
 
 
-@pytest.mark.parametrize("fault", [None, "producer_hash", "ancestor"])
-def test_seed_i_producer_requires_committed_hash_and_ancestor(monkeypatch, fault):
+@pytest.mark.parametrize("typed_i", [False, True])
+@pytest.mark.parametrize(
+    "fault",
+    [None, "producer_hash", "producer_name", "ancestor", "helper", "helper_declaration", "method"],
+)
+def test_seed_i_producer_requires_committed_hash_and_ancestor(monkeypatch, fault, typed_i):
     old_commit, current_commit = "a" * 40, "b" * 40
     sources = {}
     for name in modes.runner.METHOD_FILES:
@@ -218,9 +222,28 @@ def test_seed_i_producer_requires_committed_hash_and_ancestor(monkeypatch, fault
         "runner_path": "/software/parent/runners/run_paper_seed_i.py",
         "runner_sha256": producer_hash,
     }
+    if typed_i:
+        path = "/software/parent/runners/run_paper_anchor_i.py"
+        producer_hash = modes.sha(modes.ROOT / modes.anchor_i.ENTRYPOINT)
+        parent.update(
+            runner={"path": path, "sha256": producer_hash},
+            runner_path=path,
+            runner_sha256=producer_hash,
+        )
+        parent["implementation"] = {
+            name: {"path": "/software/parent/" + name, "sha256": modes.sha(modes.ROOT / name)}
+            for name in (*modes.HELPERS, *modes.I_HELPERS)
+        }
     if fault == "producer_hash":
         parent["runner"]["sha256"] = "wrong-producer"
         parent["runner_sha256"] = "wrong-producer"
+    elif fault == "producer_name":
+        parent["runner"]["path"] = parent["runner_path"] = "/software/parent/runners/unknown.py"
+    elif fault == "helper_declaration":
+        parent.setdefault("implementation", {})[modes.HELPERS[0]] = {
+            "path": "/software/parent/" + modes.HELPERS[0],
+            "sha256": "mutated-helper",
+        }
     ancestor_calls = []
 
     def git(root, *args):
@@ -231,19 +254,26 @@ def test_seed_i_producer_requires_committed_hash_and_ancestor(monkeypatch, fault
             return b""
         assert args[0] == "show"
         name = args[1].split(":", 1)[1]
-        if name == "runners/run_paper_seed_i.py":
+        if args[1].startswith(old_commit + ":") and (
+            fault == "helper"
+            and name == modes.HELPERS[0]
+            or fault == "method"
+            and name == modes.runner.METHOD_FILES[0]
+        ):
+            return b"mutated frozen source"
+        if name == "runners/run_paper_seed_i.py" and not typed_i:
             return producer_bytes
         return (modes.ROOT / name).read_bytes()
 
     monkeypatch.setattr(modes.diagnostic, "git", git)
     monkeypatch.setattr(modes.runner, "_git", git)
     if fault is None:
-        implementation = modes.source_contract(parent, current)
+        implementation = modes.source_contract(parent, current, typed_i=typed_i)
         assert "runners/run_paper_modes.py" in implementation
         assert ancestor_calls == [("merge-base", "--is-ancestor", old_commit, current_commit)]
     else:
         with pytest.raises(ValueError):
-            modes.source_contract(parent, current)
+            modes.source_contract(parent, current, typed_i=typed_i)
 
 
 def layout_fixture(mode):
@@ -503,17 +533,315 @@ def test_manifest_binds_own_entrypoint_not_an_imported_helper(case):
     own = {"path": str(modes.ROOT / "runners/run_paper_modes.py"), "sha256": "own"}
     prepared = {
         "case": case,
-        "implementation": {"runners/run_paper_modes.py": own},
+        "implementation": {
+            "runners/run_paper_modes.py": own,
+            "runners/run_paper_anchor.py": {"sha256": "plain-helper"},
+        },
         "component": {"commit": "source"},
         "environment": {},
         "request": {},
-        "restart": {},
+        "restart": {"packet": {"sha256": "packet"}},
+        "cold": {"loaded": {"serialized_state": {"payload_sha256": "history"}}},
     }
     path = modes.ROOT / "validation/herradaEtAl_paper_model/cases/h15-bo1p56.json"
     actual = modes.manifest(SimpleNamespace(case=path), prepared, ["--check"])
     assert actual["runner"] == own
     assert actual["argv"][1] == own["path"]
     assert actual["qualification_scope"] == modes.SCOPE
+
+
+@pytest.mark.parametrize("branch", ["I", "III"])
+def test_cold_dispatch_uses_exact_helper_and_full_history(monkeypatch, tmp_path, case, branch):
+    if branch == "I":
+        case["physics"]["ca_in"] = modes.anchor_i.TARGET_CA
+    problem = SimpleNamespace()
+    cold = {
+        "actual_pins": {"pin": True},
+        "loaded": {"serialized_state": {"payload_sha256": "all-history"}},
+    }
+    prepared = {"case": case, "restart": {"packet": "exact-packet"}, "cold": cold}
+    calls = []
+
+    def typed(*args):
+        calls.append(("I", args))
+        return {"verified": True, "bc_preparation": {"verified": True}}
+
+    def plain(*args):
+        calls.append(("III", args))
+        return {"verified": True}
+
+    monkeypatch.setattr(modes.anchor, "restore_checked", plain)
+    monkeypatch.setattr(modes.requalification, "restore_checked", typed)
+    assert modes.restore_parent(problem, prepared, tmp_path)["verified"]
+    assert calls == [
+        (branch, (problem, case, prepared["restart"], cold["actual_pins"], "all-history"))
+    ]
+    if branch == "I":
+        assert problem._seed_requalification_receipts_directory == tmp_path / "typed-loads"
+    else:
+        assert not vars(problem)
+
+
+@pytest.fixture
+def typed_i_bundle(tmp_path, case, monkeypatch):
+    case["physics"]["ca_in"] = modes.anchor_i.TARGET_CA
+    case["solve"]["relax_time"] = 8.0
+    summary, cold = qualified_files(tmp_path, case)
+    summary.update(
+        status="completed",
+        checkpoint="packet.json",
+        branch_identity_verified=False,
+        eigenanalysis_performed=False,
+    )
+    mesh = tmp_path / "mesh.msh"
+    mesh.write_bytes(b"software mesh")
+
+    def integer(value):
+        return struct.pack("<q", value)
+
+    def string(value):
+        return integer(len(value)) + value.encode("ascii")
+
+    state = tmp_path / "state.dump"
+    state.write_bytes(
+        string("pyoomph_dump")
+        + string("0.1.6")
+        + string("global")
+        + struct.pack("<dqqqq", 8.0, 9, 0, 6, 1)
+        + string("mesh.msh")
+        + integer(0)
+        + integer(2)
+        + struct.pack("<ddqdd", 0.1, 0.2, 20, 0.125, 8.0)
+        + b"all opaque fields and histories"
+        + modes.runner._bc_cache_trailer("stationary")
+    )
+    packet = tmp_path / "packet.json"
+    packet.write_text("{}")
+    restart = {
+        "packet": modes.regular_record(packet),
+        "state": modes.regular_record(state),
+        "meshes": [modes.regular_record(mesh)],
+        "mesh_reference_base": str(tmp_path),
+        "stage": {"bc_mode": "stationary"},
+    }
+    history = modes.runner.snapshot_bc_cache_signature(
+        state.read_bytes(), mesh_reference_base=tmp_path
+    )
+    cold["loaded"].update(
+        serialized_state=history,
+        bc_cache_marker="stationary",
+        layout={"n": 2},
+        arrays={"all": "fields"},
+        volume=4.0,
+        frame_speed=0.01,
+        time=8.0,
+    )
+    restart["roundtrip"] = {"after": copy.deepcopy(cold["loaded"]), "layout": {"n": 2}}
+    metadata = modes.requalification.cold.serialized_metadata(state.read_bytes())
+    cold.update(
+        bc_preparation={"verified": True},
+        intervention={
+            "verified": True,
+            "kind": "typed-native-endtime-restoration",
+            "saved_endtime": 8.0,
+            "api": modes.requalification.cold.API,
+        },
+        time_history={
+            key: metadata[key] for key in ("time", "dts", "unsteady_steps", "suggested_next_dt")
+        },
+    )
+    seed = {
+        key: {"path": str(tmp_path / "qualified-seed" / name), "sha256": "seed-hash"}
+        for key, name in (
+            ("parent_manifest", "run-manifest.json"),
+            ("packet", "packet.json"),
+            ("state", "state.dump"),
+        )
+    }
+    contract = {
+        "parent_case": {"path": "seed-case", "sha256": "case"},
+        "ca_ladder": {"path": str(tmp_path / "ladder.json")},
+    }
+    admitted = {
+        "restart": copy.deepcopy(seed),
+        "target": copy.deepcopy(case),
+        "contract": copy.deepcopy(contract),
+        "records": [{"path": "original-failed-producer", "sha256": "original-hash"}],
+    }
+    seed["compatibility"] = {
+        "parent_commit": "seed-source",
+        "current_commit": "I-source",
+        "physics_ast_sha256": "same-physics",
+    }
+    admitted["restart"]["compatibility"] = {
+        **seed["compatibility"],
+        "current_commit": "spectrum-source",
+    }
+    parent = {
+        "schema": "pyoomph-runner-manifest-v1",
+        "runner": {"path": "/source/runners/run_paper_anchor_i.py"},
+        "anchor_stage": {"kind": "stationary_I_candidate"},
+        "parent_acceptance_changed": False,
+        "parent_restart": seed,
+        "case_transition_contract": contract,
+        "construction_case": contract["parent_case"],
+        "case_path": str(tmp_path / "case.json"),
+        "implementation": {"typed-helper": "bound"},
+        "component_commit": "I-source",
+    }
+    result = {
+        "schema": "private-paper-stationary-anchor-v1",
+        "completion_reached": True,
+        "numerical_acceptance": True,
+        "cold_load_verified": True,
+        "canonical_checks": summary["checks"],
+        "cold_load_checks": summary["cold_load_checks"],
+        "ca_in": case["physics"]["ca_in"],
+        "parent_acceptance_changed": False,
+        "parents_unchanged": True,
+        "branch_identity_verified": False,
+        "eigenanalysis_performed": False,
+        "checkpoint": {"resume_packet": "packet.json"},
+        "terminal": {"after_polish": {"actual_pins": copy.deepcopy(cold["actual_pins"])}},
+    }
+    preparation = {
+        "contract": copy.deepcopy(contract),
+        "inputs": copy.deepcopy(admitted["records"]),
+        "numerical_acceptance": False,
+        "implementation": parent["implementation"],
+    }
+    calls = []
+
+    def seed_admission(args):
+        calls.append(args)
+        assert args.manifest == tmp_path / "qualified-seed" / "run-manifest.json"
+        assert args.packet == tmp_path / "qualified-seed" / "packet.json"
+        assert args.state == tmp_path / "qualified-seed" / "state.dump"
+        return admitted
+
+    monkeypatch.setattr(modes.anchor_i, "preflight", seed_admission)
+    values = {
+        "run-manifest.json": parent,
+        "summary.json": summary,
+        "cold-load.json": cold,
+        "result.json": result,
+        "preparation.json": preparation,
+    }
+
+    def publish():
+        for name, value in values.items():
+            (tmp_path / name).write_text(json.dumps(value))
+        restart["parent_manifest"] = modes.regular_record(tmp_path / "run-manifest.json")
+        files = {
+            name: modes.sha(tmp_path / name)
+            for name in (*values, "packet.json", "state.dump", "mesh.msh")
+        }
+        (tmp_path / "completion.json").write_text(
+            json.dumps(
+                {
+                    "status": "complete",
+                    "numerical_acceptance": True,
+                    "parent_acceptance_changed": False,
+                    "files": files,
+                }
+            )
+        )
+
+    return SimpleNamespace(
+        runtime=tmp_path,
+        case=case,
+        parent=parent,
+        restart=restart,
+        summary=summary,
+        cold=cold,
+        result=result,
+        preparation=preparation,
+        admitted=admitted,
+        publish=publish,
+        calls=calls,
+    )
+
+
+@pytest.mark.parametrize(
+    "fault",
+    [
+        None,
+        "producer",
+        "schema",
+        "packet",
+        "pins",
+        "fields",
+        "history",
+        "time",
+        "forcing",
+        "bc",
+        "api",
+        "endtime",
+        "seed_lineage",
+        "consumer_revision",
+        "physics_contract",
+        "admission",
+        "inputs",
+        "helper",
+        "failure",
+        "missing_result",
+        "mutated_file",
+    ],
+)
+def test_typed_i_admission_refuses_mutated_packets_and_lineage(typed_i_bundle, fault):
+    b = typed_i_bundle
+    if fault == "producer":
+        b.parent["runner"]["path"] = "/source/runners/run_paper_anchor_unknown.py"
+    elif fault == "schema":
+        b.result["schema"] = modes.requalification.SCHEMA
+    elif fault == "packet":
+        b.result["checkpoint"]["resume_packet"] = "mesh.msh"
+    elif fault == "pins":
+        b.cold["actual_pins"] = {"sha256": "different"}
+    elif fault == "fields":
+        b.cold["loaded"]["arrays"] = {"all": "mutated"}
+    elif fault == "history":
+        b.cold["loaded"]["serialized_state"]["payload_sha256"] = "partial-history"
+    elif fault == "time":
+        b.cold["time_history"]["dts"] = [0.9]
+    elif fault == "forcing":
+        b.cold["loaded"]["parameters"]["Ca_in"] = 0.02
+    elif fault == "bc":
+        b.cold["bc_preparation"]["verified"] = False
+    elif fault == "api":
+        b.cold["intervention"]["api"] = {"unreviewed": True}
+    elif fault == "endtime":
+        b.cold["intervention"]["saved_endtime"] = 7.0
+    elif fault == "seed_lineage":
+        b.parent["parent_restart"]["state"]["sha256"] = "different"
+    elif fault == "consumer_revision":
+        b.parent["parent_restart"]["compatibility"]["current_commit"] = "unrelated-source"
+    elif fault == "physics_contract":
+        b.parent["parent_restart"]["compatibility"]["physics_ast_sha256"] = "mutated-physics"
+    elif fault == "admission":
+        b.preparation["contract"] = {}
+    elif fault == "inputs":
+        b.preparation["inputs"] = []
+    elif fault == "helper":
+        b.preparation["implementation"] = {}
+    b.publish()
+    if fault == "failure":
+        (b.runtime / "failure.json").write_text("{}")
+    elif fault == "missing_result":
+        completion = json.loads((b.runtime / "completion.json").read_text())
+        completion["files"].pop("result.json")
+        (b.runtime / "completion.json").write_text(json.dumps(completion))
+    elif fault == "mutated_file":
+        (b.runtime / "result.json").write_text("{}")
+    if fault is None:
+        _, cold, records = modes.qualified_parent(
+            b.runtime, b.case, parent=b.parent, restart=b.restart
+        )
+        assert cold == b.cold and b.admitted["records"][0] in records
+        assert len(b.calls) == 1
+    else:
+        with pytest.raises(ValueError):
+            modes.qualified_parent(b.runtime, b.case, parent=b.parent, restart=b.restart)
 
 
 def mode_stream(

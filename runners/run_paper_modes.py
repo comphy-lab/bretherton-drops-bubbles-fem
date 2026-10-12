@@ -18,6 +18,7 @@ import struct
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
+from types import SimpleNamespace
 
 sys.dont_write_bytecode = True
 ROOT = Path(__file__).resolve().parents[1]
@@ -26,7 +27,9 @@ if str(ROOT) not in sys.path:
 
 from problems import paper_bubble as model
 from runners import run_paper_anchor as anchor
+from runners import run_paper_anchor_i as anchor_i
 from runners import run_paper_case as runner
+from runners import run_paper_seed_requalify as requalification
 from runners import run_pressure_diagnostic as diagnostic
 from runners import run_pressure_remesh as remesh
 
@@ -48,6 +51,14 @@ HELPERS = (
     "runners/run_pressure_diagnostic.py",
     "runners/run_pressure_remesh.py",
     "runners/run_paper_anchor.py",
+)
+I_HELPERS = (
+    anchor_i.ENTRYPOINT,
+    "runners/run_paper_seed_i.py",
+    "runners/run_paper_seed_recovery.py",
+    "runners/run_paper_cold_history.py",
+    requalification.ENTRYPOINT,
+    "runners/run_paper_case.py",
 )
 GATES = {"stationary", "lower_static_pressure", "flux", "volume", "volume_integrals"}
 LIMITS = {
@@ -126,7 +137,7 @@ def request_contract(case, shifts, neigen, *, metadata_only=False):
     }
 
 
-def qualified_parent(runtime, case):
+def qualified_parent(runtime, case, *, parent=None, restart=None):
     """Verify the producer's complete five-gate and fresh cold-load evidence."""
     runtime = Path(runtime).resolve(strict=True)
     completion_path = runtime / "completion.json"
@@ -183,10 +194,116 @@ def qualified_parent(runtime, case):
         == {"Ca_in": case["physics"]["ca_in"], "Bo": case["physics"]["bond"]},
         "parent cold-load forcing differs",
     )
+    if case["physics"]["ca_in"] == anchor_i.TARGET_CA:
+        require(parent is not None and restart is not None, "typed I parent and packet required")
+        require(
+            completion.get("parent_acceptance_changed") is False,
+            "I completion changed parent acceptance",
+        )
+        records.extend(qualified_i_parent(runtime, case, parent, restart, summary, cold, files))
     return summary, cold, records
 
 
-def source_contract(parent, component, *, metadata_reference=False):
+def qualified_i_parent(runtime, case, parent, restart, summary, cold, files):
+    """Bind a completed I descendant to its admitted requalified seed, not a failed run."""
+    require(not (runtime / "failure.json").exists(), "I parent has a failure receipt")
+    require(
+        {"result.json", "preparation.json"} <= set(files), "I admission/result files are unbound"
+    )
+    result = json.loads((runtime / "result.json").read_text())
+    preparation = json.loads((runtime / "preparation.json").read_text())
+    require(
+        parent.get("schema") == "pyoomph-runner-manifest-v1"
+        and Path(parent.get("runner", {}).get("path", "")).name == "run_paper_anchor_i.py"
+        and parent.get("anchor_stage") == {"kind": "stationary_I_candidate"}
+        and parent.get("parent_acceptance_changed") is False
+        and result.get("schema") == "private-paper-stationary-anchor-v1"
+        and result.get("completion_reached") is True
+        and result.get("numerical_acceptance") is True
+        and result.get("cold_load_verified") is True
+        and result.get("canonical_checks") == summary["checks"]
+        and result.get("cold_load_checks") == summary["cold_load_checks"]
+        and result.get("ca_in") == case["physics"]["ca_in"]
+        and result.get("parent_acceptance_changed") is False
+        and result.get("parents_unchanged") is True
+        and result.get("branch_identity_verified") is False
+        and result.get("eigenanalysis_performed") is False
+        and summary.get("status") == "completed"
+        and summary.get("branch_identity_verified") is False
+        and summary.get("eigenanalysis_performed") is False,
+        "I producer/schema or qualification differs",
+    )
+    for record in (restart["packet"], restart["state"], *restart["meshes"]):
+        path = Path(record["path"])
+        require(
+            path.is_relative_to(runtime)
+            and files.get(str(path.relative_to(runtime))) == record["sha256"],
+            "I terminal packet/state/mesh is unbound",
+        )
+    require(
+        restart["parent_manifest"] == regular_record(runtime / "run-manifest.json")
+        and (runtime / relative_path(result["checkpoint"]["resume_packet"])).resolve(strict=True)
+        == Path(restart["packet"]["path"]),
+        "I terminal checkpoint lineage differs",
+    )
+    seed_restart = parent["parent_restart"]
+    contract = parent["case_transition_contract"]
+    # The I runner admits the qualified seed first; only that seed's explicit
+    # original_failed_producer pointer enters the failed-only recovery preflight.
+    admitted = anchor_i.preflight(
+        SimpleNamespace(
+            source=ROOT,
+            case=Path(parent["case_path"]),
+            manifest=Path(seed_restart["parent_manifest"]["path"]),
+            packet=Path(seed_restart["packet"]["path"]),
+            state=Path(seed_restart["state"]["path"]),
+            ca_ladder=Path(contract["ca_ladder"]["path"]),
+        )
+    )
+    # validate_restart recomputes the consumer revision at each admission.
+    # Compare the historical receipt at the I producer's revision; all packet,
+    # source-contract and direct-artifact fields still have to match exactly.
+    historical_restart = {
+        **admitted["restart"],
+        "compatibility": {
+            **admitted["restart"]["compatibility"],
+            "current_commit": parent["component_commit"],
+        },
+    }
+    require(
+        historical_restart == seed_restart
+        and admitted["target"] == case
+        and admitted["contract"] == contract == preparation.get("contract")
+        and parent.get("construction_case") == contract["parent_case"]
+        and preparation.get("inputs") == admitted["records"]
+        and preparation.get("numerical_acceptance") is False
+        and preparation.get("implementation") == parent["implementation"],
+        "I seed admission or lineage differs from direct evidence",
+    )
+    expected = requalification.cold.serialized_metadata(Path(restart["state"]["path"]).read_bytes())
+    require(
+        expected["endtime"] == case["solve"]["relax_time"] == 8.0
+        and runner.snapshot_bc_cache_signature(
+            Path(restart["state"]["path"]).read_bytes(),
+            mesh_reference_base=Path(restart["mesh_reference_base"]),
+        )["payload_sha256"]
+        == cold["loaded"]["serialized_state"]["payload_sha256"]
+        == restart["roundtrip"]["after"]["serialized_state"]["payload_sha256"]
+        and cold["actual_pins"] == result["terminal"]["after_polish"]["actual_pins"]
+        and cold.get("bc_preparation", {}).get("verified") is True
+        and cold.get("intervention", {}).get("verified") is True
+        and cold["intervention"].get("kind") == "typed-native-endtime-restoration"
+        and cold["intervention"].get("saved_endtime") == expected["endtime"]
+        and cold["intervention"].get("api") == requalification.cold.API
+        and cold.get("time_history")
+        == {key: expected[key] for key in ("time", "dts", "unsteady_steps", "suggested_next_dt")},
+        "I typed restoration/BC preparation or time history differs",
+    )
+    remesh.check_loaded_state(cold["loaded"], restart, case, cold["actual_pins"])
+    return admitted["records"]
+
+
+def source_contract(parent, component, *, metadata_reference=False, typed_i=False):
     """Check exact parent/current method inventories without fixing a parent revision."""
     runner.require_clean_source(component)
     runner.require_clean_source(parent["component"])
@@ -211,14 +328,15 @@ def source_contract(parent, component, *, metadata_reference=False):
             "parent/current method differs: " + name,
         )
     implementation = {}
-    for name in (*HELPERS, "runners/run_paper_modes.py"):
+    helpers = (*HELPERS, *I_HELPERS) if typed_i else HELPERS
+    for name in (*helpers, "runners/run_paper_modes.py"):
         path = ROOT / name
         digest = hashlib.sha256(
             diagnostic.git(ROOT, "show", f"{component['commit']}:{name}")
         ).hexdigest()
         require(regular_record(path)["sha256"] == digest, "implementation differs from Git")
         implementation[name] = {"path": str(path), "sha256": digest}
-        if name in HELPERS:
+        if name in helpers:
             # The older positive reference predates the anchor helper; it is never executed here.
             old = runner._git(ROOT, "show", f"{commit}:{name}")
             require(
@@ -232,8 +350,18 @@ def source_contract(parent, component, *, metadata_reference=False):
                     parent["implementation"][name]["sha256"] == digest,
                     "parent helper declaration differs",
                 )
+            if typed_i:
+                declaration = parent.get("implementation", {}).get(name, {})
+                require(
+                    declaration.get("sha256") == digest
+                    and Path(declaration.get("path", ""))
+                    == Path(parent["runner"]["path"]).parent.parent / name,
+                    "I supporting helper is unbound or differs",
+                )
     producer = parent["runner"]
     producer_path = Path(producer["path"])
+    if typed_i:
+        require(producer_path.name == "run_paper_anchor_i.py", "unsupported typed I producer")
     require(
         producer_path.name
         in {"run_paper_anchor.py", "run_pressure_remesh.py", "run_paper_seed_i.py"}
@@ -277,6 +405,9 @@ def preflight(args):
         (diagnostic, HELPERS[0]),
         (remesh, HELPERS[1]),
         (anchor, HELPERS[2]),
+        (anchor_i, anchor_i.ENTRYPOINT),
+        (requalification, requalification.ENTRYPOINT),
+        (requalification.cold, "runners/run_paper_cold_history.py"),
     ):
         require(
             Path(module.__file__).resolve() == ROOT / name, "helper imported from another component"
@@ -304,7 +435,10 @@ def preflight(args):
     )
     component = runner.component_revision(ROOT)
     implementation = source_contract(
-        parent, component, metadata_reference=request["reference_metadata_only"]
+        parent,
+        component,
+        metadata_reference=request["reference_metadata_only"],
+        typed_i=request["branch_candidate"] == "I",
     )
     environment = runner.pyoomph_revision()
     environment_contract(environment, parent["pyoomph"])
@@ -327,7 +461,9 @@ def preflight(args):
         and restart["stage"]["bond"] == case["physics"]["bond"],
         "qualified terminal packet required",
     )
-    summary, cold, records = qualified_parent(parent_path.parent, case)
+    summary, cold, records = qualified_parent(
+        parent_path.parent, case, parent=parent, restart=restart
+    )
     require(
         (parent_path.parent / relative_path(summary["checkpoint"])).resolve(strict=True)
         == args.packet.resolve(strict=True),
@@ -389,6 +525,7 @@ def manifest(args, prepared, argv):
         "azimuthal_stability": True,
         "mode_request": prepared["request"],
         "parent_restart": prepared["restart"],
+        "parent_load_contract": parent_load_contract(prepared),
         "parent_acceptance_changed": False,
         "qualification_scope": SCOPE,
         "api_source": API,
@@ -1084,11 +1221,39 @@ def compare_searches(first, second, mode):
     }
 
 
+def parent_load_contract(prepared):
+    typed = prepared["case"]["physics"]["ca_in"] == anchor_i.TARGET_CA
+    module = requalification.ENTRYPOINT if typed else "runners/run_paper_anchor.py"
+    return {
+        "kind": "typed-I-stationary-descendant" if typed else "plain-anchor",
+        "module": module,
+        "callable": "restore_checked",
+        "sha256": prepared["implementation"][module]["sha256"],
+        "packet": prepared["restart"]["packet"],
+        "payload_sha256": prepared["cold"]["loaded"]["serialized_state"]["payload_sha256"],
+    }
+
+
+def restore_parent(problem, prepared, output):
+    case, restart, cold = prepared["case"], prepared["restart"], prepared["cold"]
+    restore = anchor.restore_checked
+    if case["physics"]["ca_in"] == anchor_i.TARGET_CA:
+        problem._seed_requalification_receipts_directory = output / "typed-loads"
+        restore = requalification.restore_checked
+    return restore(
+        problem,
+        case,
+        restart,
+        cold["actual_pins"],
+        cold["loaded"]["serialized_state"]["payload_sha256"],
+    )
+
+
 def spectral_stage(prepared, output, mode, shift):
     import numpy as np
     from scipy import sparse
 
-    case, restart, cold = prepared["case"], prepared["restart"], prepared["cold"]
+    case = prepared["case"]
     output.mkdir(exist_ok=False)
     with model.build_problem(case, initial_bond=case["physics"]["bond"]) as problem:
         problem.set_output_directory(str(output / "solver"))
@@ -1099,13 +1264,7 @@ def spectral_stage(prepared, output, mode, shift):
         stable_inputs(prepared)
         problem.initialise()
         require(not problem.is_distributed(), "serial full-pencil search required")
-        loaded = anchor.restore_checked(
-            problem,
-            case,
-            restart,
-            cold["actual_pins"],
-            cold["loaded"]["serialized_state"]["payload_sha256"],
-        )
+        loaded = restore_parent(problem, prepared, output)
         metrics = remesh.sample(problem, model, case, output, "cold-load", np)["metrics"]
         require(
             all(remesh.canonical_checks(case, metrics).values()), "cold-loaded base gates failed"
