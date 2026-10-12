@@ -7,11 +7,15 @@ import hashlib
 import json
 import subprocess
 import sys
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+import test_paper_seed_requalify as requal_fixtures
 
 from runners import run_paper_anchor_i as lane
+
+cold_bundle = requal_fixtures.parent_bundle
 
 
 @pytest.fixture
@@ -113,6 +117,7 @@ def bind_completion(runtime, files):
         json.dumps(
             {
                 "status": "complete",
+                "schema": lane.requalification.SCHEMA,
                 "numerical_acceptance": True,
                 "files": {name: lane.sha(runtime / name) for name in files},
             }
@@ -120,49 +125,143 @@ def bind_completion(runtime, files):
     )
 
 
+def producer_manifest():
+    digest = hashlib.sha256(
+        lane.diagnostic.git(lane.ROOT, "show", f"{lane.PARENT_SOURCE}:{lane.PRODUCER}")
+    ).hexdigest()
+    record = {"path": str(lane.ROOT / lane.PRODUCER), "sha256": digest}
+    return {
+        "component_commit": lane.PARENT_SOURCE,
+        "component": {"commit": lane.PARENT_SOURCE},
+        "runner": record,
+        "runner_path": record["path"],
+        "runner_sha256": digest,
+        "implementation": {lane.PRODUCER: record},
+        "intervention": {
+            "kind": "stationary-seed-requalification",
+            "solve_calls": 0,
+            "remesh_calls": 0,
+            "time_evolution": False,
+            "api": lane.requalification.cold.API,
+            "parent_acceptance_changed": False,
+        },
+        "lineage": {
+            "schema": lane.requalification.SCHEMA,
+            "parent_status": "failed",
+            "parent_acceptance_changed": False,
+            "consumer": {
+                "module": lane.PRODUCER,
+                "callable": "restore_checked",
+                "sha256": digest,
+                "saved_endtime": 8.0,
+                "api": lane.requalification.cold.API,
+            },
+        },
+        "azimuthal_stability": True,
+        "qualification_scope": "stationary-only software fixture",
+    }
+
+
 @pytest.fixture
-def parent_bundle(cases, tmp_path):
+def parent_bundle(cases, tmp_path, monkeypatch):
     parent, target = cases
     runtime = tmp_path / "parent"
-    (runtime / "terminal/normalization").mkdir(parents=True)
+    runtime.mkdir()
     checks = dict.fromkeys(lane.GATES, True)
+    history = {"time": 8.0, "dts": [0.1, 0.1], "unsteady_steps": 12, "suggested_next_dt": 0.1}
     cold = {
         "verified": True,
         "loaded": signature(),
         "actual_pins": {"sha256": "software-pins"},
-        "canonical_checks": checks,
+        "checks": checks,
+        "bc_preparation": {"verified": True},
+        "time_history": history,
+        "intervention": {
+            "verified": True,
+            "kind": "typed-native-endtime-restoration",
+            "saved_endtime": 8.0,
+            "api": lane.requalification.cold.API,
+        },
+    }
+    manifest = producer_manifest()
+    (runtime / "run-manifest.json").write_text(json.dumps(manifest))
+    (runtime / "resume.json").write_text("{}")
+    (runtime / "state.dump").write_bytes(b"software-only complete state")
+    restart = {
+        "stage": {"kind": "completed_polish", "bond": 1.56, "bc_mode": "init"},
+        "roundtrip": {"after": signature(), "layout": signature()["layout"]},
+        "packet": {
+            "path": str(runtime / "resume.json"),
+            "sha256": lane.sha(runtime / "resume.json"),
+        },
+        "parent_manifest": {
+            "path": str(runtime / "run-manifest.json"),
+            "sha256": lane.sha(runtime / "run-manifest.json"),
+        },
+        "state": {"path": str(runtime / "state.dump"), "sha256": lane.sha(runtime / "state.dump")},
+        "mesh_reference_base": str(runtime),
+        "meshes": [],
+    }
+    original_state = tmp_path / "original.dump"
+    original_state.write_bytes((runtime / "state.dump").read_bytes())
+    original = {
+        "restart": {**copy.deepcopy(restart), "state": {"path": str(original_state)}},
+        "sample": {"actual_pins": copy.deepcopy(cold["actual_pins"])},
+        "metadata": {**history, "endtime": 8.0},
+        "records": [{"path": str(original_state), "sha256": lane.sha(original_state)}],
+    }
+    # Admission orchestration uses synthetic bytes; native parsing is covered by helper tests.
+    monkeypatch.setattr(lane, "validate_parent_lineage", lambda value: original)
+    monkeypatch.setattr(lane.requalification.cold, "normalized_bytes", lambda data, base: data)
+    result = {
+        "schema": lane.requalification.SCHEMA,
+        "numerical_acceptance": True,
+        "checks": checks,
+        "cold_load_checks": checks,
+        "cold_load_verified": True,
+        "checkpoint": {"resume_packet": "resume.json"},
+        "lineage": manifest["lineage"],
+        "parent_status": "failed",
+        "parent_acceptance_changed": False,
+        "branch_identity_verified": False,
+        "eigenanalysis_performed": False,
+        "jacobian_certificate": False,
+        "dynamic_restart_certificate": False,
+        "full_comparison_verified": False,
     }
     files = {
-        "run-manifest.json": {"software_fixture": True},
+        "run-manifest.json": manifest,
         "summary.json": {
+            **copy.deepcopy(result),
+            "status": "completed",
             "completion_reached": True,
-            "cold_load_verified": True,
-            "checks": checks,
-            "cold_load_checks": checks,
         },
-        "cold-load.json": cold,
-        "result.json": {
-            "schema": "paper-seed-recovery-result-v1",
-            "numerical_acceptance": True,
-            "terminal": {"explicit_force_remesh_calls": 1},
+        "cold-load.json": {
+            **cold,
+            "packet": restart["packet"],
+            "parent_manifest": restart["parent_manifest"],
         },
-        "terminal/normalization/receipt.json": {
-            "verified": True,
-            "checks": {"all_dummy_histories_equal_vertex_pressure_averages": True},
+        "parent-cold-load.json": copy.deepcopy(cold),
+        "result.json": result,
+        "schema.json": {
+            "schema": lane.requalification.SCHEMA,
+            "scope": manifest["qualification_scope"],
+            "consumer": manifest["lineage"]["consumer"],
         },
     }
     for name, value in files.items():
         (runtime / name).write_text(json.dumps(value))
-    bind_completion(runtime, files)
-    restart = {
-        "stage": {"bc_mode": "init"},
-        "roundtrip": {
-            "after": signature(),
-            "layout": signature()["layout"],
-        },
-    }
+    bound = {*files, "resume.json", "state.dump"}
+    bind_completion(runtime, bound)
     return SimpleNamespace(
-        runtime=runtime, parent=parent, target=target, cold=cold, files=files, restart=restart
+        runtime=runtime,
+        parent=parent,
+        target=target,
+        cold=files["cold-load.json"],
+        files=files,
+        bound=bound,
+        restart=restart,
+        original=original,
     )
 
 
@@ -171,13 +270,25 @@ def parent_bundle(cases, tmp_path):
     [
         "missing_completion",
         "unbound_cold",
+        "unbound_state",
         "failed_gate",
         "cold_false",
         "changed_bytes",
         "history",
         "wrong_forcing",
-        "no_remesh",
-        "dummy_false",
+        "bc_false",
+        "typed_false",
+        "pins",
+        "parent_history",
+        "dt_history",
+        "schema_consumer",
+        "packet_lineage",
+        "checkpoint",
+        "result_gate",
+        "lineage",
+        "failure_receipt",
+        "expanded_claim",
+        "portable_history",
         "not_accepted",
         "old_schema",
         "unknown_schema",
@@ -188,7 +299,9 @@ def test_failed_or_unbound_parent_is_refused(parent_bundle, fault):
     if fault == "missing_completion":
         (bundle.runtime / "completion.json").unlink()
     elif fault == "unbound_cold":
-        bind_completion(bundle.runtime, set(bundle.files) - {"cold-load.json"})
+        bind_completion(bundle.runtime, bundle.bound - {"cold-load.json"})
+    elif fault == "unbound_state":
+        bind_completion(bundle.runtime, bundle.bound - {"state.dump"})
     elif fault == "changed_bytes":
         (bundle.runtime / "summary.json").write_text("{}")
     elif fault == "not_accepted":
@@ -210,17 +323,42 @@ def test_failed_or_unbound_parent_is_refused(parent_bundle, fault):
             )
         elif fault == "wrong_forcing":
             bundle.files["cold-load.json"]["loaded"]["parameters"]["Ca_in"] = -0.01
-        elif fault == "no_remesh":
-            bundle.files["result.json"]["terminal"]["explicit_force_remesh_calls"] = 0
-        elif fault == "dummy_false":
-            bundle.files["terminal/normalization/receipt.json"]["verified"] = False
+        elif fault == "bc_false":
+            bundle.files["parent-cold-load.json"]["bc_preparation"]["verified"] = False
+        elif fault == "typed_false":
+            bundle.files["cold-load.json"]["intervention"]["api"] = {}
+        elif fault == "pins":
+            bundle.files["cold-load.json"]["actual_pins"] = {"sha256": "changed"}
+        elif fault == "parent_history":
+            bundle.files["parent-cold-load.json"]["loaded"]["serialized_state"][
+                "payload_sha256"
+            ] = "changed"
+        elif fault == "dt_history":
+            bundle.files["cold-load.json"]["time_history"]["dts"] = [0.2]
+        elif fault == "schema_consumer":
+            bundle.files["schema.json"]["consumer"] = {"callable": "untyped_load"}
+        elif fault == "packet_lineage":
+            bundle.files["cold-load.json"]["packet"] = {"path": "another"}
+        elif fault == "checkpoint":
+            bundle.files["result.json"]["checkpoint"] = {"resume_packet": "state.dump"}
+        elif fault == "result_gate":
+            bundle.files["result.json"]["checks"] = dict.fromkeys(lane.GATES, False)
+        elif fault == "lineage":
+            bundle.files["result.json"]["lineage"] = {"parent_status": "complete"}
+        elif fault == "failure_receipt":
+            (bundle.runtime / "failure.json").write_text("{}")
+        elif fault == "expanded_claim":
+            bundle.files["result.json"]["dynamic_restart_certificate"] = True
+        elif fault == "portable_history":
+            (bundle.runtime / "state.dump").write_bytes(b"different complete history")
+            bundle.restart["state"]["sha256"] = lane.sha(bundle.runtime / "state.dump")
         elif fault == "old_schema":
             bundle.files["result.json"]["schema"] = "private-fresh-negative-paper-seed-v1"
         elif fault == "unknown_schema":
             bundle.files["result.json"]["schema"] = "unreviewed-seed-result-v1"
         for name, value in bundle.files.items():
             (bundle.runtime / name).write_text(json.dumps(value))
-        bind_completion(bundle.runtime, bundle.files)
+        bind_completion(bundle.runtime, bundle.bound)
     before = {str(p): p.read_bytes() for p in bundle.runtime.rglob("*") if p.is_file()}
     with pytest.raises(ValueError):
         lane.qualified_parent(bundle.runtime / "run-manifest.json", bundle.parent, bundle.restart)
@@ -233,7 +371,7 @@ def test_qualified_parent_records_every_bound_byte(parent_bundle):
         bundle.runtime / "run-manifest.json", bundle.parent, bundle.restart
     )
     assert cold == bundle.cold
-    assert len(records) == len(bundle.files) + 1
+    assert len(records) == len(bundle.bound) + 1 + len(bundle.original["records"])
     assert lane.diagnostic.parents_unchanged(records) is True
 
 
@@ -242,12 +380,14 @@ def test_recovery_predictions_are_not_additional_target_acceptance_gates(parent_
     result = bundle.files["result.json"]
     result["initial_polish_predictions"] = {"checks": {"software_diagnostic": False}}
     result["predictions_define_numerical_acceptance"] = False
+    bundle.files["summary.json"].update(result)
+    (bundle.runtime / "summary.json").write_text(json.dumps(bundle.files["summary.json"]))
     (bundle.runtime / "result.json").write_text(json.dumps(result))
-    bind_completion(bundle.runtime, bundle.files)
+    bind_completion(bundle.runtime, bundle.bound)
     cold, _ = lane.qualified_parent(
         bundle.runtime / "run-manifest.json", bundle.parent, bundle.restart
     )
-    assert cold["canonical_checks"] == dict.fromkeys(lane.GATES, True)
+    assert cold["checks"] == dict.fromkeys(lane.GATES, True)
 
 
 @pytest.mark.parametrize("fault", [None, "core", "interpreter", "dirty", "producer"])
@@ -290,25 +430,9 @@ def test_preflight_binds_parent_case_clean_source_and_exact_environment(
         "native_core": {"path": "/software-only/core.so", "sha256": lane.diagnostic.CORE},
         "interpreter": {"resolved_executable": "/software-only/python"},
     }
-    producer = {
-        "path": str(lane.ROOT / lane.PRODUCER),
-        "sha256": lane.sha(lane.ROOT / lane.PRODUCER),
-    }
     parent_manifest = {
-        "component_commit": lane.PARENT_SOURCE,
+        **producer_manifest(),
         "component": component,
-        "runner": producer,
-        "runner_path": producer["path"],
-        "runner_sha256": producer["sha256"],
-        "implementation": {lane.PRODUCER: producer},
-        "fresh_seed_stage": {"kind": "fresh_negative_seed_recovery"},
-        "seed_recovery_method": {
-            "policy": copy.deepcopy(lane.recovery.POLICY),
-            "api": copy.deepcopy(lane.recovery.API),
-            "scope": "initial Bo=0 seed polish only; later methods unchanged",
-        },
-        "parent_state_used": False,
-        "azimuthal_stability": True,
         "pyoomph": copy.deepcopy(environment),
         "case_path": str(parent_case),
         "case_sha256": lane.sha(parent_case),
@@ -320,10 +444,16 @@ def test_preflight_binds_parent_case_clean_source_and_exact_environment(
     if fault == "interpreter":
         environment["interpreter"]["resolved_executable"] = "/different/python"
     path = bundle.runtime / "run-manifest.json"
+    bundle.files["run-manifest.json"] = parent_manifest
     path.write_text(json.dumps(parent_manifest))
-    bind_completion(bundle.runtime, bundle.files)
+    bundle.files["cold-load.json"]["parent_manifest"] = {
+        "path": str(path),
+        "sha256": lane.sha(path),
+    }
+    (bundle.runtime / "cold-load.json").write_text(json.dumps(bundle.files["cold-load.json"]))
+    bind_completion(bundle.runtime, bundle.bound)
     state, packet = bundle.runtime / "state.dump", bundle.runtime / "resume.json"
-    state.write_bytes(b"software-only; not a native state")
+    state.write_bytes(b"software-only complete state")
     packet.write_text("{}")
     restart = {
         **bundle.restart,
@@ -391,69 +521,139 @@ def test_preflight_binds_parent_case_clean_source_and_exact_environment(
         "producer",
         "old_producer",
         "hash",
-        "stage",
-        "old_stage",
-        "policy",
+        "solve",
+        "remesh",
         "api",
-        "scope",
-        "missing_method",
+        "lineage",
+        "consumer",
+        "endtime",
     ],
 )
-def test_only_the_hash_bound_fresh_seed_producer_is_allowed(fault):
-    digest = hashlib.sha256(
-        lane.diagnostic.git(
-            lane.ROOT,
-            "show",
-            f"{lane.PARENT_SOURCE}:{lane.PRODUCER}",
-        )
-    ).hexdigest()
-    path = str(lane.ROOT / lane.PRODUCER)
-    value = {
-        "component_commit": lane.PARENT_SOURCE,
-        "component": {"commit": lane.PARENT_SOURCE},
-        "runner": {"path": path, "sha256": digest},
-        "runner_path": path,
-        "runner_sha256": digest,
-        "implementation": {lane.PRODUCER: {"path": path, "sha256": digest}},
-        "fresh_seed_stage": {"kind": "fresh_negative_seed_recovery"},
-        "seed_recovery_method": {
-            "policy": copy.deepcopy(lane.recovery.POLICY),
-            "api": copy.deepcopy(lane.recovery.API),
-            "scope": "initial Bo=0 seed polish only; later methods unchanged",
-        },
-        "parent_state_used": False,
-        "azimuthal_stability": True,
-    }
+def test_only_the_hash_bound_typed_requalification_producer_is_allowed(fault):
+    value = producer_manifest()
     if fault == "source":
         value["component_commit"] = "0" * 40
     elif fault == "old_source":
-        old = "e5bc7126a274e8e4cfd946c5c32c0ad83f042304"
-        value["component_commit"] = value["component"]["commit"] = old
+        value["component_commit"] = value["component"]["commit"] = (
+            lane.requalification.cold.PARENT_SOURCE
+        )
     elif fault == "producer":
         value["runner"]["path"] = str(lane.ROOT / "runners/run_paper_anchor.py")
     elif fault == "old_producer":
-        old_path = str(lane.ROOT / "runners/run_paper_seed_i.py")
-        value["runner"]["path"] = value["runner_path"] = old_path
-        value["implementation"][lane.PRODUCER]["path"] = old_path
+        value["runner"]["path"] = value["runner_path"] = str(
+            lane.ROOT / "runners/run_paper_seed_recovery.py"
+        )
     elif fault == "hash":
-        value["runner"]["sha256"] = "0" * 64
-    elif fault == "stage":
-        value["fresh_seed_stage"]["kind"] = "stationary_bo_stage"
-    elif fault == "old_stage":
-        value["fresh_seed_stage"]["kind"] = "fresh_negative_seed"
-    elif fault == "policy":
-        value["seed_recovery_method"]["policy"]["total_update_cap"] = 161
+        value["runner_sha256"] = "0" * 64
+    elif fault == "solve":
+        value["intervention"]["solve_calls"] = 1
+    elif fault == "remesh":
+        value["intervention"]["remesh_calls"] = 1
     elif fault == "api":
-        value["seed_recovery_method"]["api"]["callback_residual_assembly_performed"] = True
-    elif fault == "scope":
-        value["seed_recovery_method"]["scope"] = "all Bo polishes"
-    elif fault == "missing_method":
-        del value["seed_recovery_method"]
+        value["intervention"]["api"] = {}
+    elif fault == "lineage":
+        value["lineage"]["parent_status"] = "complete"
+    elif fault == "consumer":
+        value["lineage"]["consumer"]["callable"] = "load_state"
+    elif fault == "endtime":
+        value["lineage"]["consumer"]["saved_endtime"] = 9.0
     if fault:
         with pytest.raises(ValueError):
             lane.check_parent_producer(value)
     else:
         lane.check_parent_producer(value)
+
+
+@pytest.mark.parametrize("changed_lineage", [False, True])
+def test_lineage_preflight_uses_original_direct_pointers(tmp_path, monkeypatch, changed_lineage):
+    lineage = producer_manifest()["lineage"]
+    for key, name in (
+        ("original_failed_producer", "failed/manifest.json"),
+        ("original_packet", "failed/packet.json"),
+        ("original_state", "failed/state.dump"),
+    ):
+        lineage[key] = {"path": str(tmp_path / name), "sha256": "direct-evidence"}
+    lineage["completed_diagnostic"] = {
+        "manifest": {"path": str(tmp_path / "diagnostic/run-manifest.json")}
+    }
+    manifest = {"lineage": lineage, "case_path": str(tmp_path / "original-case.json")}
+    expected = copy.deepcopy(lineage)
+    if changed_lineage:
+        expected["original_state"]["sha256"] = "different"
+
+    def preflight(args):
+        assert vars(args) == {
+            "source": lane.ROOT,
+            "case": tmp_path / "original-case.json",
+            "manifest": tmp_path / "failed/manifest.json",
+            "packet": tmp_path / "failed/packet.json",
+            "state": tmp_path / "failed/state.dump",
+            "diagnostic_runtime": tmp_path / "diagnostic",
+        }
+        return {"lineage": expected, "records": [{"path": "direct-record"}]}
+
+    monkeypatch.setattr(lane.requalification, "preflight", preflight)
+    if changed_lineage:
+        with pytest.raises(ValueError, match="lineage differs"):
+            lane.validate_parent_lineage(manifest)
+    else:
+        assert lane.validate_parent_lineage(manifest)["records"] == [{"path": "direct-record"}]
+
+
+def test_generated_typed_descendant_passes_actual_consumer_check(cold_bundle, monkeypatch):
+    # Reuse the fake native writer to generate real producer receipt schemas.
+    # The complete admission path parses synthetic portable bytes, never pyoomph.
+    bundle = requal_fixtures.lane.__wrapped__(cold_bundle, monkeypatch)
+    bundle.current.update(commit=lane.PARENT_SOURCE, head=lane.PARENT_SOURCE)
+    assert lane.requalification.main(requal_fixtures.arguments(bundle)) == 0
+    runtime = bundle.args.out
+    result = json.loads((runtime / "result.json").read_text())
+    packet = runtime / result["checkpoint"]["resume_packet"]
+    restart = lane.runner.validate_restart(
+        packet,
+        lane.runner.read_case(bundle.args.case),
+        lane.sha(bundle.args.case),
+        component=bundle.current,
+        environment=lane.runner.pyoomph_revision(),
+        azimuthal_stability=True,
+    )
+    target = copy.deepcopy(lane.runner.read_case(bundle.args.case))
+    target["case_id"] = "software-I-target"
+    target["physics"]["ca_in"] = lane.TARGET_CA
+    case_path = runtime.parent / "target.json"
+    lane.write_json(case_path, target)
+    ladder = runtime.parent / "ladder.json"
+    lane.write_json(
+        ladder,
+        {
+            "schema": "herrada-paper-ca-ladder-v1",
+            "values": [-0.01, -0.005, -0.003, -0.002, -0.0016],
+        },
+    )
+    monkeypatch.setattr(lane, "PARENT_CASE_SHA", lane.sha(bundle.args.case))
+    monkeypatch.setattr(lane, "execute", lambda *args: pytest.fail("native consumer execution"))
+    output = runtime.parent / "unused-consumer-output"
+    builds = len(bundle.problems)
+    args = [
+        item
+        for key, value in {
+            "source": lane.ROOT,
+            "case": case_path,
+            "manifest": runtime / "run-manifest.json",
+            "packet": packet,
+            "state": Path(restart["state"]["path"]),
+            "ca-ladder": ladder,
+            "out": output,
+        }.items()
+        for item in ("--" + key, str(value))
+    ]
+    before = {str(path): lane.sha(path) for path in runtime.parent.rglob("*") if path.is_file()}
+    assert lane.main([*args, "--check"]) == 0
+    assert not output.exists() and len(bundle.problems) == builds
+    assert "pyoomph" not in sys.modules
+    assert before == {
+        str(path): lane.sha(path) for path in runtime.parent.rglob("*") if path.is_file()
+    }
 
 
 def prepared_fixture(bundle):
@@ -572,12 +772,12 @@ def test_failure_retains_manifest_and_parent_bytes(parent_bundle, tmp_path, monk
     assert (output / "run-manifest.json").exists() and not (output / "completion.json").exists()
 
 
-@pytest.mark.parametrize("cold_pressure_failure", [False, True])
+@pytest.mark.parametrize("fault", [None, "cold_pressure", "parent_restore", "target_restore"])
 def test_ascending_orchestration_uses_one_terminal_remesh_and_original_gates(
     parent_bundle,
     tmp_path,
     monkeypatch,
-    cold_pressure_failure,
+    fault,
 ):
     prepared = prepared_fixture(parent_bundle)
     prepared["values"] = [-0.01, -0.005, -0.003, -0.002, -0.0016]
@@ -625,7 +825,7 @@ def test_ascending_orchestration_uses_one_terminal_remesh_and_original_gates(
 
     def sample(problem, model, case, directory, phase, np):
         provisional = directory.name.startswith("ca_")
-        failure = provisional or (cold_pressure_failure and directory.name == "target-cold")
+        failure = provisional or (fault == "cold_pressure" and directory.name == "target-cold")
         metrics = {
             "stationary_residual_linf": 1e-9,
             "lower_pressure_rms": 5e-6 if failure else 1e-9,
@@ -668,7 +868,24 @@ def test_ascending_orchestration_uses_one_terminal_remesh_and_original_gates(
     monkeypatch.setattr(lane.model, "build_problem", build)
     monkeypatch.setattr(lane.anchor, "configure", lambda *args: None)
     monkeypatch.setattr(lane.anchor, "stable_inputs", lambda *args: None)
-    monkeypatch.setattr(lane.anchor, "restore_checked", lambda *args: {"verified": True})
+
+    def restore(problem, case, restart, expected_pins, expected_history):
+        assert expected_pins == pins
+        assert (
+            expected_history
+            == signature(case["physics"]["ca_in"])["serialized_state"]["payload_sha256"]
+        )
+        calls.append("typed-restore")
+        if (fault == "parent_restore" and case == prepared["parent"]) or (
+            fault == "target_restore" and case == prepared["target"]
+        ):
+            raise ValueError("typed full-history restore refused")
+        return {"verified": True}
+
+    monkeypatch.setattr(
+        lane.anchor, "restore_checked", lambda *args: pytest.fail("untyped restore forbidden")
+    )
+    monkeypatch.setattr(lane.requalification, "restore_checked", restore)
     monkeypatch.setattr(
         lane.model,
         "_stationary_state_signature",
@@ -686,7 +903,18 @@ def test_ascending_orchestration_uses_one_terminal_remesh_and_original_gates(
         lane.remesh, "normalize_pressure_dummies", lambda *args: calls.append("dummy-history-audit")
     )
     args = SimpleNamespace(case=case_path)
-    if cold_pressure_failure:
+    if fault in ("parent_restore", "target_restore"):
+        with pytest.raises(ValueError, match="typed full-history restore refused"):
+            lane.execute(args, prepared, output)
+        assert not (output / "result.json").exists()
+        assert not (output / "summary.json").exists()
+        assert not (output / "cold-load.json").exists()
+        if fault == "parent_restore":
+            assert calls == ["typed-restore"]
+            assert builds == [-0.02]
+            assert not (output / "stages").exists()
+            return
+    elif fault == "cold_pressure":
         with pytest.raises(ValueError, match="original scientific or cold-load"):
             lane.execute(args, prepared, output)
     else:
@@ -701,7 +929,9 @@ def test_ascending_orchestration_uses_one_terminal_remesh_and_original_gates(
         )
     assert calls.count("force-remesh") == calls.count("dummy-history-audit") == 1
     assert calls.count("polish") == 6
+    assert calls.count("typed-restore") == 2
     assert builds == [-0.02, -0.0016]
-    assert json.loads((output / "summary.json").read_text())["completion_reached"] is (
-        not cold_pressure_failure
-    )
+    if fault != "target_restore":
+        assert json.loads((output / "summary.json").read_text())["completion_reached"] is (
+            fault is None
+        )

@@ -17,24 +17,26 @@ import sys
 from datetime import UTC, datetime
 from itertools import pairwise
 from pathlib import Path
+from types import SimpleNamespace
 
 sys.dont_write_bytecode = True
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from runners import run_paper_anchor as anchor
-from runners import run_paper_seed_i as seed
-from runners import run_paper_seed_recovery as recovery
+from runners import run_paper_anchor as anchor  # noqa: E402
+from runners import run_paper_seed_i as seed  # noqa: E402
+from runners import run_paper_seed_recovery as recovery  # noqa: E402
+from runners import run_paper_seed_requalify as requalification  # noqa: E402
 
 model, runner, diagnostic, remesh = anchor.model, anchor.runner, anchor.diagnostic, anchor.remesh
 require, sha, write_json = diagnostic.require, diagnostic.sha, diagnostic.write_json
-PARENT_SOURCE = "cc2dcfe644169f7c2a4ca8353f5743dc287afbd1"
+PARENT_SOURCE = "0eed7987acf76febe65f044250fe61217e688ae9"
 PARENT_CASE_SHA = "f9f0e44ff573c1c9cb37ad22d85b2ea3b5625e45dd0c64ddf854749708a9ae1d"
 PARENT_CA, TARGET_CA, MAX_CA_STEPS = -0.02, -0.0016, 8
 GATES = anchor.GATES
 ENTRYPOINT = "runners/run_paper_anchor_i.py"
-PRODUCER = "runners/run_paper_seed_recovery.py"
+PRODUCER = "runners/run_paper_seed_requalify.py"
 
 
 def transition_contract(parent, target):
@@ -91,28 +93,60 @@ def check_parent_producer(parent_manifest):
     record = parent_manifest.get("runner", {})
     implementation = parent_manifest.get("implementation", {}).get(PRODUCER, {})
     require(
-        Path(record.get("path", "")).name == "run_paper_seed_recovery.py"
+        Path(record.get("path", "")).name == "run_paper_seed_requalify.py"
         and record.get("path") == parent_manifest.get("runner_path") == implementation.get("path")
         and expected
         == record.get("sha256")
         == parent_manifest.get("runner_sha256")
         == implementation.get("sha256")
-        and parent_manifest.get("fresh_seed_stage") == {"kind": "fresh_negative_seed_recovery"}
-        and parent_manifest.get("seed_recovery_method")
+        and parent_manifest.get("intervention")
         == {
-            "policy": recovery.POLICY,
-            "api": recovery.API,
-            "scope": "initial Bo=0 seed polish only; later methods unchanged",
+            "kind": "stationary-seed-requalification",
+            "solve_calls": 0,
+            "remesh_calls": 0,
+            "time_evolution": False,
+            "api": requalification.cold.API,
+            "parent_acceptance_changed": False,
         }
-        and parent_manifest.get("parent_state_used") is False
+        and parent_manifest.get("lineage", {}).get("schema") == requalification.SCHEMA
+        and parent_manifest["lineage"].get("parent_status") == "failed"
+        and parent_manifest["lineage"].get("parent_acceptance_changed") is False
+        and parent_manifest["lineage"].get("consumer")
+        == {
+            "module": PRODUCER,
+            "callable": "restore_checked",
+            "sha256": expected,
+            "saved_endtime": 8.0,
+            "api": requalification.cold.API,
+        }
         and parent_manifest.get("azimuthal_stability") is True,
-        "parent producer, hash or recovery method differs from the reviewed fresh seed",
+        "parent producer, hash or typed requalification differs from the reviewed descendant",
     )
+
+
+def validate_parent_lineage(parent_manifest):
+    """Recheck the immutable failed producer and completed diagnostic without native imports."""
+    lineage = parent_manifest["lineage"]
+    prepared = requalification.preflight(
+        SimpleNamespace(
+            source=ROOT,
+            case=Path(parent_manifest["case_path"]),
+            manifest=Path(lineage["original_failed_producer"]["path"]),
+            packet=Path(lineage["original_packet"]["path"]),
+            state=Path(lineage["original_state"]["path"]),
+            diagnostic_runtime=Path(lineage["completed_diagnostic"]["manifest"]["path"]).parent,
+        )
+    )
+    require(
+        prepared["lineage"] == lineage, "requalified parent lineage differs from direct evidence"
+    )
+    return prepared
 
 
 def qualified_parent(parent_path, parent, restart):
     """Require terminal qualification, with all direct artifacts hash-bound."""
     runtime = parent_path.parent
+    require(not (runtime / "failure.json").exists(), "parent has a failure receipt")
     completion_path = runtime / "completion.json"
     require(
         completion_path.is_file() and not completion_path.is_symlink(),
@@ -120,7 +154,9 @@ def qualified_parent(parent_path, parent, restart):
     )
     completion = json.loads(completion_path.read_text())
     require(
-        completion.get("status") == "complete" and completion.get("numerical_acceptance") is True,
+        completion.get("status") == "complete"
+        and completion.get("schema") == requalification.SCHEMA
+        and completion.get("numerical_acceptance") is True,
         "parent lacks numerical acceptance",
     )
     files = completion.get("files", {})
@@ -131,7 +167,8 @@ def qualified_parent(parent_path, parent, restart):
             "summary.json",
             "cold-load.json",
             "result.json",
-            "terminal/normalization/receipt.json",
+            "parent-cold-load.json",
+            "schema.json",
         }
         <= set(files),
         "parent qualification files unbound",
@@ -152,7 +189,9 @@ def qualified_parent(parent_path, parent, restart):
     summary = json.loads((runtime / "summary.json").read_text())
     cold = json.loads((runtime / "cold-load.json").read_text())
     result = json.loads((runtime / "result.json").read_text())
-    normalization = json.loads((runtime / "terminal/normalization/receipt.json").read_text())
+    parent_cold = json.loads((runtime / "parent-cold-load.json").read_text())
+    parent_manifest = json.loads(parent_path.read_text())
+    schema = json.loads((runtime / "schema.json").read_text())
     require(
         summary.get("completion_reached") is True
         and summary.get("cold_load_verified") is True
@@ -160,23 +199,87 @@ def qualified_parent(parent_path, parent, restart):
         and all(value is True for value in summary["checks"].values())
         and all(value is True for value in summary["cold_load_checks"].values())
         and cold.get("verified") is True
-        and cold.get("canonical_checks") == summary["cold_load_checks"]
-        and result.get("schema") == "paper-seed-recovery-result-v1"
+        and cold.get("checks") == summary["cold_load_checks"]
+        and result.get("schema") == requalification.SCHEMA
         and result.get("numerical_acceptance") is True
-        and result.get("terminal", {}).get("explicit_force_remesh_calls") == 1
-        and normalization.get("verified") is True
-        and normalization.get("checks", {}).get(
-            "all_dummy_histories_equal_vertex_pressure_averages"
+        and result.get("parent_status") == "failed"
+        and result.get("parent_acceptance_changed") is False
+        and all(
+            result.get(key) is False
+            for key in (
+                "branch_identity_verified",
+                "eigenanalysis_performed",
+                "jacobian_certificate",
+                "dynamic_restart_certificate",
+                "full_comparison_verified",
+            )
         )
-        is True,
-        "parent scientific, terminal remesh or cold-load gates failed",
+        and result.get("lineage") == summary.get("lineage") == parent_manifest.get("lineage")
+        and parent_cold.get("verified") is True
+        and all(
+            receipt.get("bc_preparation", {}).get("verified") is True
+            and receipt.get("intervention", {}).get("verified") is True
+            and receipt["intervention"].get("kind") == "typed-native-endtime-restoration"
+            and receipt["intervention"].get("saved_endtime") == parent["solve"]["relax_time"]
+            and receipt["intervention"].get("api") == requalification.cold.API
+            for receipt in (parent_cold, cold)
+        ),
+        "parent scientific, typed restoration or BC-preparation gates failed",
     )
-    remesh.check_loaded_state(cold["loaded"], restart, parent, cold["actual_pins"])
+    require(
+        schema.get("schema") == summary.get("schema") == requalification.SCHEMA
+        and schema.get("consumer") == parent_manifest["lineage"]["consumer"]
+        and schema.get("scope") == parent_manifest["qualification_scope"]
+        and summary.get("status") == "completed"
+        and all(summary.get(key) == value for key, value in result.items())
+        and result.get("cold_load_verified") is True
+        and result.get("checks") == summary["checks"]
+        and result.get("cold_load_checks") == summary["cold_load_checks"]
+        and cold.get("packet") == restart["packet"]
+        and cold.get("parent_manifest") == restart["parent_manifest"]
+        and restart["parent_manifest"] == {"path": str(parent_path), "sha256": sha(parent_path)}
+        and (runtime / result["checkpoint"]["resume_packet"]).resolve()
+        == Path(restart["packet"]["path"])
+        and files.get(str(Path(restart["packet"]["path"]).relative_to(runtime)))
+        == restart["packet"]["sha256"]
+        and all(
+            Path(record["path"]).is_relative_to(runtime)
+            and files.get(str(Path(record["path"]).relative_to(runtime))) == record["sha256"]
+            for record in (restart["state"], *restart["meshes"])
+        ),
+        "parent schema, checkpoint or manifest lineage differs",
+    )
+    original = validate_parent_lineage(parent_manifest)
+    expected_pins = original["sample"]["actual_pins"]
+    expected_history = original["restart"]["roundtrip"]["after"]["serialized_state"][
+        "payload_sha256"
+    ]
+    for receipt, saved in ((parent_cold, original["restart"]), (cold, restart)):
+        remesh.check_loaded_state(
+            receipt["loaded"], saved, parent, receipt["actual_pins"], expected_pins
+        )
+        require(
+            receipt["loaded"]["serialized_state"]["payload_sha256"] == expected_history
+            and receipt.get("time_history")
+            == {
+                key: original["metadata"][key]
+                for key in ("time", "dts", "unsteady_steps", "suggested_next_dt")
+            },
+            "parent cold-load pins or complete time history differs",
+        )
     require(
         cold["loaded"]["serialized_state"]["payload_sha256"]
-        == restart["roundtrip"]["after"]["serialized_state"]["payload_sha256"],
+        == restart["roundtrip"]["after"]["serialized_state"]["payload_sha256"]
+        and requalification.cold.normalized_bytes(
+            Path(restart["state"]["path"]).read_bytes(), Path(restart["mesh_reference_base"])
+        )
+        == requalification.cold.normalized_bytes(
+            Path(original["restart"]["state"]["path"]).read_bytes(),
+            Path(original["restart"]["mesh_reference_base"]),
+        ),
         "parent cold-load complete history differs",
     )
+    records.extend(original["records"])
     return cold, records
 
 
@@ -189,7 +292,9 @@ def preflight(args):
         (remesh, "runners/run_pressure_remesh.py"),
         (anchor, "runners/run_paper_anchor.py"),
         (seed, "runners/run_paper_seed_i.py"),
-        (recovery, PRODUCER),
+        (recovery, "runners/run_paper_seed_recovery.py"),
+        (requalification.cold, "runners/run_paper_cold_history.py"),
+        (requalification, PRODUCER),
     )
     for module, relative in modules:
         require(
@@ -351,7 +456,7 @@ def execute(args, prepared, output):
 
     with model.build_problem(parent, initial_bond=parent["physics"]["bond"]) as problem:
         anchor.configure(problem, output, prepared)
-        restored = anchor.restore_checked(
+        restored = requalification.restore_checked(
             problem,
             parent,
             restart,
@@ -485,7 +590,7 @@ def execute(args, prepared, output):
     cold_output.mkdir()
     with model.build_problem(target, initial_bond=target["physics"]["bond"]) as cold:
         anchor.configure(cold, cold_output, prepared)
-        cold_receipt = anchor.restore_checked(
+        cold_receipt = requalification.restore_checked(
             cold,
             target,
             final_restart,
