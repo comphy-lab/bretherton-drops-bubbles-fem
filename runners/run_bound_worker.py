@@ -17,9 +17,12 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 CANONICAL_PYTHON = ROOT.parent / "bretherton-drops-bubbles-fem/.venv/bin/python"
 SAVED_INTERFACE = "saved-paper-spectrum-v1"
+MATRIX_ONLY_INTERFACE = "saved-paper-spectrum-coarse-matrix-only-v1"
 PACKET_SCHEMA = "stone-paper-saved-spectrum-packet-v1"
+MATRIX_ONLY_PACKET_SCHEMA = "stone-paper-saved-spectrum-coarse-matrix-only-v1"
 CHILD_SCHEMA = "stone-paper-saved-spectrum-output-v1"
 PRODUCER = "bf704cc07c964daa800abcc09b1d6de611ae80fb"
+COARSE_PRODUCER = "83e94bd4d9294fa8bf1dd9339958b0858aee27c4"
 PIN = "a186e07e1a7ea6b74ecc4f3a3fc39cc763d41618"
 CORE = "af7334e81f38453d6852581b6c208e93a0648c6887a6766b0fe63acd2ab51c0d"
 CLOSURE = {"saved_search.py", "admission.py", "numerics.py", "geometry_volume.py"}
@@ -48,6 +51,11 @@ INPUT_ROLES = {
     "source_spectra",
     *(f"pair_plus_{index:02d}" for index in range(8)),
 }
+GEOMETRY_ROLES = {
+    "gas_geometry", "liquid_geometry", "volume_w4", "volume_identity",
+    "volume_provenance", "volume_restoration",
+}
+MATRIX_ONLY_ROLES = INPUT_ROLES - GEOMETRY_ROLES
 NO_CLAIMS = {
     "scientific_acceptance": False,
     "numerical_acceptance": False,
@@ -241,13 +249,32 @@ def empty_output(path, prepared=None):
     return path
 
 
+def saved_packet_profile(interface, packet):
+    """Keep the legacy and exact coarse matrix-only bindings disjoint."""
+    if interface == SAVED_INTERFACE:
+        expected = (PACKET_SCHEMA, PRODUCER, INPUT_ROLES)
+    else:
+        require(interface == MATRIX_ONLY_INTERFACE, "unsupported worker interface")
+        expected = (MATRIX_ONLY_PACKET_SCHEMA, COARSE_PRODUCER, MATRIX_ONLY_ROLES)
+        require(
+            packet["model"]["physics"]["ca_in"] == -0.0038
+            and packet["reference_rectangles"] == [],
+            "matrix-only anchor or reference policy differs",
+        )
+    schema, producer, roles = expected
+    require(packet.get("schema") == schema, "saved packet subtype differs")
+    require(packet["authority"].get("source_commit") == producer, "saved producer subtype differs")
+    require(set(packet["inputs"]) == roles, "saved input roles differ from subtype")
+    return producer
+
+
 def saved_bindings(args, guard):
     config_path = regular_path(args.configuration)
     root = config_path.parent
     config = read_json(config_path)
     require(
         set(config) == {"case", "entrypoint", "files", "worker_interface", "packet"}
-        and config["worker_interface"] == SAVED_INTERFACE,
+        and config["worker_interface"] in (SAVED_INTERFACE, MATRIX_ONLY_INTERFACE),
         "saved worker configuration schema differs",
     )
     case_path = regular_path(args.case)
@@ -262,8 +289,7 @@ def saved_bindings(args, guard):
     packet_path = Path(packet_record["path"])
     packet = read_json(packet_path)
     require(
-        packet.get("schema") == PACKET_SCHEMA
-        and set(packet)
+        set(packet)
         == {
             "schema",
             "authority",
@@ -280,9 +306,10 @@ def saved_bindings(args, guard):
         },
         "saved packet schema differs",
     )
+    producer = saved_packet_profile(config["worker_interface"], packet)
     authority = packet["authority"]
     require(
-        authority.get("source_commit") == PRODUCER
+        authority.get("source_commit") == producer
         and authority.get("pyoomph_commit") == PIN
         and authority.get("native_core_sha256") == CORE
         and authority.get("pencil_sign") == "J=-dR/dU; Jv=lambda Mv",
@@ -313,7 +340,6 @@ def saved_bindings(args, guard):
         worker == packet_path.parent / "saved_search.py",
         "only the packet saved_search.py entrypoint is allowed",
     )
-    require(set(packet["inputs"]) == INPUT_ROLES, "exactly the thirty bound input roles required")
     witness = {}
     for role, declaration in packet["inputs"].items():
         require(
@@ -452,6 +478,14 @@ def metadata_check(prepared, guard):
         and checked.get("pencil_sign") == prepared["packet"]["authority"]["pencil_sign"],
         "child checked target metadata differs",
     )
+    if prepared["config"]["worker_interface"] == MATRIX_ONLY_INTERFACE:
+        require(
+            checked.get("matrix_only") is True
+            and checked.get("geometry_diagnostics_available") is False
+            and checked.get("unavailable_geometry_roles") == sorted(GEOMETRY_ROLES)
+            and checked.get("reference_rectangles") == [],
+            "child matrix-only scope differs",
+        )
     empty_output(prepared["output"], prepared)
     stable_bindings(prepared, guard)
     return checked
@@ -573,9 +607,9 @@ def parent_manifest(prepared, arguments):
         "component_commit": prepared["component"]["commit"],
         "component": prepared["component"],
         "pyoomph": prepared["environment"],
-        "worker_interface": SAVED_INTERFACE,
+        "worker_interface": prepared["config"]["worker_interface"],
         "packet": prepared["packet_record"],
-        "saved_producer_commit": PRODUCER,
+        "saved_producer_commit": prepared["packet"]["authority"]["source_commit"],
         "child_argv": child_argv(prepared, check=False),
         "qualification_scope": "administrative saved-spectrum envelope; no physical or spectral certificate",
     }
@@ -732,7 +766,7 @@ def saved_main(args, arguments):
                 json.dumps(
                     {
                         "status": "metadata_checked_no_execution",
-                        "worker_interface": SAVED_INTERFACE,
+                        "worker_interface": prepared["config"]["worker_interface"],
                         "packet": prepared["packet_record"],
                         "child": checked,
                         "parent_output_written": False,
@@ -757,7 +791,10 @@ def main(argv=None) -> int:
     args = parser.parse_args(arguments)
     config = json.loads(args.configuration.read_text())
     if "worker_interface" in config:
-        require(config["worker_interface"] == SAVED_INTERFACE, "unsupported worker interface")
+        require(
+            config["worker_interface"] in (SAVED_INTERFACE, MATRIX_ONLY_INTERFACE),
+            "unsupported worker interface",
+        )
         return saved_main(args, arguments)
     root = args.configuration.resolve().parent
     if args.case.resolve() != Path(config["case"]).resolve():
