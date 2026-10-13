@@ -11,7 +11,7 @@ import sys
 import weakref
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 
 import numpy as np
 import pytest
@@ -308,14 +308,49 @@ class Continuation:
         self.derivative = np.zeros(0)  # The pinned reset retains current.
 
 
-def test_continuation_controls_and_vectors_restore_exactly():
+@pytest.mark.parametrize("inner_product", [None, "ndof"])
+def test_continuation_controls_and_vectors_restore_exactly(inner_product):
     problem = Continuation()
+    problem._arclength_inner_product = inner_product
     expected = fold.capture_continuation(problem)
+    assert expected["controls"]["_arclength_inner_product"] == inner_product
+    assert problem._arclength_inner_product == inner_product
     problem.current[:] = -9
     problem.derivative = np.array([8., 9.])
     problem.dp, problem.theta = 7., 8.
+    problem._arclength_inner_product = "ndof" if inner_product is None else None
+    problem._last_arclength_parameter = "Bo"
+    problem._solve_in_arclength_conti = "Bo"
+    problem.minimum_arclength_ds = .25
+    problem.max_newton_iterations = 37
+    problem.newton_relaxation_factor = .5
+    problem.newton_solver_tolerance = 1e-4
     fold.restore_continuation(problem, expected)
     assert fold.continuation_signature(fold.capture_continuation(problem)) == fold.continuation_signature(expected)
+    assert problem._arclength_inner_product == inner_product
+
+
+@pytest.mark.parametrize("inner_product", ["l2", "mass"])
+def test_unsupported_metric_is_refused_with_its_actual_control_value(inner_product):
+    problem = Continuation()
+    problem._arclength_inner_product = inner_product
+    with pytest.raises(fold.Refusal, match="unsupported_continuation_controls") as refusal:
+        fold.capture_continuation(problem)
+    assert refusal.value.evidence["_arclength_inner_product"] == inner_product
+    assert problem._arclength_inner_product == inner_product
+
+
+@pytest.mark.parametrize("field,value,label", [
+    ("_solve_in_arclength_conti", "Ca_in", "unsupported_continuation_controls"),
+    ("_last_arclength_parameter", "Bo", "unsupported_continuation_controls"),
+    ("_parked_continuation_data", ([], 1., 1.), "unsupported_parked_continuation_data"),
+])
+def test_active_parked_and_foreign_continuation_states_remain_refused(field, value, label):
+    problem = Continuation()
+    problem._arclength_inner_product = None
+    setattr(problem, field, value)
+    with pytest.raises(fold.Refusal, match=label):
+        fold.capture_continuation(problem)
 
 
 def test_original_empty_continuation_cannot_be_falsely_reported_restored():
@@ -733,6 +768,70 @@ def candidate_harness(monkeypatch, case, tmp_path):
         "roundtrip": {"after": stationary_signature(problem)}})
     return SimpleNamespace(adapter=adapter, prepared=prepared, output=output, layout=layout,
                            checkpoint_calls=checkpoint_calls, layout_calls=layout_calls)
+
+
+def test_execute_preserves_typed_control_refusal_evidence_and_releases_fake_problem(candidate_harness, monkeypatch):
+    h = candidate_harness
+    problem = h.adapter.problem
+    problem._arclength_inner_product = "mass"
+    evidence = {name: getattr(problem, name) for name in fold.CONTROLS}
+    releases = []
+    for name in ("set_output_directory", "set_linear_solver", "set_c_compiler",
+                 "setup_for_stability_analysis", "set_eigensolver", "initialise"):
+        setattr(problem, name, lambda *args, **kwargs: None)
+    problem.is_distributed = lambda: False
+    problem.release = lambda: releases.append("released")
+    h.adapter.canonicalise_continuation = lambda: fold.capture_continuation(problem)
+    core_path = h.output / "synthetic-core.so"
+    core_path.write_bytes(b"software-only placeholder; no native library")
+    core = SimpleNamespace(__file__=str(core_path), get_detect_inverted_elements=lambda: True,
+                           set_detect_inverted_elements=lambda value: None)
+    # Cached synthetic modules replace the runtime imports; no native code is loaded.
+    modules = {name: ModuleType(name) for name in ("pyoomph", "pyoomph.generic", "pyoomph.generic.problem",
+               "pyoomph.meshes", "pyoomph.meshes.mesh")}
+    modules["pyoomph"]._pyoomph_core = core
+    modules["pyoomph.generic.problem"].GenericProblemHooks = object
+    modules["pyoomph.meshes.mesh"].ODEStorageMesh = object
+    for name, module in modules.items():
+        monkeypatch.setitem(sys.modules, name, module)
+    bridge = SimpleNamespace(verify_problem=lambda p: None,
+                             restore_after_release=lambda **kwargs: {"verified": True})
+    monkeypatch.setattr(fold, "sha", lambda path: fold.diagnostic.CORE)
+    monkeypatch.setattr(fold, "construct_type", lambda *args: (type(problem), bridge))
+    monkeypatch.setattr(fold, "build_bridged", lambda *args: problem)
+    monkeypatch.setattr(fold, "Adapter", lambda *args: h.adapter)
+    monkeypatch.setattr(fold.approach.iii, "restore_checked", lambda *args: {"synthetic": True})
+    h.prepared.update(native_execution_authorized=True, environment={"native_core": {"path": str(core_path)}},
+                      cold={"actual_pins": {}, "loaded": {"serialized_state": {"payload_sha256": "synthetic"}}})
+    result = fold.execute(h.prepared, h.output, [], h.adapter.deadline)
+    assert result["refusal"]["label"] == "unsupported_continuation_controls"
+    assert result["refusal"]["evidence"] == evidence
+    assert json.loads((h.output / "result.json").read_text())["refusal"]["evidence"] == evidence
+    assert result["status"] == "inconclusive" and result["numerical_acceptance"] is False
+    assert releases == ["released"] and h.adapter.work["augmented_solve_calls"] == 0
+    assert all(result[name] is False for name in fold.NO_CLAIMS)
+
+
+def test_main_preserves_typed_outer_refusal_evidence(monkeypatch, case, tmp_path):
+    output = tmp_path / "runtime"
+    prepared = {"case": case, "output": output, "contract": {}, "records": [], "implementation": {}}
+    evidence = {"_arclength_inner_product": "mass", "_solve_in_arclength_conti": None}
+    monkeypatch.setattr(fold, "preflight", lambda args: prepared)
+    monkeypatch.setattr(fold, "manifest", lambda *args: {"synthetic": True})
+
+    def refuse(*args):
+        raise fold.Refusal("unsupported_continuation_controls", evidence)
+
+    monkeypatch.setattr(fold, "execute", refuse)
+    arguments = [item for name in ("source", "case", "manifest", "packet", "state", "spectrum", "out")
+                 for item in ("--" + name, str(tmp_path / name))]
+    arguments.extend(["--deadline", (datetime.now(UTC) + timedelta(minutes=1)).isoformat()])
+    assert fold.main(arguments) == 1
+    for name in ("failure.json", "completion.json"):
+        result = json.loads((output / name).read_text())
+        assert result["refusal"]["evidence"] == evidence
+        assert result["status"] == "inconclusive" and result["numerical_acceptance"] is False
+        assert all(result[claim] is False for claim in fold.NO_CLAIMS)
 
 
 def test_candidate_orchestration_normalizes_ndarray_layout_and_scopes_both_checkpoint_loads(candidate_harness):

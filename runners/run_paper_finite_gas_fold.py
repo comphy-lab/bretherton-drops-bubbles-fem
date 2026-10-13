@@ -567,7 +567,7 @@ def capture_continuation(p):
         controls[name] = value
     gate(controls['_last_arclength_parameter'] in (None, 'Ca_in')
          and controls['_solve_in_arclength_conti'] is None
-         and controls['_arclength_inner_product'] == 'ndof',
+         and controls['_arclength_inner_product'] in (None, 'ndof'),
          'unsupported_continuation_controls', controls)
     gate(hasattr(p, '_parked_continuation_data') and p._parked_continuation_data is None,
          'unsupported_parked_continuation_data')
@@ -1338,7 +1338,8 @@ def execute(prepared, output, arguments, deadline):
     except BaseException as error:  # noqa: BLE001 - retain partial evidence and restore on every failure
         result = {"schema": SCHEMA, "status": "inconclusive", "numerical_acceptance": False,
                   "refusal": {"label": getattr(error, "label", "native_construction_or_admission_refusal"),
-                              "error_type": type(error).__name__, "error": str(error)}, **NO_CLAIMS}
+                              "error_type": type(error).__name__, "error": str(error),
+                              "evidence": getattr(error, "evidence", None)}, **NO_CLAIMS}
     finally:
         released = problem is None
         try:
@@ -1429,7 +1430,8 @@ def main(argv=None):
     except BaseException as error:  # noqa: BLE001 - retain partial evidence and restore on every failure
         result = {"schema": SCHEMA, "status": "inconclusive", "numerical_acceptance": False,
                   "refusal": {"label": getattr(error, "label", "native_or_restoration_refusal"),
-                              "error_type": type(error).__name__, "error": str(error)}, **NO_CLAIMS}
+                              "error_type": type(error).__name__, "error": str(error),
+                              "evidence": getattr(error, "evidence", None)}, **NO_CLAIMS}
         write_json(output / "failure.json", result)
     write_json(output / "completion.json", {**result, "files": approach.iii.inventory(output)})
     runner.append_progress(output, {"event": "final", "status": result["status"],
