@@ -24,6 +24,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from runners import paper_c1_preparation as c1
 from runners import paper_owned_remesher as owned
 from runners import run_paper_volume_seed_remesh as seed
 
@@ -31,6 +32,7 @@ model, runner, history, diagnostic, remesh = seed.model, seed.runner, seed.histo
 require, sha, write_json = seed.require, seed.sha, seed.write_json
 ENTRYPOINT = "runners/run_paper_volume_owned_resume.py"
 HELPER = "runners/paper_owned_remesher.py"
+PREPARATION_HELPER = "runners/paper_c1_preparation.py"
 BASE = "c671377ef15934ed53f0d39192fcbc44d13d0a48"
 SCHEMA = "herrada-volume-owned-remesher-resume-v1"
 DEADLINE = "2026-10-13T04:41:19Z"
@@ -119,11 +121,12 @@ def source_records(parent, metadata_only):
             require(path.is_relative_to(ROOT), "helper imported from another component")
             names.add(str(path.relative_to(ROOT)))
     implementation = {}
-    for name in sorted(names | {ENTRYPOINT, HELPER}):
+    additions = {ENTRYPOINT, HELPER, PREPARATION_HELPER}
+    for name in sorted(names | additions):
         path = ROOT / name
         require(path.is_file() and not path.is_symlink(), "regular implementation file required")
         digest = sha(path)
-        if name not in {ENTRYPOINT, HELPER}:
+        if name not in additions:
             frozen = runner._git(ROOT, "show", f"{BASE}:{name}")
             require(frozen is not None and hashlib.sha256(frozen).hexdigest() == digest,
                     "frozen c671 helper or method changed: " + name)
@@ -301,8 +304,21 @@ def load_retained(problem, prepared, directory, phase, ode_type):
                                     Path.cwd(), prepared["snapshot_contract"]["payload_sha256"])
     for label, raw in (("before-endtime", before), ("after-endtime", after)):
         diagnostic.atomic(directory / (label + ".dump"), raw)
+    flags_before = c1.flags_record(problem, ode_type)
     # Match the accepted probe: its first flat capture follows only the load proof.
     first, flat_first = owned.pure_read(problem, ode_type, phase.check_wall)
+    prepared_stream = seed.snapshot(problem)
+    diagnostic.atomic(directory / "after-prepared.dump", prepared_stream)
+    preparation, topology = c1.verify_gas_preparation(after, prepared_stream, restart["meshes"][0]["path"])
+    inactive = c1.prove_inactive_gas_mids(problem, topology)
+    flags_prepared = c1.flags_record(problem, ode_type)
+    require(flags_before == flags_prepared, "C1 preparation changed equation numbers or pin flags")
+    preparation.update(inactivity=inactive, flags_before=flags_before, flags_prepared=flags_prepared,
+                       initial_first_flat_view_retained=True, liquid_refreshed=False)
+    write_json(directory / "c1-preparation.json", preparation)
+    phase.emit("gas_c1_dummy_prepared", before_sha256=preparation["before_sha256"],
+               prepared_sha256=preparation["prepared_sha256"],
+               half_sum_values_verified=preparation["half_sum_values_verified"])
     physical_after_first = owned.physical_history(problem, ode_type, phase.check_wall)
     second, flat_second = owned.pure_read(problem, ode_type, phase.check_wall)
     physical_after_second = owned.physical_history(problem, ode_type, phase.check_wall)
@@ -321,14 +337,17 @@ def load_retained(problem, prepared, directory, phase, ode_type):
     require(physical_after_first == physical_after_second
             == {key: first[key] for key in ("data_history_sha256", "history_values_with_repeats")},
             "first flat read changed physical pinned values, fields, histories or pin flags")
+    require(c1.flags_record(problem, ode_type) == flags_prepared,
+            "subsequent reads changed equation numbers or pin flags")
     after_reads = seed.snapshot(problem)
     diagnostic.atomic(directory / "after-pinned-reads.dump", after_reads)
-    require(history.normalized_bytes(after, Path.cwd()) == history.normalized_bytes(after_reads, Path.cwd()),
+    require(history.normalized_bytes(prepared_stream, Path.cwd()) == history.normalized_bytes(after_reads, Path.cwd()),
             "pinned read observations changed complete serialized physical history")
     frozen_state = seed.state_record(problem)
     restored = seed.restore(problem, frozen_state)  # Original strict signature/full-stream gate.
     record = {"verified": True, "full_stream_load_proof": proof, "endtime_restoration": intervention,
               "pinned_read_observation": observation, "snapshot_restore": restored,
+              "preparation": preparation, "strict_post_preparation_stream_gate_unchanged": True,
               "original_snapshot_gate_unchanged": True, "source_snapshot_stationary": False}
     write_json(directory / "load.json", record)
     return record

@@ -324,6 +324,11 @@ def test_first_and_later_flat_views_keep_actual_values_and_strict_physical_gates
     monkeypatch.setattr(driver.history, "verify_snapshots", prove_stream)
     monkeypatch.setattr(owned, "physical_history", physical_read)
     monkeypatch.setattr(owned, "pure_read", pure_read)
+    monkeypatch.setattr(driver.c1, "flags_record", lambda *args: {"flags": "unchanged"})
+    monkeypatch.setattr(driver.c1, "prove_inactive_gas_mids", lambda *args: {"verified": True})
+    monkeypatch.setattr(driver.c1, "verify_gas_preparation", lambda before, after, mesh: (
+        {"verified": True, "before_sha256": driver.c1.sha(before), "prepared_sha256": driver.c1.sha(after),
+         "half_sum_values_verified": 0}, {}))
     if fault == "strict_restore":
         def refuse(*args):
             raise ValueError("unchanged strict snapshot gate")
