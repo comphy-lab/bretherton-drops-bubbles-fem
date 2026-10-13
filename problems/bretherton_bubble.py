@@ -530,8 +530,14 @@ class VoidBubbleProblem(Problem):
         mesh = self.get_mesh("liquid/interface")
         elements = list(mesh.elements())
 
+        raw_coordinates = {}
+
         def key(node):
-            return (round(node.x(0), 12), round(node.x(1), 12))
+            raw = (node.x(0), node.x(1))
+            rounded = (round(raw[0], 12), round(raw[1], 12))
+            if raw_coordinates.setdefault(rounded, raw) != raw:
+                raise RuntimeError("distinct interface coordinates share a rounded connectivity key")
+            return rounded
 
         # Quadratic line elements are stored [end, mid, end].
         segments = []
@@ -575,7 +581,8 @@ class VoidBubbleProblem(Problem):
                 "the chain is not connected"
             )
 
-        pts = np.array([[z, r] for r, z in chain], dtype=float)
+        pts = np.array([[raw_coordinates[node][1], raw_coordinates[node][0]]
+                        for node in chain], dtype=float)
         return pts[:, 0], pts[:, 1]
 
     def measure_film(self, trim: float = 0.30):

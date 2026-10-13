@@ -637,6 +637,8 @@ def _stationary_state_signature(problem, azimuthal_stability):
 
     dofs, positional_dofs = problem.get_current_dofs()
     z, r = problem.interface_polyline()
+    # Preserve the legacy interface hash representation; native positions remain raw.
+    z, r = (np.asarray([round(float(value), 12) for value in axis]) for axis in (z, r))
     arrays = {"free_dofs": dofs, "positional_dof_mask": positional_dofs,
               "pinned_values_with_positions": problem.get_current_pinned_values(True),
               "interface_z": z, "interface_r": r}

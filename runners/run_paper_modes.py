@@ -33,6 +33,7 @@ from runners import run_paper_anchor_i as anchor_i
 from runners import run_paper_anchor_i_prefix as anchor_i_prefix
 from runners import run_paper_anchor_iii_from_stationary as anchor_iii
 from runners import run_paper_case as runner
+from runners import run_paper_iii_coarse_cold as coarse_cold
 from runners import run_paper_prefix_qualify as prefix_qualification
 from runners import run_paper_seed_requalify as requalification
 from runners import run_pressure_diagnostic as diagnostic
@@ -118,7 +119,7 @@ def relative_path(value):
     return path
 
 
-def request_contract(case, shifts, neigen, *, metadata_only=False):
+def request_contract(case, shifts, neigen, *, metadata_only=False, coarse_iii=False):
     case = model.validate_case(case)
     p = case["physics"]
     reference = metadata_only and p["ca_in"] == 0.02
@@ -132,14 +133,16 @@ def request_contract(case, shifts, neigen, *, metadata_only=False):
         "anchor geometry or formulation differs",
     )
     require(tuple(shifts) == SHIFTS and neigen == NEIGEN, "bounded mode/shift/pair request differs")
+    require(not coarse_iii or p["ca_in"] == anchor_iii.TARGET_CA,
+            "coarse m0 request requires the exact typed III cold observation")
     return {
-        "schema": "paper-returned-modes-request-v1",
+        "schema": coarse_cold.REQUEST_SCHEMA if coarse_iii else "paper-returned-modes-request-v1",
         "branch_candidate": ANCHORS.get(p["ca_in"], "III positive reference; metadata only"),
         "ca_in": p["ca_in"],
-        "modes": list(MODES),
+        "modes": [0] if coarse_iii else list(MODES),
         "shifts": list(SHIFTS),
         "neigen": NEIGEN,
-        "eigenproblem_calls": 4,
+        "eigenproblem_calls": 2 if coarse_iii else 4,
         "paper_time_factor": p["r_tube"] / p["r0"],
         "limits": LIMITS,
         "reference_metadata_only": reference,
@@ -151,6 +154,9 @@ def request_contract(case, shifts, neigen, *, metadata_only=False):
 
 def qualified_parent(runtime, case, *, parent=None, restart=None):
     """Verify the producer's complete five-gate and fresh cold-load evidence."""
+    if parent is not None and coarse_cold.is_producer(parent):
+        require(restart is not None, "typed coarse cold packet required")
+        return coarse_cold.admit_observation(runtime, parent, restart, case)
     runtime = Path(runtime).resolve(strict=True)
     completion_path = runtime / "completion.json"
     completion = json.loads(completion_path.read_text())
@@ -1126,6 +1132,10 @@ def preflight(args):
     require(parent_path.name == "run-manifest.json", "canonical actual parent manifest required")
     parent = json.loads(parent_path.read_text())
     case = model.read_case(args.case)
+    if coarse_cold.is_producer(parent):
+        require(Path(coarse_cold.__file__).resolve() == ROOT / coarse_cold.ENTRYPOINT,
+                "coarse helper imported from another component")
+        return coarse_cold.consumer_preflight(args, parent, case)
     request = request_contract(case, args.shifts, args.neigen, metadata_only=args.check)
     require(
         sha(args.case) == parent["case_sha256"] and parent["case_id"] == case["case_id"],
@@ -2135,8 +2145,12 @@ def plot_returned(searches, case, output):
     paths = [output / "returned-rates.pdf", output / "returned-rates.png"]
     require(all(not path.exists() for path in paths), "returned-rate plot already exists")
     with matplotlib.rc_context(settings):
-        figure, axes = plt.subplots(1, 2, figsize=(10, 4.5), constrained_layout=True)
-        for mode, axis in zip(MODES, axes, strict=True):
+        selected = tuple(searches)
+        require(selected in {(0,), MODES}, "unsupported returned-mode plot request")
+        figure, panels = plt.subplots(1, len(selected), figsize=(5 * len(selected), 4.5),
+                                     constrained_layout=True, squeeze=False)
+        axes = panels.ravel()
+        for mode, axis in zip(selected, axes, strict=True):
             for shift_index, search in enumerate(searches[mode]):
                 physical = []
                 for pair in search["pairs"]:
@@ -2204,7 +2218,20 @@ def plot_returned(searches, case, output):
     }
 
 
+def selected_modes(prepared):
+    request = prepared["request"]
+    coarse = request.get("schema") == coarse_cold.REQUEST_SCHEMA
+    expected = request_contract(prepared["case"], SHIFTS, NEIGEN, coarse_iii=coarse)
+    require(request == expected, "execution request differs from the validated bounded subtype")
+    if coarse:
+        require(prepared.get("execution_authorized") is True
+                and prepared.get("restart", {}).get("schema") == coarse_cold.PACKET_SCHEMA,
+                "coarse execution requires an admitted cold packet and execution seal")
+    return tuple(expected["modes"])
+
+
 def execute(prepared, output):
+    selected = selected_modes(prepared)
     result = {
         "schema": "paper-returned-modes-result-v1",
         "request": prepared["request"],
@@ -2215,7 +2242,7 @@ def execute(prepared, output):
         "parent_acceptance_changed": False,
     }
     all_searches = {}
-    for mode in MODES:
+    for mode in selected:
         searches = []
         for index, shift in enumerate(SHIFTS):
             runner.append_progress(
@@ -2296,6 +2323,7 @@ def main(argv=None):
         parser.add_argument("--" + name, type=Path, required=True)
     parser.add_argument("--shifts", nargs=2, type=float, required=True)
     parser.add_argument("--neigen", type=int, default=NEIGEN)
+    parser.add_argument("--seal", type=Path)
     parser.add_argument("--check", action="store_true")
     args = parser.parse_args(arguments)
     os.umask(0o077)
@@ -2308,11 +2336,18 @@ def main(argv=None):
     )
     if args.check:
         print(
-            json.dumps({"verified": True, "native_imported": False, "request": prepared["request"]})
+            json.dumps({"verified": True, "native_imported": False, "request": prepared["request"],
+                        "native_execution_authorized": False,
+                        "source_seals_pending": prepared.get("source_seals_pending", []),
+                        "required_seal": prepared.get("required_seal")})
         )
         return 0
     actual = manifest(args, prepared, arguments)
+    if prepared["request"]["schema"] == coarse_cold.REQUEST_SCHEMA:
+        actual["execution_seal"] = regular_record(args.seal)
     output.mkdir(parents=True, exist_ok=True, mode=0o700)
+    if "execution_seal" in actual:
+        diagnostic.atomic(output / "input-seal.json", Path(actual["execution_seal"]["path"]).read_bytes())
     write_json(output / "run-manifest.json", actual)
     runner.append_progress(
         output,

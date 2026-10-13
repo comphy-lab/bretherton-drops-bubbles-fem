@@ -48,6 +48,9 @@ def restart_bundle(tmp_path, monkeypatch):
         digest = hashlib.sha256(raw).hexdigest()
         source_records[relative] = {"sha256": digest, "committed_sha256": digest,
                                     "committed_matches": True}
+    # This synthetic current view is at PARENT_COMMIT, including its method bytes.
+    # Keep it independent so the source-drift negative controls can alter it.
+    current["sources"] = copy.deepcopy(source_records)
     component = {"commit": PARENT_COMMIT, "head": PARENT_COMMIT, "clean": True,
                  "status": [], "sources": source_records}
     environment = {"available": True, "version": "software_standin",
