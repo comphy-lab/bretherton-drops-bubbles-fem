@@ -7,6 +7,7 @@ import contextlib
 import copy
 import importlib.abc
 import json
+import struct
 import sys
 import weakref
 from datetime import UTC, datetime, timedelta
@@ -620,6 +621,8 @@ def candidate_harness(monkeypatch, case, tmp_path):
             self.inversion_reports = 7  # A previous solve's count, reset at this solve.
             self.request_quality_remesh = self.invert_during_solve = False
             self.restoration_effect = None
+            self._bifurcation_reactivation_after_adaptation = None
+            self.cache_invalidations = 0
             for name in fold.FLAGS:
                 setattr(self, name, False)
             for name in fold.EIGEN_FIELDS:
@@ -677,6 +680,13 @@ def candidate_harness(monkeypatch, case, tmp_path):
         def invalidate_cached_mesh_data(self):
             pass
 
+        def invalidate_eigendata(self):
+            assert self.tracking == "" and self._bifurcation_reactivation_after_adaptation is None
+            self.cache_invalidations += 1
+            self._last_eigenvalues = np.array([], dtype=complex)
+            self._last_eigenvectors = np.array([], dtype=complex)
+            self._last_eigenvalues_m = self._last_eigenvalues_k = None
+
         def payload(self):
             return json.dumps({"fields": self.fields.tolist(), "pins": self.pins.tolist(),
                                "ca_in": self.parameters["Ca_in"].value}).encode()
@@ -710,7 +720,9 @@ def candidate_harness(monkeypatch, case, tmp_path):
             self.monitor.before_iteration()
             self.fields[:] = [-2., 0., 0.]
             self.parameters["Ca_in"].value = fold.CA - 1e-5
-            self._last_eigenvectors = np.array([null])
+            self._last_eigenvalues = np.zeros(1, dtype=complex)
+            self._last_eigenvectors = np.array([null], dtype=complex)
+            self._last_eigenvalues_m = self._last_eigenvalues_k = None
             self.monitor.after_update()
             self.monitor.before_iteration()
             if self.request_quality_remesh:
@@ -768,8 +780,16 @@ def candidate_harness(monkeypatch, case, tmp_path):
     checkpoint_calls, layout_calls = [], []
 
     def stationary_signature(problem, *args):
+        values = problem._last_eigenvalues
+        count = 0 if values is None else len(values)
+        # Keep the actual zero-eigen stationary trailer gate in this fake path.
+        # Full pinned-writer behaviour is checked independently without native imports.
+        trailer = (struct.pack("<qq", 1, 4) + b"init" + struct.pack("<q", count)
+                   + (b"cached-eigenpair" if count else b"")
+                   + struct.pack("<qq", 0, 11) + b"EOF_pyoomph")
+        cache = fold.runner.snapshot_bc_cache_signature(trailer)
         return {"parameters": {name: parameter.value for name, parameter in problem.parameters.items()},
-                "fields": problem.fields.tolist(), "bc_cache_marker": "init", "layout": {"ndof": 3}}
+                "fields": problem.fields.tolist(), "bc_cache_marker": cache["bc_cache_marker"], "layout": {"ndof": 3}}
 
     def raw_layout(problem, n, mode):
         assert n == 3 and mode == 0 and isinstance(layout["types"], np.ndarray)
@@ -892,6 +912,55 @@ def test_candidate_orchestration_normalizes_ndarray_layout_and_scopes_both_check
     assert result["work"]["augmented_solve_calls"] == 1 and result["work"]["eigenproblem_calls"] == 2
     assert result["augmented_solve"]["inversion_reports_in_previous_solve_call_at_entry"] == 7
     assert result["augmented_solve"]["inversion_reports_in_augmented_solve_call"] == 0
+
+
+def test_tracked_cache_is_retired_before_stationary_gate_and_null_copy_survives(candidate_harness):
+    h = candidate_harness
+    result = fold.run_candidate(h.adapter, h.prepared, h.output, [])
+    assert result["status"] == "candidate_ready_for_cold_qualification", result
+    retirement = result["tracked_eigen_cache_retirement"]
+    assert retirement["native_method"] == "invalidate_eigendata"
+    assert retirement["pending_reactivation"] is False
+    assert retirement["tracked_null_retained_separately"] is True
+    assert h.adapter.problem.cache_invalidations == 1
+    assert retirement["before"]["_last_eigenvalues"]["shape"] == [1]
+    assert retirement["after"]["_last_eigenvalues"]["shape"] == [0]
+    assert retirement["after"]["_last_eigenvectors"]["shape"] == [0]
+    assert np.array_equal(np.load(h.output / "null.npy"), [1., 0., 0.])
+
+
+def test_pending_reactivation_is_refused_before_any_cache_clear(candidate_harness):
+    h = candidate_harness
+    h.adapter.problem._bifurcation_reactivation_after_adaptation = object()
+    result = fold.run_candidate(h.adapter, h.prepared, h.output, [])
+    assert result["status"] == "inconclusive"
+    assert result["refusal"]["label"] == "pending_bifurcation_reactivation_before_cache_retirement"
+    assert h.adapter.problem.cache_invalidations == 0
+    assert result["original_full_state_restored"] is True
+    assert not h.checkpoint_calls and result["work"]["eigenproblem_calls"] == 0
+
+
+def test_native_cache_clear_must_empty_all_four_caches(candidate_harness):
+    h = candidate_harness
+    h.adapter.problem.invalidate_eigendata = lambda: None
+    result = fold.run_candidate(h.adapter, h.prepared, h.output, [])
+    assert result["status"] == "inconclusive"
+    assert result["refusal"]["label"] == "tracked_eigen_cache_retirement_failed"
+    assert result["original_full_state_restored"] is True
+    assert not h.checkpoint_calls and result["work"]["eigenproblem_calls"] == 0
+
+
+def test_original_four_cache_witness_is_restored_after_retirement(candidate_harness):
+    h = candidate_harness
+    p = h.adapter.problem
+    p._last_eigenvalues = np.array([2j, -3. + 1j], dtype=complex)
+    p._last_eigenvectors = np.array([[1. + 2j, 3., 4.], [5., 6j, 7.]], dtype=complex)
+    p._last_eigenvalues_m = np.array([2, 3], dtype=np.int32)
+    p._last_eigenvalues_k = np.array([1.5, 2.5])
+    saved = h.adapter.signature()
+    p.invalidate_eigendata()
+    h.adapter.restore(saved, "cache-retirement-restoration")
+    assert h.adapter.signature()["signature"] == saved["signature"]
 
 
 def test_pending_quality_request_refuses_candidate_but_final_restoration_is_truthfully_successful(candidate_harness):

@@ -1282,6 +1282,21 @@ def run_candidate(adapter, prepared, output, arguments):
             result["augmented_solve"] = solve_record
             write_json(output / "augmented-solve.json", solve_record)
         gate(p.ndof() == N, "base_ndof_not_restored_after_tracking")
+        gate(p._bifurcation_reactivation_after_adaptation is None,
+             "pending_bifurcation_reactivation_before_cache_retirement")
+        tracked_cache = eigen_signature(copy_eigendata(p))
+        p.invalidate_eigendata()
+        empty_cache = copy_eigendata(p)
+        gate(all(isinstance(empty_cache[name], np.ndarray) and empty_cache[name].size == 0
+                 and empty_cache[name].dtype == np.dtype(np.complex128)
+                 for name in ("_last_eigenvalues", "_last_eigenvectors"))
+             and empty_cache["_last_eigenvalues_m"] is None
+             and empty_cache["_last_eigenvalues_k"] is None,
+             "tracked_eigen_cache_retirement_failed")
+        result["tracked_eigen_cache_retirement"] = {
+            "before": tracked_cache, "after": eigen_signature(empty_cache),
+            "native_method": "invalidate_eigendata", "pending_reactivation": False,
+            "tracked_null_retained_separately": True}
         original_history = history.serialized_metadata(Path(prepared["restart"]["state"]["path"]).read_bytes())
         result["preserved_time_dt_step_counts"] = history.check_time_history(p, original_history)
         case, adoption = adopt_measured_case(p, prepared["case"], ca_fold)
