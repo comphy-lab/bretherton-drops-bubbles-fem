@@ -52,9 +52,18 @@ def full_witness(ca, *, time=8.0, counter=4, dt=0.25, steady=True):
     data = []
     for index, kind in enumerate(("nodal", "position", "internal", "ode")):
         data.append({"name": kind + "/data0", "kind": kind,
+                     "stepper_index": 0,
                      "fields": [kind + "/field0"], "pins": [False], "equations": [index],
                      "rows": [[index + level + 0.125] for level in range(7)]})
-    return {"schema": "stone-jump-complete-physical-v2", "ndof": 4, "data": data,
+    return {"schema": "stone-jump-complete-physical-v3", "ndof": 4, "data": data,
+            "census": {"schema": "stone-raw-data-census-v1", "counts": {kind: 1 for kind in ("nodal", "position", "internal", "ode")},
+                "occurrences": [{"site": row["name"], "kind": row["kind"], "owner": row["name"]} for row in data],
+                "external": [], "enumerated_meshes": ["synthetic"],
+                "ownership": {"origin": "synthetic", "pyoomph_pin": study.PYOOMPH_PIN,
+                              "pointer_observed": False, "registered_count": 3}},
+            "policy": {"all_parameters": {"Ca_in": ca, "Bo": 1.56}, "default_scheme": "BDF2",
+                "serialization": {"output_step": counter, "continue_step": 0,
+                    "suggested_next_dt": dt, "run_endtime": None, "remesher_counter": 0}},
             "geometry": {"nodes": [[0.0, 1.0], [0.25, 1.25]], "connectivity": [0, 1],
                          "lagrangian": [[0.0, 1.0], [0.25, 1.25]]},
             "layout": {"ndof": 4, "types": [0, 1, 2, 3],
@@ -76,7 +85,7 @@ def synthetic_dump(mesh, witness):
         return integer(len(value)) + value.encode("ascii")
 
     return (string("pyoomph_dump") + string("0.1.6") + string("global")
-            + struct.pack("<dqqqq", witness["time"], witness["counter"], 0, 6, 1)
+            + struct.pack("<dqqqq", witness["time"], witness["policy"]["serialization"]["output_step"], 0, 6, 1)
             + string(mesh) + integer(1) + integer(0) + integer(len(witness["dts"]))
             + b"".join(struct.pack("<d", dt) for dt in witness["dts"])
             + integer(witness["counter"]) + struct.pack("<dd", witness["dts"][0], float("nan"))
@@ -368,6 +377,7 @@ def dynamic_packet(bundle):
         p = FakeProblem(plan["bindings"][role["direction"]]["target_case"], witness)
         metrics = fake_hooks(p).diagnostics(p)
         rows.append({"accepted_step_index": index, "t_hat": index * role["dt_hat"],
+                     "next_output_index": index,
                      "native_time": index * role["dt_solver"], "counter": index,
                      "dt_solver": role["dt_solver"], "state": state, "mesh_inventory": inventory,
                      "physical_witness": physical, "metrics": metrics,
@@ -376,13 +386,14 @@ def dynamic_packet(bundle):
                                             else "converged_native_transient"})
     work = runtime.empty_work()
     work.update(newton_updates=1, solve_calls=1, inversion_retries=[0], newton_step_updates=[1])
-    result = {"schema": "stone-figure7-dynamic-resume-v2", "study": study_ref,
+    result = {"schema": "stone-figure7-dynamic-resume-v3", "study": study_ref,
+              "next_output_index": 1,
               "role_id": role["role_id"], "parent_certificate": packet["directions"][role["direction"]]["parent_certificate"],
               "target_case": plan["bindings"][role["direction"]]["target_case"], "dt_hat": role["dt_hat"],
               "dt_solver": role["dt_solver"], "horizon_hat": role["horizon_hat"], "max_steps": role["max_steps"],
               "accepted_step_index": 1, "state": state, "mesh_inventory": inventory, "physical_witness": physical,
               "native_metadata": {"time": role["dt_solver"], "dts": witness["dts"], "unsteady_steps": 1,
-                                  "suggested_next_dt": role["dt_solver"]},
+                                  "suggested_next_dt": role["dt_solver"], "output_step": 1},
               "steppers": witness["steppers"], "solve_flags": runtime.DYNAMIC_FLAGS.copy(), "work": work,
               "step_ledger": binder.bind("dynamic-steps.json", {"study": study_ref, "role_id": role["role_id"], "rows": rows}),
               "pyoomph_pin": study.PYOOMPH_PIN, "source": packet["source"],
@@ -487,6 +498,8 @@ class FakeProblem:
         self.calls, self.records, self.rows = [], [], []
         self.fault, self.budget = None, None
         self._last_bc_setting = saved["bc_cache"]
+        self._suggested_next_dt = saved["policy"]["serialization"]["suggested_next_dt"]
+        self.default_timestepping_scheme = "BDF2"
         self.steppers = [Stepper(self, i, row["is_steady"]) for i, row in enumerate(saved["steppers"])]
         self.timestepper = self.steppers[0]
         for name, value in saved["flags"].items():
@@ -510,6 +523,8 @@ class FakeProblem:
         result = copy.deepcopy(self.witness)
         result["flags"] = {name: getattr(self, name) for name in study.FLAGS}
         result["bc_cache"] = self._last_bc_setting
+        result["policy"]["all_parameters"] = copy.deepcopy(result["parameters"])
+        result["policy"]["serialization"]["suggested_next_dt"] = self._suggested_next_dt
         result["pending_quality_remesh"]["requested"] = bool(self._domains_to_remesh)
         for row, stepper in zip(result["steppers"], self.steppers, strict=True):
             row["is_steady"] = stepper.steady
@@ -538,6 +553,9 @@ class FakeProblem:
                 p.witness["parameters"][name] = value
         return Parameter()
 
+    def get_global_parameter_names(self):
+        return sorted(self.witness["parameters"])
+
     def get_bifurcation_tracking_mode(self):
         return "fold" if self.fault == "tracker" else ""
 
@@ -555,6 +573,7 @@ class FakeProblem:
         assert kwargs == {"quiet": True, "additional_info": {"exchange_msh_file": {"mesh.msh": "/synthetic/mesh.msh"}}}
         self.witness = copy.deepcopy(self.saved)
         self._last_bc_setting = self.saved["bc_cache"]
+        self._suggested_next_dt = self.saved["policy"]["serialization"]["suggested_next_dt"]
         for name in study.FLAGS:
             setattr(self, name, False)
         for stepper in self.steppers:
@@ -621,6 +640,7 @@ class FakeProblem:
 
     def output(self):
         self.calls.append("output")
+        self.witness["policy"]["serialization"]["output_step"] += 1
         if self.fault == "output_history":
             self.witness["data"][0]["rows"][1][0] += 1
 
@@ -711,6 +731,7 @@ def test_fresh_sequence_loads_parent_and_fills_without_capsule_or_history_loss(b
                        "invalidate_eigendata", "invalidate_mesh_cache"]
     assert [block["rows"][0] for block in p.witness["data"]] == current
     assert p.witness["counter"] == 0 and p.witness["time"] == 0
+    assert p._suggested_next_dt == role["dt_solver"]
     assert p.case == target and p.get_global_parameter("Ca_in").value == role["target_ca"]
     got = runtime.fixed_steps(p, role, bundle.packet["controls"], bundle.packet["thresholds"], hooks,
                               datetime(2099, 1, 1, tzinfo=UTC))
@@ -826,11 +847,13 @@ def test_dynamic_resume_restores_full_history_policy_and_continues_without_start
                "state": {"path": "/synthetic/state.dump"}, "mesh_exchange": {"mesh.msh": "/synthetic/mesh.msh"}}
     runtime.resume_jump(cold, resumed, role, controls, cold_hooks)
     assert cold.raw() == saved
+    assert first["rows"][-1]["next_output_index"] == saved["policy"]["serialization"]["output_step"]
     assert cold.calls == ["load_state", "undo_steady_0", "undo_steady_1", "undo_steady_2"]
     got = runtime.fixed_steps(cold, role, controls, thresholds, cold_hooks, datetime(2099, 1, 1, tzinfo=UTC),
                               accepted_step_index=1, work=first["work"], retained_rows=first["rows"])
     assert cold.calls.count("solve") == 2 and got["work"]["solve_calls"] == 3
     assert got["terminal_witness"]["counter"] == 3 and [r["t_hat"] for r in got["rows"]] == [0, 50, 100, 150]
+    assert [row["next_output_index"] for row in got["rows"]] == [4, 5, 6, 7]
     assert not any(name in cold.calls for name in ("set_time", "impulsive_fill", "reset_counter", "set_Ca_in"))
     bad = FakeProblem(target, saved)
     bad.fault = "load_history"
@@ -1057,5 +1080,107 @@ def test_unfinished_native_solve_cannot_enter_an_unqualified_retry(bundle):
 def test_native_capture_obligations_remain_an_unqualified_contract():
     contract = runtime.native_capture_contract()
     assert contract["pyoomph_pin"] == study.PYOOMPH_PIN
-    assert contract["production_adapter_implemented"] is False
+    assert contract["production_adapter_implemented"] is True
+    assert contract["native_adapter_qualified"] is False
     assert "every actual ntstorage" in contract["history"]
+
+
+def complete_stepper_clock(problem):
+    """Model the observed complete native records, including dt-derived weights."""
+    original = problem.raw
+
+    def raw():
+        witness = original()
+        dt, previous = witness["dts"]
+        nt = 7
+        bdf1 = [[1.0] + [0.0] * (nt - 1), [1 / dt, -1 / dt] + [0.0] * (nt - 2), [0.0] * nt]
+        bdf2 = [[1.0] + [0.0] * (nt - 1),
+                [1 / dt + 1 / (dt + previous), -(dt + previous) / (dt * previous), dt / ((dt + previous) * previous)]
+                + [0.0] * (nt - 3), [0.0] * nt]
+        acceleration = [2 / (0.5 * dt * dt), -2 / (0.5 * dt * dt), 0.0, -2 / (dt * 0.5), -1.0, 0.0, 0.0]
+        velocity = [0.5 * dt * acceleration[0], 0.5 * dt * acceleration[1], 0.0,
+                    1 + 0.5 * dt * acceleration[3], dt * (1 - 0.5) + 0.5 * dt * acceleration[4], 0.0, 0.0]
+        newmark = [[1.0] + [0.0] * (nt - 1), velocity, acceleration]
+        for stepper in witness["steppers"]:
+            stepper.update(time=witness["time"], dts=witness["dts"][:], counter=witness["counter"],
+                           nprev_values=2, time_history=[witness["time"], witness["time"] - dt,
+                                                       witness["time"] - dt - previous],
+                           weights={"BDF1": copy.deepcopy(bdf1), "BDF2": copy.deepcopy(bdf2), "Newmark2": copy.deepcopy(newmark)})
+        return witness
+
+    problem.raw = raw
+
+
+@pytest.mark.parametrize("parent_time", [8.0, 0.0])
+def test_registered_startup_accepts_complete_clock_with_nonzero_origin_and_unequal_dt(bundle, parent_time):
+    p, hooks, parent, target, role = prepare_fake(bundle)
+    p.saved["time"] = p.witness["time"] = parent_time
+    p.saved["dts"] = p.witness["dts"] = [0.25, 0.125]
+    complete_stepper_clock(p)
+    parent["witness"] = p.raw()
+    current = [block["rows"][0][:] for block in parent["witness"]["data"]]
+    got = runtime.start_jump(p, parent, target, role, bundle.packet["controls"], hooks)
+    assert got["time"] == 0.0 and got["dts"] == [role["dt_solver"]] * 2
+    assert [block["rows"][0] for block in got["data"]] == current
+    assert got["steppers"][0]["time_history"] == [0.0, -role["dt_solver"], -2 * role["dt_solver"]]
+    assert p.calls.count("load_state") == 1 and "solve" not in p.calls
+
+
+@pytest.mark.parametrize("fault", ["registry", "counter", "history_clock", "weights"])
+def test_clock_transition_refuses_changes_outside_the_declared_operation(bundle, fault):
+    p, _hooks, _parent, _target, _role = prepare_fake(bundle)
+    complete_stepper_clock(p)
+    before = p.raw()
+    after = copy.deepcopy(before)
+    after["time"] = 0.0
+    for stepper in after["steppers"]:
+        stepper["time"] = 0.0
+        stepper["time_history"] = [0.0, -0.25, -0.5]
+    if fault == "registry":
+        after["steppers"][0]["ntstorage"] = 5
+    elif fault == "counter":
+        after["steppers"][0]["counter"] += 1
+    elif fault == "history_clock":
+        after["steppers"][0]["time_history"][1] += 0.125
+    else:
+        after["steppers"][0]["weights"]["BDF1"][1][0] += 1.0
+    with pytest.raises(ValueError):
+        runtime.clock_transition(before, after)
+
+
+def test_impulsive_dt_transition_refuses_finite_but_wrong_weights(bundle):
+    p, _hooks, _parent, _target, role = prepare_fake(bundle)
+    complete_stepper_clock(p)
+    before = p.raw()
+    p.assign_initial_values_impulsive(role["dt_solver"])
+    after = p.raw()
+    after["steppers"][0]["weights"]["BDF2"][1][1] += 1.0
+    with pytest.raises(ValueError, match="inconsistent native weight"):
+        runtime.clock_transition(before, after, dt=role["dt_solver"])
+
+
+@pytest.mark.parametrize("fault", ["increment", "continue_counter", "history", "pins"])
+def test_output_allows_only_the_proved_increment(bundle, fault):
+    p, _hooks, _parent, _target, _role = prepare_fake(bundle)
+    before = p.raw()
+    p.output()
+    after = p.raw()
+    assert runtime.output_transition(before, after) == before["policy"]["serialization"]["output_step"] + 1
+    if fault == "increment":
+        after["policy"]["serialization"]["output_step"] += 1
+    elif fault == "continue_counter":
+        after["policy"]["serialization"]["continue_step"] += 1
+    elif fault == "history":
+        after["data"][0]["rows"][1][0] += 1
+    else:
+        after["data"][0]["pins"][0] = not after["data"][0]["pins"][0]
+    with pytest.raises(ValueError, match="output changed"):
+        runtime.output_transition(before, after)
+
+
+def test_dynamic_resume_refuses_output_counter_drift(bundle):
+    resumed, study_ref, plan, role = dynamic_packet(bundle)
+    resumed["next_output_index"] += 1
+    reference = bundle.binder.bind("wrong-output-resume.json", resumed)
+    with pytest.raises(ValueError, match="next output index"):
+        cli.validate_dynamic_resume(reference, study_ref, bundle.packet, plan, role, study.Artifacts())

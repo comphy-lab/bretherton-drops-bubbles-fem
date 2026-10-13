@@ -220,6 +220,10 @@ def retained_row(row, role, thresholds, book):
     mesh_inventory(row.get("mesh_inventory"), state, book)
     witness = state_witness(row.get("physical_witness"), state, role["target_ca"], book)
     metadata = history.serialized_metadata(book.file(state, "retained native state").read_bytes())
+    next_output = integer(row.get("next_output_index"), "retained next output index", minimum=0)
+    require(metadata["output_step"] == next_output
+            and witness["policy"].get("serialization", {}).get("output_step") == next_output,
+            "retained output/checkpoint index differs")
     require(witness["time"] == row.get("native_time") and witness["counter"] == index
             and all(dt == role["dt_solver"] for dt in witness["dts"])
             and metadata["suggested_next_dt"] == role["dt_solver"]

@@ -24,7 +24,7 @@ BASE_MODE = {"bifurcation": "", "reactivation": None, "custom_assembler": None,
 WORK_KEYS = {"newton_updates", "solve_calls", "physical_remeshes", "inversion_retries",
              "newton_step_updates", "cumulative_transfer_relative", "transfer_ledger"}
 WITNESS_KEYS = {"schema", "ndof", "data", "geometry", "layout", "parameters", "time", "dts",
-                "counter", "steppers", "flags", "bc_cache", "mode", "pending_quality_remesh"}
+                "counter", "steppers", "flags", "bc_cache", "mode", "pending_quality_remesh", "census", "policy"}
 
 
 def validate_pending_remesh(policy):
@@ -37,9 +37,9 @@ def validate_pending_remesh(policy):
 
 
 def native_capture_contract():
-    """Specify the still-unimplemented native census; do not report qualification."""
+    """Specify the source census and its still-unestablished native qualification."""
     return {"schema": "stone-jump-native-capture-obligations-v1", "pyoomph_pin": study.PYOOMPH_PIN,
-            "production_adapter_implemented": False,
+            "production_adapter_implemented": True, "native_adapter_qualified": False,
             "data_census": ["recursive bulk, interface and ODE meshes", "nodal values and positions",
                             "element internal Data and global Data", "pinned and copy/alias values"],
             "history": "every native Data column at every actual ntstorage slot, including predictors",
@@ -93,7 +93,7 @@ def validate_witness(witness):
     does not prove that a native adapter actually visited every native Data.
     """
     require(isinstance(witness, dict) and set(witness) == WITNESS_KEYS
-            and witness["schema"] == "stone-jump-complete-physical-v2", "full physical witness required")
+            and witness["schema"] == "stone-jump-complete-physical-v3", "full physical witness required")
     ndof = integer(witness["ndof"], "native ndof")
     data = witness["data"]
     require(isinstance(data, list) and data and all(isinstance(row, dict) for row in data),
@@ -117,7 +117,7 @@ def validate_witness(witness):
             for value in row:
                 number(value, "native history value", signed=True)
         covered.update(e for e in equations if e >= 0)
-    require(kinds == {"nodal", "position", "internal", "ode"}
+    require(kinds <= {"nodal", "position", "internal", "ode"}
             and covered == set(range(ndof)), "incomplete native field/position/ODE equation coverage")
     geometry, layout = witness["geometry"], witness["layout"]
     require(isinstance(geometry, dict) and {"nodes", "connectivity", "lagrangian"} <= set(geometry)
@@ -152,7 +152,7 @@ def validate_witness(witness):
     steppers = witness["steppers"]
     require(isinstance(steppers, list) and steppers, "every actual native stepper must be recorded")
     for stepper in steppers:
-        require(isinstance(stepper, dict) and set(stepper) == {"type", "order", "ntstorage", "is_steady"}
+        require(isinstance(stepper, dict) and {"type", "order", "ntstorage", "is_steady"} <= set(stepper)
                 and isinstance(stepper["type"], str) and stepper["type"]
                 and stepper["order"] == 2 and stepper["ntstorage"] in (5, 7)
                 and type(stepper["is_steady"]) is bool, "unsupported native stepper/history layout")
@@ -160,6 +160,31 @@ def validate_witness(witness):
             and all(type(v) is bool for v in witness["flags"].values()), "actual solve flags required")
     require(witness["bc_cache"] in {"init", "stationary", "transient"}, "actual BC cache marker required")
     validate_pending_remesh(witness["pending_quality_remesh"])
+    from runners.paper_dynamic_capture import validate_census
+    validate_census(witness["census"], data, steppers)
+    if witness["census"]["ownership"]["origin"] == "exact_pinned_primary_factory_chain":
+        require(steppers[0]["time"] == witness["time"] and steppers[0]["dts"] == witness["dts"]
+                and steppers[0]["counter"] == witness["counter"], "primary stepper clock/counter witness differs")
+        require(isinstance(geometry.get("domains"), dict)
+                and set(geometry["domains"]) == set(witness["census"]["enumerated_meshes"]),
+                "native geometry/census mesh inventory differs")
+    require(isinstance(witness["policy"], dict) and {"all_parameters", "default_scheme"} <= set(witness["policy"])
+            and set(witness["policy"]) <= {"all_parameters", "default_scheme", "serialization"}
+            and witness["policy"]["default_scheme"] == "BDF2"
+            and isinstance(witness["policy"]["all_parameters"], dict)
+            and all(witness["policy"]["all_parameters"].get(name) == value for name, value in witness["parameters"].items()),
+            "complete live forcing/default stepping policy required")
+    for value in witness["policy"]["all_parameters"].values():
+        number(value, "native global parameter", signed=True)
+    if witness["census"]["ownership"]["origin"] == "exact_pinned_primary_factory_chain":
+        serialization = witness["policy"].get("serialization")
+        require(isinstance(serialization, dict) and set(serialization) == {"output_step", "continue_step",
+                "suggested_next_dt", "run_endtime", "remesher_counter"}, "complete serialization policy required")
+        for key in ("output_step", "continue_step", "remesher_counter"):
+            integer(serialization[key], "native " + key, minimum=0)
+        for key in ("suggested_next_dt", "run_endtime"):
+            if serialization[key] is not None:
+                number(serialization[key], "native " + key, positive=key == "suggested_next_dt", signed=key == "run_endtime")
     return copy.deepcopy(witness)
 
 
@@ -169,10 +194,79 @@ def physical(witness, *, current_only=False, omit=()):
         result.pop(key)
     for stepper in result.get("steppers", []):
         stepper.pop("is_steady")  # Flags/weight banks are checked separately.
+        stepper.pop("weights", None)
+        for key in omit:
+            stepper.pop(key, None)
+        if "time" in omit or "dts" in omit:
+            stepper.pop("time_history", None)
+    for view in result.get("geometry", {}).get("domains", {}).values():
+        view.pop("nodal_buffer", None)
+        view.pop("elemental_buffer", None)
     if current_only:
         for block in result["data"]:
             block["rows"] = block["rows"][:1]
     return result
+
+
+def stepper_registry(witness):
+    """Separate immutable registry fields from the declared clock/weight changes."""
+    dynamic = {"time", "time_history", "dts", "counter", "weights"}
+    return [{key: value for key, value in stepper.items() if key not in dynamic}
+            for stepper in witness["steppers"]]
+
+
+def history_times(current, dts):
+    result = [current]
+    for dt in dts:
+        current -= dt  # Pinned Time::time(t) uses this subtraction order.
+        result.append(current)
+    return result
+
+
+def clock_transition(before, after, *, dt=None):
+    require(stepper_registry(before) == stepper_registry(after), "clock transition changed stepper registry")
+    for old, new in zip(before["steppers"], after["steppers"], strict=True):
+        for key in ("time", "dts", "counter", "time_history", "weights"):
+            require((key in old) == (key in new), "clock transition changed stepper witness coverage")
+        if "time" in new:
+            require(new["time"] == after["time"] and new["counter"] == old["counter"],
+                    "clock transition changed actual counter/time policy")
+            require(new["dts"] == (old["dts"] if dt is None else [dt] * len(old["dts"])),
+                    "clock transition changed unregistered stored dts")
+            require(new["time_history"] == history_times(new["time"], new["dts"]),
+                    "native clock history is not source-consistent")
+        if dt is None:
+            require(old.get("weights") == new.get("weights"), "origin reset changed stepper weights")
+        elif "weights" in new:
+            banks = copy.deepcopy(old["weights"])
+            nt = old["ntstorage"]
+            require(set(banks) == {"BDF1", "BDF2", "Newmark2"}
+                    and all(len(bank) == 3 and all(len(row) == nt for row in bank) for bank in banks.values()),
+                    "complete pinned weight banks required for dt fill")
+            # Exact a186 set_weights formulas, with the frozen default beta1=beta2=1/2.
+            banks["BDF1"][1] = [1 / dt, -1 / dt] + [0.0] * (nt - 2)
+            banks["BDF2"][1] = [1 / dt + 1 / (dt + dt), -(dt + dt) / (dt * dt),
+                                 dt / ((dt + dt) * dt)] + [0.0] * (nt - 3)
+            acceleration = [0.0] * nt
+            acceleration[0], acceleration[1] = 2 / (0.5 * dt * dt), -2 / (0.5 * dt * dt)
+            acceleration[3], acceleration[4] = -2 / (dt * 0.5), (0.5 - 1) / 0.5
+            velocity = [0.0] * nt
+            velocity[0], velocity[1] = 0.5 * dt * acceleration[0], 0.5 * dt * acceleration[1]
+            velocity[3] = 1 + 0.5 * dt * acceleration[3]
+            velocity[4] = dt * (1 - 0.5) + 0.5 * dt * acceleration[4]
+            banks["Newmark2"][1], banks["Newmark2"][2] = velocity, acceleration
+            require(new["weights"] == banks, "impulsive dt fill has inconsistent native weight banks")
+
+
+def output_transition(before, after):
+    """Permit the one proved bookkeeping increment; all other fields stay exact."""
+    expected = copy.deepcopy(before)
+    serialization = expected["policy"].get("serialization")
+    require(isinstance(serialization, dict), "output serialization counter witness required")
+    current = integer(serialization.get("output_step"), "native output index", minimum=0)
+    serialization["output_step"] = current + 1
+    require(after == expected, "native output changed physical state/history or unregistered bookkeeping")
+    return current + 1
 
 
 def capture(problem, hooks):
@@ -192,6 +286,10 @@ def capture(problem, hooks):
     require(witness["flags"] == {name: getattr(problem, name) for name in study.FLAGS},
             "witness does not describe actual solve flags")
     require(witness["bc_cache"] == problem._last_bc_setting, "witness does not describe actual BC cache")
+    require(witness["policy"]["all_parameters"] == {name: float(problem.get_global_parameter(name).value)
+            for name in sorted(problem.get_global_parameter_names())}
+            and witness["policy"]["default_scheme"] == problem.default_timestepping_scheme,
+            "witness does not describe all live forcing/stepping controls")
     require(witness["pending_quality_remesh"] == pending_remesh_policy(problem, hooks),
             "witness does not describe the actual owned quality request")
     require(problem.get_bifurcation_tracking_mode() == ""
@@ -268,21 +366,29 @@ def start_jump(problem, parent, target, role, controls, hooks):
     problem.set_current_time(0.0, dimensional=False)
     clock_reset = capture(problem, hooks)
     require(physical(loaded, omit=("time",)) == physical(clock_reset, omit=("time",))
-            and loaded["steppers"] == clock_reset["steppers"]
             and clock_reset["time"] == 0.0, "fresh time-origin change altered physical state")
+    clock_transition(loaded, clock_reset)
     dt = number(role["dt_solver"], "explicit jump dt", positive=True)
     problem.assign_initial_values_impulsive(dt)
     filled = capture(problem, hooks)
     require(physical(clock_reset, current_only=True, omit=("dts",))
             == physical(filled, current_only=True, omit=("dts",))
-            and clock_reset["steppers"] == filled["steppers"]
             and all(value == dt for value in filled["dts"]), "impulsive fill overwrote current fold fields")
+    clock_transition(clock_reset, filled, dt=dt)
     for block in filled["data"]:
         rows = block["rows"]
         require(rows[1] == rows[0] and rows[2] == rows[0]
                 and all(v == 0 for row in rows[3:5] for v in row)
                 and (len(rows) == 5 or all(v == 0 for v in rows[5]) and rows[6] == rows[0]),
                 "stationary physical history or derivative/predictor fill failed")
+    # The native impulsive fill cannot change the Python scheduling suggestion.
+    # Bind this fresh jump to its already-registered fixed dt, including t0 saves.
+    problem._suggested_next_dt = dt
+    suggested = capture(problem, hooks)
+    before, after = copy.deepcopy(filled), copy.deepcopy(suggested)
+    for witness in (before, after):
+        witness["policy"].get("serialization", {}).pop("suggested_next_dt", None)
+    require(before == after, "fixed next-dt registration changed physical state/history")
     activation = activate_unsteady(problem, hooks)
     before_counter = capture(problem, hooks)
     problem.timestepper.set_num_unsteady_steps_done(0)
@@ -302,6 +408,7 @@ def start_jump(problem, parent, target, role, controls, hooks):
     after = capture(problem, hooks)
     old, new = physical(before), physical(after)
     old["parameters"]["Ca_in"] = new["parameters"]["Ca_in"]
+    old["policy"]["all_parameters"]["Ca_in"] = new["policy"]["all_parameters"]["Ca_in"]
     require(old == new and new["parameters"] == {"Ca_in": role["target_ca"], "Bo": study.MODEL["bond"]}
             and problem.case == target, "live Ca adoption changed fields/pins/history/geometry")
     problem.do_call_remeshing_when_necessary = False
@@ -711,8 +818,10 @@ def fixed_steps(problem, role, controls, thresholds, hooks, deadline, *,
     require(len(rows) == accepted_step_index + 1 if accepted_step_index else not rows,
             "resume must retain the original native rows")
     clock = 0.0
+    output_origin = integer(rows[0].get("next_output_index"), "retained output origin", minimum=0) if rows else None
     for index, row in enumerate(rows):
-        require(row.get("accepted_step_index") == index and row.get("native_time") == clock,
+        require(row.get("accepted_step_index") == index and row.get("native_time") == clock
+                and row.get("next_output_index") == output_origin + index,
                 "retained native row order/clock drifted")
         study.retained_row(row, role, thresholds, study.Artifacts())
         clock += role["dt_solver"]
@@ -726,7 +835,9 @@ def fixed_steps(problem, role, controls, thresholds, hooks, deadline, *,
     if accepted_step_index:
         restored = capture(problem, hooks)
         require(restored["time"] == rows[-1]["native_time"]
-                and restored["counter"] == accepted_step_index, "resume does not match its last retained row")
+                and restored["counter"] == accepted_step_index
+                and restored["policy"]["serialization"]["output_step"] == rows[-1]["next_output_index"],
+                "resume does not match its last retained row/output index")
     session = remesh_guard.installed() if remesh_guard is not None else deny_physical_remesh(problem)
     with session:
         return _advance_steps(problem, role, controls, thresholds, hooks, deadline,
@@ -759,6 +870,7 @@ def _advance_steps(problem, role, controls, thresholds, hooks, deadline, accepte
         row = {"accepted_step_index": 0, "t_hat": 0, "native_time": 0.0, "counter": 0,
                "dt_solver": role["dt_solver"], "field_qualification": "stationary_geometry_prejump_fluid_fields",
                "metrics": hooks.diagnostics(problem)}
+        row["next_output_index"] = initial["policy"]["serialization"]["output_step"]
         retained = hooks.retain(problem, row, initial)
         require(isinstance(retained, dict) and all(retained.get(k) == v for k, v in row.items())
                 and capture(problem, hooks) == initial, "retaining the initial row changed its qualification or state")
@@ -807,13 +919,16 @@ def _advance_steps(problem, role, controls, thresholds, hooks, deadline, accepte
                "field_qualification": "converged_native_transient", "metrics": metrics}
         # retain() owns the portable state/profile and complete mesh bindings.
         # Neither it nor output() may evolve or flatten the physical histories.
-        retained = hooks.retain(problem, row, after)
-        require(isinstance(retained, dict) and all(retained.get(k) == v for k, v in row.items())
-                and capture(problem, hooks) == after, "retaining the converged row changed qualification or physical state")
-        require(study.retained_row(retained, role, thresholds, study.Artifacts()) == after,
-                "retained accepted physical history differs")
+        # Save the accepted row AFTER the permitted output bookkeeping step.
+        # A cold load then starts at the same next output index as a warm run.
         problem.output()
-        require(capture(problem, hooks) == after, "native output changed physical state/history")
+        written = capture(problem, hooks)
+        row["next_output_index"] = output_transition(after, written)
+        retained = hooks.retain(problem, row, written)
+        require(isinstance(retained, dict) and all(retained.get(k) == v for k, v in row.items())
+                and capture(problem, hooks) == written, "retaining the converged row changed qualification or physical state")
+        require(study.retained_row(retained, role, thresholds, study.Artifacts()) == written,
+                "retained accepted physical history differs")
         rows.append(retained)
     return {"status": "horizon_reached_endpoint_unqualified", "numerical_acceptance": False,
             "endpoint_qualified": False, "pair_qualified": False, "rows": rows, "work": work,

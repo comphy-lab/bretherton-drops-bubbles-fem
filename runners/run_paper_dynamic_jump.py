@@ -26,6 +26,8 @@ IMPLEMENTATION = (
     "runners/run_paper_dynamic_jump.py",
     "runners/paper_dynamic_jump.py",
     "runners/paper_dynamic_jump_runtime.py",
+    "runners/paper_dynamic_capture.py",
+    "runners/paper_dynamic_state.py",
 )
 require = study.require
 
@@ -98,7 +100,7 @@ def validate_dynamic_resume(reference, study_reference, packet, plan, role, book
     direction = role["direction"]
     spec = packet["directions"][direction]
     binding = plan["bindings"][direction]
-    require(resumed.get("schema") == "stone-figure7-dynamic-resume-v2"
+    require(resumed.get("schema") == "stone-figure7-dynamic-resume-v3"
             and resumed.get("study") == study_reference
             and resumed.get("role_id") == role["role_id"]
             and resumed.get("parent_certificate") == spec["parent_certificate"]
@@ -113,7 +115,7 @@ def validate_dynamic_resume(reference, study_reference, packet, plan, role, book
     state = book.file(resumed["state"], "dynamic state")
     metadata = history.serialized_metadata(state.read_bytes())
     require(resumed.get("native_metadata") == {
-        key: metadata[key] for key in ("time", "dts", "unsteady_steps", "suggested_next_dt")},
+        key: metadata[key] for key in ("time", "dts", "unsteady_steps", "suggested_next_dt", "output_step")},
         "dynamic metadata differs from the actual saved clock/dts/counter")
     require(metadata["unsteady_steps"] == index and metadata["suggested_next_dt"] == role["dt_solver"]
             and all(dt == role["dt_solver"] for dt in metadata["dts"]),
@@ -134,6 +136,7 @@ def validate_dynamic_resume(reference, study_reference, packet, plan, role, book
     require(ledger.get("study") == study_reference and ledger.get("role_id") == role["role_id"]
             and isinstance(rows, list) and len(rows) == index + 1, "dynamic native step ledger is incomplete")
     clock = 0.0
+    output_origin = study.integer(rows[0].get("next_output_index"), "native output origin", minimum=0)
     for step, row in enumerate(rows):
         require(isinstance(row, dict)
                 and type(row.get("accepted_step_index")) is int and type(row.get("counter")) is int
@@ -142,7 +145,9 @@ def validate_dynamic_resume(reference, study_reference, packet, plan, role, book
                 and row.get("t_hat") == step * role["dt_hat"]
                 and row.get("native_time") == clock
                 and row.get("counter") == step
-                and row.get("dt_solver") == role["dt_solver"], "native clock/grid/counter ledger drifted")
+                and row.get("dt_solver") == role["dt_solver"]
+                and row.get("next_output_index") == output_origin + step,
+                "native clock/grid/counter/output ledger drifted")
         require(row.get("field_qualification") == (
             "stationary_geometry_prejump_fluid_fields" if step == 0 else "converged_native_transient"),
             "interpolated or pre-jump fluid fields cannot qualify an accepted transient row")
@@ -155,6 +160,9 @@ def validate_dynamic_resume(reference, study_reference, packet, plan, role, book
             clock += role["dt_solver"]
     require(clock == metadata["time"] and rows[-1]["state"] == resumed["state"],
             "dynamic checkpoint is not the last accepted native row")
+    require(type(resumed.get("next_output_index")) is int
+            and resumed["next_output_index"] == metadata["output_step"] == rows[-1]["next_output_index"],
+            "dynamic next output index differs from its retained checkpoint")
     work = runtime.validate_work(resumed.get("work"), packet["controls"], packet["thresholds"], index)
     require(resumed.get("pyoomph_pin") == study.PYOOMPH_PIN
             and resumed.get("source") == packet["source"]
