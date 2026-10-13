@@ -12,6 +12,7 @@ import argparse
 import contextlib
 import copy
 import hashlib
+import io
 import json
 import os
 import resource
@@ -76,6 +77,101 @@ def regular(path):
     gate(path.is_file() and not any(item.is_symlink() for item in (path, *path.parents)),
          "regular_authority_required", str(path))
     return {"path": str(path.resolve(strict=True)), "sha256": sha(path)}
+
+
+def canonical_mesh_exchange(references, source_base, bound_meshes):
+    """Use the pinned loader's spelling only for proven identical regular files."""
+    source_base = Path(source_base)
+    gate(source_base.is_dir() and not any(item.is_symlink() for item in (source_base, *source_base.parents)),
+         "regular_mesh_reference_base_required", str(source_base))
+    source_base = source_base.resolve(strict=True)
+    gate(len(references) == len(bound_meshes) and bool(references),
+         "mesh_reference_count_differs")
+    exchange = {}
+    for reference, bound in zip(references, bound_meshes, strict=True):
+        gate(isinstance(reference, str) and bool(reference) and "\0" not in reference
+             and Path(reference).suffix == ".msh" and reference not in exchange,
+             "invalid_or_duplicate_mesh_reference", reference)
+        source, target = regular(source_base / reference), regular(bound["path"])
+        gate(target["sha256"] == bound["sha256"] == source["sha256"],
+             "mesh_reference_content_differs", {"source": source, "target": target})
+        # MeshTemplate._define_state_file compares this exact relative spelling
+        # before deciding whether to replace its active template and remesher.
+        exchange[reference] = os.path.relpath(target["path"], source_base)
+    return exchange
+
+
+def owned_template_signature(problem):
+    """Keep template/owner identities; mesh reconstruction has no pointer identity."""
+    graph = template_registration(problem)
+    graph["domains"] = {name: {"template_id": row["template_id"]}
+                        for name, row in graph["domains"].items()}
+    return graph
+
+
+def load_with_bound_meshes(problem, state, bound_meshes, *, loader=None, **options):
+    """Retain the active template for memory and portable administrative loads.
+
+    This never removes inversion registrations or assigns a BC cache marker.
+    A fresh candidate load must first establish its own compatible template.
+    """
+    if isinstance(state, bytes):
+        payload, base, stream = state, Path.cwd(), io.BytesIO(state)
+    elif isinstance(state, io.BytesIO):
+        payload, base, stream = state.getvalue(), Path.cwd(), io.BytesIO(state.getvalue())
+    else:
+        record = regular(state)
+        stream = record["path"]
+        payload, base = Path(stream).read_bytes(), Path(stream).parent
+    references = [reference for _, _, reference in history.serialized_metadata(payload)["meshes"]]
+    actual = [regular(item._get_template()._meshfile) for item in problem._meshtemplate_list]
+    gate(actual == [{"path": str(Path(item["path"]).resolve(strict=True)), "sha256": item["sha256"]}
+                    for item in bound_meshes], "bound_live_mesh_changed")
+    exchange = canonical_mesh_exchange(references, base, bound_meshes)
+    extra = dict(options.pop("additional_info", {}))
+    gate(set(extra) <= {"exchange_msh_file"}, "unsupported_mesh_load_information")
+    # The checked byte identities supersede an absolute-path exchange from a
+    # portable packet, which would trigger replacement at this exact pin.
+    extra["exchange_msh_file"] = exchange
+    before = owned_template_signature(problem)
+    load = problem.load_state if loader is None else loader
+    result = load(stream, additional_info=extra, **options)
+    after = owned_template_signature(problem)
+    gate(before == after, "administrative_load_changed_template_ownership",
+         signature_mismatches(before, after))
+    return result
+
+
+def signature_mismatches(expected, actual, path=""):
+    """Name every changed signature leaf without writing native arrays."""
+    missing = object()
+
+    def compact(value):
+        if value is missing:
+            return {"present": False}
+        if value is None or isinstance(value, (bool, int, float)):
+            return value
+        if isinstance(value, str) and len(value) <= 160:
+            return value
+        raw = json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()
+        return {"type": type(value).__name__, "sha256": hashlib.sha256(raw).hexdigest(),
+                "encoded_bytes": len(raw)}
+
+    def walk(left, right, here):
+        if left == right:
+            return []
+        if isinstance(left, dict) and isinstance(right, dict):
+            return [item for key in sorted(set(left) | set(right))
+                    for item in walk(left.get(key, missing), right.get(key, missing),
+                                     f"{here}.{key}" if here else str(key))]
+        if isinstance(left, (list, tuple)) and isinstance(right, (list, tuple)):
+            return [item for index in range(max(len(left), len(right)))
+                    for item in walk(left[index] if index < len(left) else missing,
+                                     right[index] if index < len(right) else missing,
+                                     f"{here}[{index}]")]
+        return [{"path": here, "expected": compact(left), "actual": compact(right)}]
+
+    return walk(expected, actual, path)
 
 
 def required(problem, names):
@@ -866,7 +962,11 @@ class Adapter:
             p._azimuthal_mode_param_m.value = saved["native"]["signature"]["mode"]
             p.actions_before_stationary_solve(force_reassign_eqs=True)
             p.eigen_data_in_states = p.continuation_data_in_states = True
-            p._restore_state(saved["payload"])
+            bound_meshes = getattr(self, "bound_meshes", None)
+            if bound_meshes is None:
+                p._restore_state(saved["payload"])
+            else:
+                load_with_bound_meshes(p, saved["payload"], bound_meshes, quiet=True)
             for name, value in saved["native"]["eigendata"].items():
                 setattr(p, name, None if value is None else value.copy())
             p._azimuthal_mode_param_m.value = saved["native"]["signature"]["mode"]
@@ -888,6 +988,15 @@ class Adapter:
             p.case = copy.deepcopy(saved["case"])
             p.invalidate_cached_mesh_data()
             actual = self.signature()
+            differences = signature_mismatches(expected, actual["signature"])
+            fixed_differences = signature_mismatches(saved["fixed"], actual["fixed"], "fixed")
+            if (differences or fixed_differences) and hasattr(self, "output"):
+                gate(Path(label).name == label, "invalid_restoration_label", label)
+                write_json(self.output / ("restoration-" + label + ".json"), {
+                    "schema": "finite-gas-fold-restoration-difference-v1", "leg": label,
+                    "verified": False, "signature_differences": differences,
+                    "fixed_differences": fixed_differences,
+                })
             gate(actual["signature"] == expected, "full_fields_pins_history_or_controls_restore_failed", label)
             gate(actual["fixed"] == saved["fixed"], "fixed_layout_restore_failed", label)
         counters_after = {name: getattr(guard, name) for name in counter_names}
