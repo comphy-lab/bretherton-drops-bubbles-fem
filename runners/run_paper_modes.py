@@ -119,7 +119,12 @@ def relative_path(value):
     return path
 
 
-def request_contract(case, shifts, neigen, *, metadata_only=False, coarse_iii=False):
+def request_contract(case, shifts, neigen, *, metadata_only=False, coarse_iii=False, approach_iii=False):
+    if approach_iii:
+        require(not coarse_iii, "approach and original coarse request types cannot be combined")
+        from runners import run_paper_iii_fold_approach as approach
+
+        return approach.request_contract(case, shifts, neigen)
     case = model.validate_case(case)
     p = case["physics"]
     reference = metadata_only and p["ca_in"] == 0.02
@@ -1132,6 +1137,10 @@ def preflight(args):
     require(parent_path.name == "run-manifest.json", "canonical actual parent manifest required")
     parent = json.loads(parent_path.read_text())
     case = model.read_case(args.case)
+    if Path(parent.get("runner", {}).get("path", "")).name == "run_paper_iii_fold_approach.py":
+        from runners import run_paper_iii_fold_approach as approach
+
+        return approach.consumer_preflight(args, parent, case)
     if coarse_cold.is_producer(parent):
         require(Path(coarse_cold.__file__).resolve() == ROOT / coarse_cold.ENTRYPOINT,
                 "coarse helper imported from another component")
@@ -1943,7 +1952,8 @@ def compare_searches(first, second, mode):
 
 
 def parent_load_contract(prepared):
-    if prepared["case"]["physics"]["ca_in"] == anchor_iii.TARGET_CA:
+    if (prepared.get("request", {}).get("schema") == "paper-returned-III-approach-m0-request-v1"
+            or prepared["case"]["physics"]["ca_in"] == anchor_iii.TARGET_CA):
         return {
             "kind": "preserved-stationary-III-history",
             "module": anchor_iii.ENTRYPOINT,
@@ -1967,7 +1977,8 @@ def parent_load_contract(prepared):
 def restore_parent(problem, prepared, output):
     case, restart, cold = prepared["case"], prepared["restart"], prepared["cold"]
     restore = anchor.restore_checked
-    if case["physics"]["ca_in"] == anchor_iii.TARGET_CA:
+    if (prepared.get("request", {}).get("schema") == "paper-returned-III-approach-m0-request-v1"
+            or case["physics"]["ca_in"] == anchor_iii.TARGET_CA):
         problem._stationary_iii_receipts_directory = output / "stationary-loads"
         restore = anchor_iii.restore_checked
     if case["physics"]["ca_in"] == anchor_i.TARGET_CA:
@@ -2221,7 +2232,12 @@ def plot_returned(searches, case, output):
 def selected_modes(prepared):
     request = prepared["request"]
     coarse = request.get("schema") == coarse_cold.REQUEST_SCHEMA
-    expected = request_contract(prepared["case"], SHIFTS, NEIGEN, coarse_iii=coarse)
+    approach = request.get("schema") == "paper-returned-III-approach-m0-request-v1"
+    expected = request_contract(prepared["case"], SHIFTS, NEIGEN, coarse_iii=coarse, approach_iii=approach)
+    if approach:
+        require(prepared.get("execution_authorized") is True
+                and prepared.get("restart", {}).get("schema") == runner.RESUME_SCHEMA,
+                "approach execution requires an admitted completed-polish packet and execution seal")
     require(request == expected, "execution request differs from the validated bounded subtype")
     if coarse:
         require(prepared.get("execution_authorized") is True
@@ -2343,7 +2359,7 @@ def main(argv=None):
         )
         return 0
     actual = manifest(args, prepared, arguments)
-    if prepared["request"]["schema"] == coarse_cold.REQUEST_SCHEMA:
+    if prepared["request"]["schema"] in {coarse_cold.REQUEST_SCHEMA, "paper-returned-III-approach-m0-request-v1"}:
         actual["execution_seal"] = regular_record(args.seal)
     output.mkdir(parents=True, exist_ok=True, mode=0o700)
     if "execution_seal" in actual:
