@@ -223,6 +223,8 @@ def test_source_contract_binds_all_source_and_refuses_changed_physics(tmp_path, 
         if argv[0] == "ls-files":
             return ("\n".join(names) + "\n").encode()
         if argv[0] == "show":
+            if argv[1] == qualify.PRELAUNCH_COMMIT + ":" + fold.ENTRYPOINT:
+                return (tmp_path / fold.ENTRYPOINT).read_bytes()
             return baseline
         return b""
     monkeypatch.setattr(qualify, "ROOT", tmp_path)
@@ -634,3 +636,168 @@ def test_main_supplies_held_progress_before_admission_and_preserves_outer_fallba
     assert result["refusal"]["error"] == "software late escape" and result["numerical_acceptance"] is False
     assert result["same_instance_released"] is True and result["restoration"] == [{"software": True}]
     assert_spent_searches(result)
+
+
+@pytest.fixture
+def recovery_declaration(tmp_path):
+    """A synthetic future phase for checking predicates; never an operational declaration."""
+    now = datetime(2099, 1, 1, 12, tzinfo=UTC)
+    predecessor = {"terminal_checked_at": "2026-10-13T21:47:41.605879+00:00",
+                   "archive_verified_at": "2026-10-13T21:47:47.208982Z",
+                   "original_deadline_utc": qualify.ORIGINAL_QUALIFICATION_DEADLINE,
+                   "status": "failed", "new_work": {name: 0 for name in qualify.NEW_CAPS}}
+    requirements = {"schema": qualify.RECOVERY_KIND + "-declaration", "phase_kind": qualify.RECOVERY_KIND,
+                    "predecessor": predecessor, "source_commit": "software-source", "source_files": {"driver": "software"},
+                    "output": "software-new-owner-runtime",
+                    "inputs": [{"path": "software-only", "sha256": "software"}],
+                    "prior_cumulative_work": qualify.DEBITS, "new_work_caps": qualify.NEW_CAPS,
+                    "aggregate_caps": qualify.AGGREGATE_CAPS,
+                    "spectral_request": {"azimuthal_m": 0, "shifts": [-.001, .001], "neigen": 8, "max_retries": 0},
+                    "maximum_wall_seconds": 2700, "cold_load_required": True,
+                    "original_failures_and_acceptance_preserved": True,
+                    "released_parent_process_resumed": False, "old_unserialized_continuation_buffer_restored": False}
+    declaration = {**requirements, "issued_by": "root/Kelvin", "phase_authorized": True,
+                   "declared_at": (now - timedelta(seconds=1)).isoformat(),
+                   "deadline_utc": (now + timedelta(seconds=2699)).isoformat()}
+    reference = write(tmp_path / "software-recovery-declaration.json", declaration)
+    lineage = {"deadline_utc": qualify.ORIGINAL_QUALIFICATION_DEADLINE, "cumulative_work": qualify.DEBITS}
+    return declaration, reference, requirements, lineage, now
+
+
+def test_recovery_is_a_separate_prospective_clock_with_unchanged_work(recovery_declaration):
+    declaration, reference, requirements, lineage, now = recovery_declaration
+    recovered = qualify.recovery_phase_contract(declaration, reference, requirements, lineage, now=now)
+    assert lineage["deadline_utc"] == qualify.ORIGINAL_QUALIFICATION_DEADLINE
+    assert recovered["original_qualification_deadline_utc"] == lineage["deadline_utc"]
+    assert recovered["deadline_utc"] == recovered["prospective_deadline_utc"] == declaration["deadline_utc"]
+    assert recovered["phase_kind"] == qualify.RECOVERY_KIND and recovered["recovery_phase"] == reference
+    assert recovered["source_alone_authorizes_recovery"] is False
+    assert recovered["released_parent_process_resumed"] is False
+    assert recovered["predecessor_new_work"] == {name: 0 for name in qualify.NEW_CAPS}
+    result = qualify.new_result({"phase_kind": qualify.RECOVERY_KIND, "lineage": recovered})
+    assert result["schema"] == qualify.RECOVERY_KIND
+    assert result["original_qualification_deadline_utc"] == qualify.ORIGINAL_QUALIFICATION_DEADLINE
+    assert result["prospective_deadline_utc"] == declaration["deadline_utc"]
+    assert result["expired_predecessor"]["status"] == "failed"
+    assert result["old_unserialized_continuation_buffer_restored"] is False
+
+
+@pytest.mark.parametrize("key,value", [
+    ("phase_kind", qualify.SCHEMA), ("issued_by", "not-root"), ("phase_authorized", False),
+    ("source_commit", "unreviewed-source"), ("source_files", {"driver": "changed"}), ("output", "another-runtime"),
+    ("inputs", []), ("prior_cumulative_work", {**qualify.DEBITS, "eigenproblem_calls": 1}),
+    ("new_work_caps", {**qualify.NEW_CAPS, "augmented_solve_calls": 1}),
+    ("aggregate_caps", {**qualify.AGGREGATE_CAPS, "eigenproblem_calls": 3}),
+    ("spectral_request", {"azimuthal_m": 1, "shifts": [-.001, .001], "neigen": 8, "max_retries": 0}),
+    ("maximum_wall_seconds", 2701), ("released_parent_process_resumed", True),
+    ("old_unserialized_continuation_buffer_restored", True),
+])
+def test_recovery_rejects_work_source_inputs_caps_or_owner_changes(recovery_declaration, key, value):
+    declaration, reference, requirements, lineage, now = recovery_declaration
+    declaration = {**declaration, key: value}
+    with pytest.raises(fold.Refusal, match="prospective_recovery_declaration_differs"):
+        qualify.recovery_phase_contract(declaration, reference, requirements, lineage, now=now)
+
+
+@pytest.mark.parametrize("timing", ["before_terminal", "before_archive", "future_declaration", "expired", "too_long", "not_utc"])
+def test_recovery_clock_requires_later_root_declaration_and_a_finite_future_window(recovery_declaration, timing):
+    declaration, reference, requirements, lineage, now = recovery_declaration
+    declaration = dict(declaration)
+    if timing == "before_terminal":
+        now = datetime(2026, 10, 13, 22, tzinfo=UTC)
+        declaration.update(declared_at="2026-10-13T21:47:40+00:00", deadline_utc="2026-10-13T22:30:00+00:00")
+    elif timing == "before_archive":
+        now = datetime(2026, 10, 13, 22, tzinfo=UTC)
+        declaration.update(declared_at="2026-10-13T21:47:45+00:00", deadline_utc="2026-10-13T22:30:00+00:00")
+    elif timing == "future_declaration":
+        declaration["declared_at"] = (now + timedelta(seconds=1)).isoformat()
+    elif timing == "expired":
+        now += timedelta(seconds=2700)
+    elif timing == "too_long":
+        declaration["deadline_utc"] = (now + timedelta(seconds=2700)).isoformat()
+    else:
+        declaration["deadline_utc"] = "2099-01-01T12:30:00+01:00"
+    with pytest.raises(fold.Refusal, match="recovery_(phase_not_prospective_or_finite|deadline_utc_required)"):
+        qualify.recovery_phase_contract(declaration, reference, requirements, lineage, now=now)
+
+
+def test_default_expired_phase_cannot_acquire_the_recovery_clock(recovery_declaration):
+    declaration, reference, requirements, lineage, now = recovery_declaration
+    with pytest.raises(fold.Refusal, match="qualification_deadline_reset_refused"):
+        qualify.inherited_deadline(declaration["deadline_utc"], lineage, now=now)
+    with pytest.raises(fold.Refusal, match="inherited_qualification_deadline_expired"):
+        qualify.inherited_deadline(lineage["deadline_utc"], lineage, now=now)
+    changed = {**lineage, "deadline_utc": "2026-10-13T22:45:00+00:00"}
+    with pytest.raises(fold.Refusal, match="original_qualification_deadline_changed"):
+        qualify.recovery_phase_contract(declaration, reference, requirements, changed, now=now)
+
+
+def test_missing_or_mutated_exact_predecessor_receipt_refuses_before_new_clock(tmp_path, monkeypatch):
+    # Source paths remain inside a synthetic project; only an exact archive digest can open the bundle.
+    source = tmp_path / "project/repos/recovery"
+    source.mkdir(parents=True)
+    monkeypatch.setattr(qualify, "ROOT", source)
+    with pytest.raises(fold.Refusal, match="regular_authority_required"):
+        qualify.predecessor_contract({}, [])
+    archive = source.parents[1] / "scratch/figure3/stability/full-comparison-2026-10-12" / \
+        "recovery-aa922-20261013/qualification-prelaunch-archive.json"
+    write(archive, {"source": str(tmp_path / "old")})
+    with pytest.raises(fold.Refusal, match="exact_prelaunch_archive_required"):
+        qualify.predecessor_contract({}, [])
+    monkeypatch.setattr(qualify, "PRELAUNCH_ARCHIVE_SHA", fold.sha(archive))
+    with pytest.raises(fold.Refusal, match="regular_authority_required"):
+        qualify.predecessor_contract({}, [])
+    write(tmp_path / "old/attempts/attempt-0001/execution-terminal.json", {"native_execution_started": True})
+    with pytest.raises(fold.Refusal, match="exact_zero_work_prelaunch_terminal_required"):
+        qualify.predecessor_contract({}, [])
+
+
+@pytest.mark.parametrize("key,value", [("new_eigen_calls", 1), ("new_completed_updates", 1),
+    ("new_physical_remeshes", 1), ("native_execution_started", True), ("owned_processes_terminal", False)])
+def test_predecessor_semantics_refuse_spent_or_unsettled_work_even_with_bound_test_digest(tmp_path, monkeypatch, key, value):
+    source = tmp_path / "project/repos/recovery"
+    source.mkdir(parents=True)
+    monkeypatch.setattr(qualify, "ROOT", source)
+    old_root = tmp_path / "old"
+    archive = source.parents[1] / "scratch/figure3/stability/full-comparison-2026-10-12" / \
+        "recovery-aa922-20261013/qualification-prelaunch-archive.json"
+    write(archive, {"source": str(old_root)})
+    monkeypatch.setattr(qualify, "PRELAUNCH_ARCHIVE_SHA", fold.sha(archive))
+    terminal = {"schema": "stone-qualification-prelaunch-terminal-v1", "status": "failed",
+        "source_commit": qualify.PRELAUNCH_COMMIT, "original_deadline_utc": qualify.ORIGINAL_QUALIFICATION_DEADLINE,
+        "owned_processes_terminal": True, "native_pid_absent": True, "matching_processes": [],
+        "unit": {"LoadState": "not-found", "ActiveState": "inactive", "SubState": "dead", "MainPID": "0", "ControlGroup": ""},
+        "scientific_result_accepted": False, "numerical_acceptance": False, "native_execution_performed": False,
+        "native_execution_started": False, "numerical_work_started": False, "prior_failures_or_acceptance_changed": False,
+        "new_completed_updates": 0, "new_physical_remeshes": 0, "new_eigen_calls": 0,
+        "cumulative_prior_augmented_calls": 2, "cumulative_prior_augmented_updates": 6}
+    terminal[key] = value
+    record = write(old_root / "attempts/attempt-0001/execution-terminal.json", terminal)
+    monkeypatch.setattr(qualify, "PRELAUNCH_TERMINAL_SHA", record["sha256"])
+    with pytest.raises(fold.Refusal, match="prelaunch_not_proved_terminal_with_zero_work"):
+        qualify.predecessor_contract({}, [])
+
+
+@pytest.mark.parametrize("mutation", ["old_schema", "wrong_reference", "wrong_original_clock", "wrong_declared_at"])
+def test_recovery_active_admission_cannot_reuse_the_old_phase_or_another_declaration(admitted, mutation):
+    admission, prepared, tracker, now = admitted
+    recovery_ref = {"path": "software-root-declaration", "sha256": "software-exact-digest"}
+    prepared["phase_kind"] = qualify.RECOVERY_KIND
+    prepared["lineage"].update(recovery_phase=recovery_ref,
+        original_qualification_deadline_utc=qualify.ORIGINAL_QUALIFICATION_DEADLINE,
+        prospective_declared_at=now.isoformat())
+    expected = {"recovery_phase": recovery_ref, "original_deadline_utc": qualify.ORIGINAL_QUALIFICATION_DEADLINE,
+                "prospective_declared_at": now.isoformat()}
+    admission.update(schema=qualify.RECOVERY_KIND + "-admission", **expected)
+    tracker.update(schema=qualify.RECOVERY_KIND + "-active-tracker", phase_kind=qualify.RECOVERY_KIND, **expected)
+    if mutation == "old_schema":
+        admission["schema"] = qualify.SCHEMA + "-admission"
+    elif mutation == "wrong_reference":
+        admission["recovery_phase"] = {**recovery_ref, "sha256": "forged"}
+    elif mutation == "wrong_original_clock":
+        tracker["original_deadline_utc"] = "2026-10-13T22:45:00+00:00"
+    else:
+        tracker["prospective_declared_at"] = (now - timedelta(seconds=1)).isoformat()
+    admission["active_tracker"] = write(Path(admission["active_tracker"]["path"]), tracker)
+    with pytest.raises(fold.Refusal, match="(qualification_admission|recovery_active_admission_binding)_differs"):
+        qualify.admission_contract(admission, prepared, now=now)

@@ -37,6 +37,12 @@ BASE = "905c56d802ae85a3c10143f2f9f13bbc07f29ea1"
 ENTRYPOINT = "runners/run_paper_finite_gas_fold_qualify.py"
 TEST = "tests/test_paper_finite_gas_fold_qualify.py"
 SCHEMA = "saved-finite-gas-fold-qualification-only-v1"
+RECOVERY_KIND = "saved-finite-gas-fold-qualification-recovery-v1"
+PRELAUNCH_COMMIT = "9cfe77adaf0500fb48f98b2bfb9c2ec27bb8ad77"
+PRELAUNCH_TERMINAL_SHA = "0cc9c66c8462607e601dea70470ac56c66e9b04f032380f34492601b215b4bba"
+PRELAUNCH_ARCHIVE_SHA = "0045537f71e07eee9e692d1ea03ae115e8c0fa771b5b83c3f3dbf37c0cb75de6"
+ORIGINAL_QUALIFICATION_DEADLINE = "2026-10-13T21:45:00+00:00"
+RECOVERY_MAX_WALL_SECONDS = 2700
 PARENT_HASHES = {
     "runtime/run-manifest.json": "a35ed73d95748fffe21e86fbb467604d362019979f322ebb5c0b0412153a3436",
     "runtime/result.json": "aeae11edf4ae0f31f9d5a57eb510fd7932666c21dc30a3748dc3df8711671640",
@@ -83,6 +89,7 @@ def source_contract(parent, metadata_only):
     gate(parent["component_commit"] == parent["component"]["commit"] == BASE,
          "saved_candidate_source_differs")
     diagnostic.git(ROOT, "merge-base", "--is-ancestor", BASE, current["head"])
+    diagnostic.git(ROOT, "merge-base", "--is-ancestor", PRELAUNCH_COMMIT, current["head"])
     names = diagnostic.git(ROOT, "ls-tree", "-r", "--name-only", BASE).decode().splitlines()
     frozen = {name for name in names if name.endswith(".py")
               or name in ("pyproject.toml", "uv.lock", ".python-version")}
@@ -96,6 +103,9 @@ def source_contract(parent, metadata_only):
         if name not in allowed:
             expected = hashlib.sha256(diagnostic.git(ROOT, "show", f"{BASE}:{name}")).hexdigest()
             gate(actual["sha256"] == expected, "frozen_candidate_source_changed", name)
+        elif name == fold.ENTRYPOINT:
+            expected = hashlib.sha256(diagnostic.git(ROOT, "show", f"{PRELAUNCH_COMMIT}:{name}")).hexdigest()
+            gate(actual["sha256"] == expected, "reviewed_qualification_helper_changed")
         implementation[name] = actual
     for name, item in parent["implementation"].items():
         expected = hashlib.sha256(diagnostic.git(ROOT, "show", f"{BASE}:{name}")).hexdigest()
@@ -218,14 +228,15 @@ def admission_contract(admission, prepared, *, now=None):
     """Validate a separately issued active-phase receipt; never manufacture one."""
     records = []
     required = prepared["required_seal"]
-    gate(admission.get("schema") == SCHEMA + "-admission"
+    phase_kind = prepared.get("phase_kind", SCHEMA)
+    gate(admission.get("schema") == phase_kind + "-admission"
          and admission.get("native_execution_authorized") is True
          and admission.get("execution_seal") == required
          and admission.get("released_parent_process_resumed") is False,
          "qualification_admission_differs")
     tracker = read_bound(admission["active_tracker"], records)
-    gate(tracker.get("schema") == SCHEMA + "-active-tracker"
-         and tracker.get("status") == "running" and tracker.get("phase_kind") == SCHEMA
+    gate(tracker.get("schema") == phase_kind + "-active-tracker"
+         and tracker.get("status") == "running" and tracker.get("phase_kind") == phase_kind
          and tracker.get("output") == str(prepared["output"])
          and tracker.get("source_commit") == prepared["component"]["commit"]
          and tracker.get("deadline_utc") == prepared["lineage"]["deadline_utc"]
@@ -236,6 +247,12 @@ def admission_contract(admission, prepared, *, now=None):
          and bool(tracker["reservation"]["id"])
          and tracker.get("phase_authorized") is True,
          "qualification_active_tracker_differs")
+    if phase_kind == RECOVERY_KIND:
+        expected = {"recovery_phase": prepared["lineage"]["recovery_phase"],
+                    "original_deadline_utc": prepared["lineage"]["original_qualification_deadline_utc"],
+                    "prospective_declared_at": prepared["lineage"]["prospective_declared_at"]}
+        gate(all(admission.get(key) == value and tracker.get(key) == value for key, value in expected.items()),
+             "recovery_active_admission_binding_differs")
     observed = datetime.fromisoformat(tracker["checked_at"])
     current = datetime.now(UTC) if now is None else now
     gate(observed.tzinfo is not None and 0 <= (current - observed).total_seconds() <= 300,
@@ -249,6 +266,130 @@ def inherited_deadline(requested, lineage, *, now=None):
     current = datetime.now(UTC) if now is None else now
     gate(deadline.tzinfo is not None and current < deadline, "inherited_qualification_deadline_expired")
     return deadline
+
+
+def utc_timestamp(value, label):
+    gate(isinstance(value, str), label)
+    try:
+        stamp = datetime.fromisoformat(value)
+    except ValueError as error:
+        raise fold.Refusal(label, value) from error
+    gate(stamp.tzinfo is not None and stamp.utcoffset().total_seconds() == 0, label)
+    return stamp
+
+
+def predecessor_contract(original_contract, records):
+    """Bind the expired, never-started phase and its immutable archival inventory."""
+    archive_path = ROOT.parents[1] / "scratch/figure3/stability/full-comparison-2026-10-12" / \
+        "recovery-aa922-20261013/qualification-prelaunch-archive.json"
+    archive_ref = regular(archive_path)
+    gate(archive_ref["sha256"] == PRELAUNCH_ARCHIVE_SHA, "exact_prelaunch_archive_required")
+    archive = read_bound(archive_ref, records)
+    old_root = Path(archive["source"])
+    terminal_ref = regular(old_root / "attempts/attempt-0001/execution-terminal.json")
+    gate(terminal_ref["sha256"] == PRELAUNCH_TERMINAL_SHA, "exact_zero_work_prelaunch_terminal_required")
+    terminal = read_bound(terminal_ref, records)
+    gate(terminal.get("schema") == "stone-qualification-prelaunch-terminal-v1"
+         and terminal.get("status") == "failed" and terminal.get("source_commit") == PRELAUNCH_COMMIT
+         and terminal.get("original_deadline_utc") == ORIGINAL_QUALIFICATION_DEADLINE
+         and terminal.get("owned_processes_terminal") is True and terminal.get("native_pid_absent") is True
+         and terminal.get("matching_processes") == []
+         and terminal.get("unit") == {"LoadState": "not-found", "ActiveState": "inactive", "SubState": "dead",
+                                     "MainPID": "0", "ControlGroup": ""}
+         and all(terminal.get(key) is False for key in ("scientific_result_accepted", "numerical_acceptance",
+                 "native_execution_performed", "native_execution_started", "numerical_work_started",
+                 "prior_failures_or_acceptance_changed"))
+         and all(type(terminal.get(key)) is int and terminal[key] == 0 for key in
+                 ("new_completed_updates", "new_physical_remeshes", "new_eigen_calls"))
+         and terminal.get("cumulative_prior_augmented_calls") == DEBITS["augmented_solve_calls"]
+         and terminal.get("cumulative_prior_augmented_updates") == DEBITS["completed_augmented_updates"],
+         "prelaunch_not_proved_terminal_with_zero_work")
+    gate(terminal["absent_execution_files"] == ["runtime", "preflight.json", "launch.json", "launch-audit.json",
+         "activation.json", "dispatch.json", "unit-command.json", "runner.log", "supervisor-result.json"]
+         and all(not (old_root / "attempts/attempt-0001" / name).exists()
+                 and not (old_root / "attempts/attempt-0001" / name).is_symlink()
+                 for name in terminal["absent_execution_files"]), "expired_prelaunch_execution_appeared")
+    files = archive["files"]
+    gate(archive.get("simulation") == terminal["simulation"] and archive.get("attempt") == terminal["attempt"]
+         and archive.get("file_count") == len(files) == 26
+         and archive.get("bytes") == sum(item["bytes"] for item in files.values()) == 3336679
+         and archive.get("source_deleted") is False and archive.get("destination")
+         and archive.get("protocol_files_verified_at") == archive.get("verified_at")
+         and archive.get("bounded_terminal_evidence") == {
+             "terminal_kind": "root-failed-execution-readback", "reported_numerical_acceptance": False,
+             "execution_terminal_sha256": PRELAUNCH_TERMINAL_SHA}, "prelaunch_archival_custody_differs")
+    for name, row in files.items():
+        gate(not Path(name).is_absolute() and ".." not in Path(name).parts, "prelaunch_inventory_path_invalid")
+        item = regular(old_root / name)
+        gate(item["sha256"] == row["sha256"] and Path(item["path"]).stat().st_size == row["bytes"],
+             "prelaunch_immutable_inventory_changed", name)
+        records.append(item)
+    old_seal_ref = regular(old_root / "launch/attempt-0001/execution-seal.json")
+    old_seal = read_bound(old_seal_ref, records)
+    old_prepared = read_bound(regular(old_root / "attempts/attempt-0001/prepared.json"), records)
+    gate(old_seal.get("schema") == SCHEMA + "-execution-seal"
+         and old_seal.get("source_commit") == old_prepared["source_commit"] == PRELAUNCH_COMMIT
+         and old_seal.get("contract") == original_contract
+         and old_prepared["execution_seal"] == old_seal_ref
+         and old_prepared["deadline_utc"] == ORIGINAL_QUALIFICATION_DEADLINE
+         and old_prepared["source_files"] == old_seal["source_files"], "expired_phase_bindings_changed")
+    old_run = read_bound(old_prepared["contract"], records)
+    old_source = Path(old_run["runner"]["path"]).parents[1]
+    for name, expected in old_seal["source_files"].items():
+        committed = hashlib.sha256(diagnostic.git(ROOT, "show", f"{PRELAUNCH_COMMIT}:{name}")).hexdigest()
+        item = regular(old_source / name)
+        gate(committed == expected == item["sha256"], "expired_phase_source_changed", name)
+        records.append(item)
+    for item in old_seal["inputs"]:
+        actual = regular(item["path"])
+        gate(actual["sha256"] == item["sha256"], "expired_phase_input_changed", actual["path"])
+        records.append(actual)
+    return {"terminal": terminal_ref, "archive": archive_ref, "execution_seal": old_seal_ref,
+            "source_commit": PRELAUNCH_COMMIT, "source_checkout": str(old_source), "root": str(old_root),
+            "terminal_checked_at": terminal["checked_at"], "archive_verified_at": archive["verified_at"],
+            "original_deadline_utc": ORIGINAL_QUALIFICATION_DEADLINE,
+            "status": "failed", "new_work": {name: 0 for name in NEW_CAPS}}
+
+
+def recovery_requirements(original_contract, component, implementation, environment, output, records):
+    """Describe required root evidence; never issue a phase or select a new clock."""
+    predecessor = predecessor_contract(original_contract, records)
+    return {"schema": RECOVERY_KIND + "-declaration", "phase_kind": RECOVERY_KIND,
+            "predecessor": predecessor, "original_phase_contract": original_contract,
+            "output": str(output),
+            "source_commit": component["commit"],
+            "source_files": {name: item["sha256"] for name, item in implementation.items()},
+            "pyoomph_commit": environment["commit"], "native_core_sha256": environment["native_core"]["sha256"],
+            "inputs": approach.coarse.unique_records(records),
+            "prior_cumulative_work": DEBITS, "new_work_caps": NEW_CAPS, "aggregate_caps": AGGREGATE_CAPS,
+            "spectral_request": {"azimuthal_m": 0, "shifts": fold.LIMITS["shifts"], "neigen": 8, "max_retries": 0},
+            "maximum_wall_seconds": RECOVERY_MAX_WALL_SECONDS, "cold_load_required": True,
+            "original_failures_and_acceptance_preserved": True, "released_parent_process_resumed": False,
+            "old_unserialized_continuation_buffer_restored": False}
+
+
+def recovery_phase_contract(declaration, reference, requirements, lineage, *, now=None):
+    gate(set(declaration) == set(requirements) | {"issued_by", "declared_at", "deadline_utc", "phase_authorized"}
+         and all(declaration[key] == value for key, value in requirements.items())
+         and declaration["issued_by"] == "root/Kelvin" and declaration["phase_authorized"] is True,
+         "prospective_recovery_declaration_differs")
+    declared = utc_timestamp(declaration["declared_at"], "recovery_declaration_utc_required")
+    deadline = utc_timestamp(declaration["deadline_utc"], "recovery_deadline_utc_required")
+    predecessor = requirements["predecessor"]
+    terminal = utc_timestamp(predecessor["terminal_checked_at"], "predecessor_terminal_utc_required")
+    archived = utc_timestamp(predecessor["archive_verified_at"], "predecessor_archive_utc_required")
+    current = datetime.now(UTC) if now is None else now
+    gate(max(terminal, archived) < declared <= current < deadline
+         and 0 < (deadline - declared).total_seconds() <= RECOVERY_MAX_WALL_SECONDS,
+         "recovery_phase_not_prospective_or_finite")
+    gate(lineage["deadline_utc"] == predecessor["original_deadline_utc"] == ORIGINAL_QUALIFICATION_DEADLINE,
+         "original_qualification_deadline_changed")
+    return {**lineage, "phase_kind": RECOVERY_KIND, "recovery_phase": reference,
+            "original_qualification_deadline_utc": ORIGINAL_QUALIFICATION_DEADLINE,
+            "prospective_deadline_utc": declaration["deadline_utc"], "deadline_utc": declaration["deadline_utc"],
+            "prospective_declared_at": declaration["declared_at"], "expired_predecessor": predecessor,
+            "predecessor_new_work": predecessor["new_work"], "released_parent_process_resumed": False,
+            "source_alone_authorizes_recovery": False}
 
 
 def preflight(args):
@@ -295,16 +436,36 @@ def preflight(args):
         "original_limits": fold.LIMITS, "lineage": lineage, "new_work_caps": NEW_CAPS,
         "released_parent_process_resumed": False, "original_parent_restoration_passed": False,
         "original_parent_numerical_acceptance": False, **fold.NO_CLAIMS}
+    recovery_path = getattr(args, "recovery_phase", None)
+    phase_kind = SCHEMA
+    if recovery_path is not None:
+        requirements = recovery_requirements(phase_contract, component, implementation, prepared["environment"],
+                                             prepared["output"], records)
+        recovery_ref = regular(recovery_path)
+        declaration = read_bound(recovery_ref, records)
+        lineage = recovery_phase_contract(declaration, recovery_ref, requirements, lineage)
+        phase_kind = RECOVERY_KIND
+        phase_contract = {**phase_contract, "schema": RECOVERY_KIND + "-contract", "phase_kind": phase_kind,
+                          "lineage": lineage, "recovery_phase": recovery_ref,
+                          "original_qualification_deadline_utc": ORIGINAL_QUALIFICATION_DEADLINE,
+                          "prospective_deadline_utc": lineage["prospective_deadline_utc"]}
     output = prepared["output"]
     prior_manifest = runner._read_json(Path(lineage["prior"]["manifest"]["path"]))
     protected = {attempt, Path(lineage["prior"]["result"]["path"]).parent.parent,
                  Path(parent["runner"]["path"]).parents[1], Path(prior_manifest["runner"]["path"]).parents[1]}
     gate(all(not output.is_relative_to(path) and not path.is_relative_to(output) for path in protected),
          "qualification_output_overlaps_parent_or_source")
+    if recovery_path is not None:
+        predecessor = lineage["expired_predecessor"]
+        gate(all(not output.is_relative_to(Path(path)) and not Path(path).is_relative_to(output)
+                 for path in (predecessor["root"], predecessor["source_checkout"])),
+             "recovery_output_overlaps_expired_phase")
+    records = approach.coarse.unique_records(records)
     prepared.update(origin=prepared["restart"], restart=candidate["restart"], case=candidate["case"],
                     candidate=candidate, parent_fold=parent, parent_result=result, lineage=lineage,
-                    contract=phase_contract, records=records, source_seals_pending=[], native_execution_authorized=False)
-    seal = {"schema": SCHEMA + "-execution-seal", "source_commit": component["commit"],
+                    phase_kind=phase_kind, contract=phase_contract, records=records,
+                    source_seals_pending=[], native_execution_authorized=False)
+    seal = {"schema": phase_kind + "-execution-seal", "source_commit": component["commit"],
             "source_files": {name: item["sha256"] for name, item in implementation.items()},
             "pyoomph_commit": prepared["environment"]["commit"],
             "native_core_sha256": prepared["environment"]["native_core"]["sha256"],
@@ -469,14 +630,22 @@ def manifest(case_path, prepared, arguments):
     actual = fold.manifest(case_path, prepared["case"], prepared, arguments)
     own = prepared["implementation"][ENTRYPOINT]
     actual.update(runner=own, runner_path=own["path"], runner_sha256=own["sha256"],
-                  argv=[sys.executable, own["path"], *arguments], qualification_schema=SCHEMA,
+                  argv=[sys.executable, own["path"], *arguments],
+                  qualification_schema=prepared.get("phase_kind", SCHEMA),
                   parent_fold=prepared["contract"]["failed_parent"], qualification_contract=prepared["contract"],
                   released_parent_process_resumed=False)
     return actual
 
 
-def new_result():
-    return {"schema": SCHEMA, "status": "inconclusive", "numerical_acceptance": False,
+def new_result(prepared=None):
+    lineage = {} if prepared is None else prepared["lineage"]
+    phase_kind = SCHEMA if prepared is None else prepared.get("phase_kind", SCHEMA)
+    return {"schema": phase_kind, "phase_kind": phase_kind, "status": "inconclusive", "numerical_acceptance": False,
+            "original_qualification_deadline_utc": ORIGINAL_QUALIFICATION_DEADLINE,
+            "prospective_deadline_utc": lineage.get("prospective_deadline_utc"),
+            "prospective_declared_at": lineage.get("prospective_declared_at"),
+            "recovery_phase": lineage.get("recovery_phase"), "expired_predecessor": lineage.get("expired_predecessor"),
+            "source_alone_authorizes_recovery": False,
             "released_parent_process_resumed": False, "same_instance_baseline_restored": False,
             "original_parent_restoration_passed": False, "original_parent_numerical_acceptance": False,
             "old_unserialized_continuation_buffer_restored": False,
@@ -506,7 +675,7 @@ def persist_result(output, result, label):
         directory = output / "phase-receipts"
         directory.mkdir(exist_ok=True)
         write_json(directory / (label + ".json"), {
-            "schema": SCHEMA + "-phase-receipt", "stage": label, "result": result,
+            "schema": result.get("phase_kind", SCHEMA) + "-phase-receipt", "stage": label, "result": result,
         })
     except BaseException as error:  # noqa: BLE001 - keep in-memory debits if the sink refuses
         record_refusal(result, "receipt_write_failure", error)
@@ -691,12 +860,13 @@ def cold_lane(session, same_session, prepared, output, deadline, bindings, resul
 
 def execute(prepared, output, arguments, deadline, *, result=None):
     gate(prepared["native_execution_authorized"] is True, "metadata_cannot_authorise_native_qualification")
-    result = new_result() if result is None else result
+    result = new_result(prepared) if result is None else result
     same_session, cold_session = NativeSession(), NativeSession()
     try:
         fold.stable_inputs(prepared)
         gate(datetime.now(UTC) < deadline
-             and deadline.isoformat() == prepared["lineage"]["deadline_utc"],
+             and deadline == utc_timestamp(prepared["lineage"]["deadline_utc"],
+                                           "qualification_deadline_utc_required"),
              "inherited_qualification_deadline_expired")
         bindings = native_bindings(prepared)
         same_instance_lane(same_session, prepared, output, arguments, deadline, bindings, result)
@@ -720,7 +890,7 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
     for name in ("source", "parent-attempt", "case", "out"):
         parser.add_argument("--" + name, type=Path, required=True)
-    for name in ("seal", "admission"):
+    for name in ("seal", "admission", "recovery-phase"):
         parser.add_argument("--" + name, type=Path)
     parser.add_argument("--deadline")
     parser.add_argument("--check", action="store_true")
@@ -741,7 +911,7 @@ def main(argv=None):
                                    "active_admission_pending": True}, first=True)
     write_json(output / "preparation.json", {"contract": prepared["contract"], "inputs": prepared["records"],
                "source_files": prepared["implementation"], "deadline_utc": args.deadline})
-    result = new_result()
+    result = new_result(prepared)
     try:
         await_active_admission(prepared, args.admission, args.deadline)
         write_json(output / "active-admission.json", prepared["active_admission"])
