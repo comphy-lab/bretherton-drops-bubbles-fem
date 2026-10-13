@@ -308,6 +308,43 @@ class Continuation:
         self.derivative = np.zeros(0)  # The pinned reset retains current.
 
 
+class SoftwarePaperTemplate:
+    def __init__(self, problem):
+        self.problem = problem
+        self._template_override = None
+        self.remesher = None
+
+    def get_problem(self):
+        return self.problem
+
+    def _get_template(self):
+        return self if self._template_override is None else self._template_override
+
+    def has_domain(self, name):
+        return name in {"liquid", "gas"}
+
+
+class SoftwareRemesher:
+    def __init__(self, template):
+        self.template = template
+        self._cnt = 3
+
+
+def software_template_registration(problem, aliased=False):
+    original = SoftwarePaperTemplate(problem)
+    active = SoftwarePaperTemplate(problem) if aliased else original
+    owner = SoftwareRemesher(active)
+    original.remesher = active.remesher = owner
+    if aliased:
+        original._template_override = active
+    problem._meshtemplate_list = [original]
+    problem._domains_remesh_on_inversion = {original, active}
+    problem._meshdict = {name: SimpleNamespace(_templatemesh=active, _interfacemeshes={})
+                        for name in ("liquid", "gas")}
+    problem._domains_to_remesh = set()
+    return original, active, owner
+
+
 @pytest.mark.parametrize("inner_product", [None, "ndof"])
 def test_continuation_controls_and_vectors_restore_exactly(inner_product):
     problem = Continuation()
@@ -578,8 +615,7 @@ def candidate_harness(monkeypatch, case, tmp_path):
             self._azimuthal_mode_param_m = SimpleNamespace(value=0)
             self._domains_to_remesh, self._meshdict = set(), {}
             self._remesh_requested_inside_solve = False
-            template = type("PaperTwoPhaseMesh", (), {})()
-            self._domains_remesh_on_inversion, self._meshtemplate_list = {template}, [template]
+            software_template_registration(self, aliased=True)
             self._inversion_remesh_threshold, self.inversion_remesh_max_retries = 0, 3
             self.inversion_reports = 7  # A previous solve's count, reset at this solve.
             self.request_quality_remesh = self.invert_during_solve = False
@@ -727,6 +763,7 @@ def candidate_harness(monkeypatch, case, tmp_path):
     problem = Problem()
     adapter = SoftwareAdapter(problem, prepared, output, SimpleNamespace(get_detect_inverted_elements=lambda: True),
                               object, object, None, datetime.now(UTC) + timedelta(minutes=5))
+    adapter.template_type, adapter.remesher_type = SoftwarePaperTemplate, SoftwareRemesher
     problem.adapter = adapter
     checkpoint_calls, layout_calls = [], []
 
@@ -788,10 +825,12 @@ def test_execute_preserves_typed_control_refusal_evidence_and_releases_fake_prob
                            set_detect_inverted_elements=lambda value: None)
     # Cached synthetic modules replace the runtime imports; no native code is loaded.
     modules = {name: ModuleType(name) for name in ("pyoomph", "pyoomph.generic", "pyoomph.generic.problem",
-               "pyoomph.meshes", "pyoomph.meshes.mesh")}
+               "pyoomph.meshes", "pyoomph.meshes.mesh", "pyoomph.meshes.remesher", "problems.paper_mesh")}
     modules["pyoomph"]._pyoomph_core = core
     modules["pyoomph.generic.problem"].GenericProblemHooks = object
     modules["pyoomph.meshes.mesh"].ODEStorageMesh = object
+    modules["pyoomph.meshes.remesher"].RemesherViaRecreation = SoftwareRemesher
+    modules["problems.paper_mesh"].PaperTwoPhaseMesh = SoftwarePaperTemplate
     for name, module in modules.items():
         monkeypatch.setitem(sys.modules, name, module)
     bridge = SimpleNamespace(verify_problem=lambda p: None,
@@ -1010,34 +1049,90 @@ def test_bridge_keeps_cached_builder_validation_path_and_rejects_a_different_cla
 
 
 @pytest.mark.parametrize("failure", [False, True])
-def test_inversion_wrapper_is_empty_only_during_augmented_scope_and_controls_restore(failure):
-    PaperTwoPhaseMesh = type("PaperTwoPhaseMesh", (), {})
-    template = PaperTwoPhaseMesh()
+@pytest.mark.parametrize("aliased", [False, True])
+def test_inversion_wrapper_is_empty_only_during_augmented_scope_and_controls_restore(failure, aliased):
     calls = []
-    problem = SimpleNamespace(_domains_remesh_on_inversion={template}, _meshtemplate_list=[template],
-              _inversion_remesh_threshold=0, inversion_remesh_max_retries=3,
+    problem = SimpleNamespace(_inversion_remesh_threshold=0, inversion_remesh_max_retries=3,
               max_newton_iterations=40, newton_relaxation_factor=1., newton_solver_tolerance=1e-8,
               _get_inversion_reports=lambda: 7, deactivate_bifurcation_tracking=lambda: calls.append("deactivate"),
               _set_globally_convergent_newton_method=lambda value: calls.append(("global", value)))
+    original, active, owner = software_template_registration(problem, aliased)
+    before = fold.template_registration(problem)
     core = SimpleNamespace(get_detect_inverted_elements=lambda: True)
     receipt = {}
     try:
-        with fold.augmented_controls(problem, core, receipt):
+        with fold.augmented_controls(problem, core, receipt, SoftwarePaperTemplate, SoftwareRemesher):
             assert problem._domains_remesh_on_inversion == set() and problem.inversion_remesh_max_retries == 0
             assert core.get_detect_inverted_elements() is True
+            assert original._get_template() is active and active.remesher is owner
+            assert receipt["inversion_template_ownership"]["registered_alias_count"] == (2 if aliased else 1)
             problem.max_newton_iterations = 20
             problem.newton_solver_tolerance = 1e-3
             if failure:
                 raise fold.Refusal("software-callback-refusal")
     except fold.Refusal:
         assert failure
-    assert problem._domains_remesh_on_inversion == {template} and problem.inversion_remesh_max_retries == 3
+    assert problem._domains_remesh_on_inversion == {original, active} and problem.inversion_remesh_max_retries == 3
+    assert fold.template_registration(problem) == before
     assert problem.max_newton_iterations == 40 and problem.newton_solver_tolerance == 1e-8
     assert receipt["original_solve_controls_restored"] is True and receipt["original_inversion_templates_restored"] is True
+    assert receipt["original_template_ownership_graph_restored"] is True
     assert receipt["inversion_reports_in_previous_solve_call_at_entry"] == 7
     assert receipt["inversion_reports_in_augmented_solve_call"] == 7
     assert receipt["inversion_counter_semantics"] == "reset at each native solve call; not cumulative"
     assert calls == ["deactivate", ("global", False)]
+
+
+@pytest.mark.parametrize("defect", ["foreign_registration", "unowned", "mixed_remesher", "stale_override", "active_override",
+                                  "opaque", "unknown_remesher", "wrong_active_domain"])
+def test_foreign_mixed_stale_or_opaque_template_registration_refuses_before_scope(defect):
+    problem = SimpleNamespace(_inversion_remesh_threshold=0, inversion_remesh_max_retries=3,
+                              max_newton_iterations=10, newton_relaxation_factor=1., newton_solver_tolerance=1e-8)
+    original, active, owner = software_template_registration(problem, aliased=True)
+    foreign = SoftwarePaperTemplate(problem)
+    foreign.remesher = owner
+    if defect == "foreign_registration":
+        problem._domains_remesh_on_inversion.add(foreign)
+    elif defect == "unowned":
+        active.problem = object()
+    elif defect == "mixed_remesher":
+        original.remesher = SoftwareRemesher(active)
+    elif defect == "stale_override":
+        original._template_override = foreign
+    elif defect == "active_override":
+        active._template_override = foreign
+    elif defect == "opaque":
+        problem._domains_remesh_on_inversion.add(object())
+    elif defect == "unknown_remesher":
+        original.remesher = active.remesher = SimpleNamespace(template=active)
+    else:
+        problem._meshdict["gas"]._templatemesh = original
+    before = fold.template_registration(problem)
+    with (
+        pytest.raises(fold.Refusal, match="finite_gas_inversion_template_policy_differs") as refusal,
+        fold.augmented_controls(problem, SimpleNamespace(get_detect_inverted_elements=lambda: True), {},
+                                SoftwarePaperTemplate, SoftwareRemesher),
+    ):
+        pytest.fail("foreign ownership cannot enter the augmented scope")
+    assert refusal.value.evidence == before
+    assert fold.template_registration(problem) == before and problem.inversion_remesh_max_retries == 3
+
+
+@pytest.mark.parametrize("detection,threshold", [(False, 0), (True, 1)])
+def test_inversion_policy_refusal_retains_actual_values_without_clearing_templates(detection, threshold):
+    problem = SimpleNamespace(_inversion_remesh_threshold=threshold, inversion_remesh_max_retries=3,
+                              max_newton_iterations=10, newton_relaxation_factor=1., newton_solver_tolerance=1e-8)
+    software_template_registration(problem, aliased=True)
+    before = fold.template_registration(problem)
+    with (
+        pytest.raises(fold.Refusal, match="finite_gas_inversion_template_policy_differs") as refusal,
+        fold.augmented_controls(problem, SimpleNamespace(get_detect_inverted_elements=lambda: detection), {},
+                                SoftwarePaperTemplate, SoftwareRemesher),
+    ):
+        pytest.fail("changed inversion policy cannot enter the augmented scope")
+    assert refusal.value.evidence["detect_inverted_elements"] is detection
+    assert refusal.value.evidence["inversion_remesh_threshold"] == threshold
+    assert refusal.value.evidence["registration"] == fold.template_registration(problem) == before
 
 
 def test_new_case_adoption_never_assigns_the_tracked_parameter(monkeypatch, case):

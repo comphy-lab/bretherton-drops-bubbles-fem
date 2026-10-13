@@ -1114,16 +1114,76 @@ def stationary_bc_idempotence(problem, full_capture=None):
             "bc_cache_marker": second["bc_cache_marker"], "layout": second["layout"]}
 
 
+def template_registration(problem):
+    """Read the reviewed owned-template graph without changing registration."""
+    originals = list(problem._meshtemplate_list)
+    domains = sorted(problem._meshdict.items())
+    inversion = list(problem._domains_remesh_on_inversion)
+    templates = []
+    for item in [*originals, *inversion, *(getattr(mesh, "_templatemesh", None) for _, mesh in domains)]:
+        if item is not None and not any(item is prior for prior in templates):
+            templates.append(item)
+    rows = []
+    for template in templates:
+        remesher = getattr(template, "remesher", None)
+        owner = None
+        try:
+            owner = template.get_problem()
+        except (AttributeError, RuntimeError, TypeError):
+            pass
+        rows.append({"template_id": id(template), "type": type(template).__module__ + "." + type(template).__qualname__,
+                     "override_id": id(template._template_override) if getattr(template, "_template_override", None) is not None else None,
+                     "owned": owner is problem, "remesher_id": id(remesher) if remesher is not None else None,
+                     "remesher_template_id": id(getattr(remesher, "template", None)) if remesher is not None else None,
+                     "counter": getattr(remesher, "_cnt", None)})
+    return {"original_templates": [id(item) for item in originals],
+            "inversion_templates": sorted(id(item) for item in inversion),
+            "quality_templates": sorted(id(item) for item in problem._domains_to_remesh),
+            "domains": {name: {"mesh_id": id(mesh), "template_id": id(getattr(mesh, "_templatemesh", None))}
+                        for name, mesh in domains}, "templates": sorted(rows, key=lambda row: row["template_id"])}
+
+
+def inspect_inversion_templates(problem, template_type, remesher_type):
+    """Admit one owned physical remesher's original/current template aliases."""
+    before = template_registration(problem)
+    originals = list(problem._meshtemplate_list)
+    domains = set(problem._domains_remesh_on_inversion)
+    label = "finite_gas_inversion_template_policy_differs"
+    gate(len(originals) == 1 and type(originals[0]) is template_type, label, before)
+    original = originals[0]
+    active = original._get_template()
+    owner = getattr(active, "remesher", None)
+    gate(type(active) is template_type and active._get_template() is active and type(owner) is remesher_type
+         and owner.template is active, label, before)
+    gate(domains == {original, active} and all(type(item) is template_type for item in domains), label, before)
+    gate(all(name in problem._meshdict and problem._meshdict[name]._templatemesh is active
+             for name in ("liquid", "gas")), label, before)
+    gate(all(item.get_problem() is problem and item.remesher is owner
+             and all(item.has_domain(name) for name in ("liquid", "gas"))
+             and (item is active or item is original and item._get_template() is active)
+             for item in domains), label, before)
+    after = template_registration(problem)
+    gate(before == after, "template_inspection_changed_registration", {"before": before, "after": after})
+    return {"registration_before": before, "registration_after_inspection": after,
+            "registration_changed_by_inspection": False, "original_template_id": id(original),
+            "active_template_id": id(active), "remesher_id": id(owner), "registered_alias_count": len(domains),
+            "one_owned_physical_remesher": True, "current_liquid_and_gas_template_verified": True}
+
+
 @contextlib.contextmanager
-def augmented_controls(problem, core, record):
+def augmented_controls(problem, core, record, template_type, remesher_type):
     saved = {name: getattr(problem, name) for name in
              ("max_newton_iterations", "newton_relaxation_factor", "newton_solver_tolerance",
               "inversion_remesh_max_retries")}
     domains = set(problem._domains_remesh_on_inversion)
-    expected = {template for template in problem._meshtemplate_list
-                if type(template).__name__ == "PaperTwoPhaseMesh"}
-    gate(domains == expected and len(expected) == 1 and core.get_detect_inverted_elements() is True
-         and problem._inversion_remesh_threshold == 0, "finite_gas_inversion_template_policy_differs")
+    policy = {"detect_inverted_elements": core.get_detect_inverted_elements(),
+              "inversion_remesh_threshold": problem._inversion_remesh_threshold,
+              "inversion_remesh_max_retries": problem.inversion_remesh_max_retries,
+              "registration": template_registration(problem)}
+    record["inversion_template_policy_before"] = policy
+    gate(policy["detect_inverted_elements"] is True and policy["inversion_remesh_threshold"] == 0,
+         "finite_gas_inversion_template_policy_differs", policy)
+    record["inversion_template_ownership"] = inspect_inversion_templates(problem, template_type, remesher_type)
     record.update(original_inversion_templates=[type(template).__name__ for template in domains],
                   inversion_reports_in_previous_solve_call_at_entry=problem._get_inversion_reports(),
                   inversion_counter_semantics="reset at each native solve call; not cumulative",
@@ -1140,13 +1200,20 @@ def augmented_controls(problem, core, record):
             setattr(problem, name, value)
         problem._set_globally_convergent_newton_method(False)
         problem._domains_remesh_on_inversion = domains
+        after = template_registration(problem)
+        before = record["inversion_template_ownership"]["registration_before"]
+        record["inversion_template_registration_after"] = after
+        record["original_template_ownership_graph_restored"] = (
+            {key: value for key, value in before.items() if key != "quality_templates"}
+            == {key: value for key, value in after.items() if key != "quality_templates"})
         record.update(inversion_reports_in_augmented_solve_call=problem._get_inversion_reports(),
                       original_inversion_templates_restored=problem._domains_remesh_on_inversion == domains,
                       original_solve_controls_restored=all(getattr(problem, name) == value for name, value in saved.items()),
                       globally_convergent_newton_restore_value=False,
                       globally_convergent_newton_restore_setter_called=True)
         gate(record["original_solve_controls_restored"] and record["original_inversion_templates_restored"]
-             and core.get_detect_inverted_elements() is True, "augmented_controls_restoration_failed")
+             and record["original_template_ownership_graph_restored"]
+             and core.get_detect_inverted_elements() is True, "augmented_controls_restoration_failed", record)
 
 
 def adopt_measured_case(problem, original, value):
@@ -1197,7 +1264,7 @@ def run_candidate(adapter, prepared, output, arguments):
         monitor = UpdateMonitor(adapter)
         try:
             adapter.check()
-            with augmented_controls(p, adapter.core, solve_record):
+            with augmented_controls(p, adapter.core, solve_record, adapter.template_type, adapter.remesher_type):
                 activate_fold(p, seed)
                 gate(not p._domains_remesh_on_inversion, "inversion_wrapper_rearmed_during_activation")
                 adapter.work["augmented_solve_calls"] += 1
@@ -1299,6 +1366,9 @@ def execute(prepared, output, arguments, deadline):
     from pyoomph import _pyoomph_core as core
     from pyoomph.generic.problem import GenericProblemHooks
     from pyoomph.meshes.mesh import ODEStorageMesh
+    from pyoomph.meshes.remesher import RemesherViaRecreation
+
+    from problems.paper_mesh import PaperTwoPhaseMesh
 
     gate(Path(core.__file__).resolve() == Path(prepared["environment"]["native_core"]["path"]).resolve()
          and sha(core.__file__) == diagnostic.CORE, "native_core_binding_changed")
@@ -1320,6 +1390,7 @@ def execute(prepared, output, arguments, deadline):
         gate(problem._inversion_remesh_threshold == 0, "inversion_escalation_not_disabled")
         problem._set_globally_convergent_newton_method(False)
         adapter = Adapter(problem, prepared, output, core, ODEStorageMesh, GenericProblemHooks, bridge, deadline)
+        adapter.template_type, adapter.remesher_type = PaperTwoPhaseMesh, RemesherViaRecreation
         problem._stationary_iii_receipts_directory = output / "loads"
         with adapter.mesh_guard.administrative("original-load"):
             loaded = approach.iii.restore_checked(problem, prepared["case"], prepared["restart"],
