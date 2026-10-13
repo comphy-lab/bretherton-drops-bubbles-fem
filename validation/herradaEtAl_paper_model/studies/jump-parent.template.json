@@ -1,0 +1,133 @@
+{
+  "artifacts": {
+    "case": {
+      "path": null,
+      "sha256": null
+    },
+    "fold_result": {
+      "path": null,
+      "sha256": null
+    },
+    "manifest": {
+      "path": null,
+      "sha256": null
+    },
+    "mesh_inventory": {
+      "path": null,
+      "sha256": null
+    },
+    "physical_signature": {
+      "path": null,
+      "sha256": null
+    },
+    "restart_packet": {
+      "path": null,
+      "sha256": null
+    },
+    "state": {
+      "path": null,
+      "sha256": null
+    },
+    "uncertainty_evidence": {
+      "path": null,
+      "sha256": null
+    }
+  },
+  "branch": null,
+  "branch_connection_evidence": null,
+  "ca_fold": null,
+  "checks": {
+    "branch_identity_qualified": null,
+    "cold_load_verified": null,
+    "direct_dynamic_null_passed": null,
+    "numerical_acceptance": null,
+    "returned_real_null_matched": null,
+    "stationary_fold_candidate_passed": null
+  },
+  "model": {
+    "bond": 1.56,
+    "domain_over_r": 15.0,
+    "frame": "front_tip",
+    "gas_density_ratio": 0.000949,
+    "gas_viscosity_ratio": 1.8e-05,
+    "gravity": "explicit_downward_both_phases",
+    "liquid_viscosity": 1.0,
+    "ports": "paper_mixed",
+    "pressure": "static",
+    "problem": "finite_gas_bubble",
+    "r0": 1.0,
+    "r_tube": 0.6716793862139855,
+    "reynolds": 0.0,
+    "stress_jump": "ordinary_laplace",
+    "surface_tension": 1.0,
+    "upper_tip_over_r": 10.0,
+    "vhat": 3.3,
+    "volume": "fixed_pressure_constraint"
+  },
+  "native_load_and_next_step_qualification": null,
+  "pyoomph_pin": "a186e07e1a7ea6b74ecc4f3a3fc39cc763d41618",
+  "schema": "stone-jump-parent-v1",
+  "status": null,
+  "uncertainty": {
+    "ca_interval": [
+      null,
+      null
+    ],
+    "method_and_error_budget": null,
+    "origin": "measured_total_fold_uncertainty",
+    "physical_and_numerical_sources_bound": null,
+    "radius": null,
+    "sources": {
+      "fold_location": {
+        "evidence": [
+          {
+            "path": null,
+            "sha256": null
+          }
+        ],
+        "included": null,
+        "justification": null
+      },
+      "model_sensitivity": {
+        "evidence": [
+          {
+            "path": null,
+            "sha256": null
+          }
+        ],
+        "included": null,
+        "justification": null
+      },
+      "solver_residual": {
+        "evidence": [
+          {
+            "path": null,
+            "sha256": null
+          }
+        ],
+        "included": null,
+        "justification": null
+      },
+      "spatial_discretisation": {
+        "evidence": [
+          {
+            "path": null,
+            "sha256": null
+          }
+        ],
+        "included": null,
+        "justification": null
+      },
+      "warm_cold_variability": {
+        "evidence": [
+          {
+            "path": null,
+            "sha256": null
+          }
+        ],
+        "included": null,
+        "justification": null
+      }
+    }
+  }
+}

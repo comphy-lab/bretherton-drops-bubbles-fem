@@ -1,0 +1,206 @@
+{
+  "controls": {
+    "allow_profile_interpolation": false,
+    "do_not_set_IC": true,
+    "max_newton_iterations_per_step": null,
+    "max_total_newton_updates": null,
+    "remesh": {
+      "automatic_postsolve_quality_remesh": false,
+      "final_time_remesh": false,
+      "history": "transfer_all_history_no_flatten_after_quality_remesh",
+      "interpolator": "existing_InternalInterpolator",
+      "max_inversion_retries_per_step": null,
+      "max_per_run": null,
+      "quality_timing": "between_steps_before_next_solve",
+      "topology": "unchanged"
+    },
+    "spatial_adapt": 0,
+    "startup": "stationary_impulsive_history_BDF1_then_BDF2",
+    "startup_registration_receipt": null,
+    "stepper_activation": "undo_make_steady_on_all_actual_steady_steppers_before_jump",
+    "temporal_error": null,
+    "temporal_scale": 1.0,
+    "time_support": "native_grid_and_two_sided_brackets"
+  },
+  "directions": {
+    "III_to_I": {
+      "endpoint_certificate": {
+        "path": null,
+        "sha256": null
+      },
+      "endpoint_qualification": {
+        "fresh_cold_load_required": true,
+        "max_newton_updates": null,
+        "max_remeshes": null,
+        "max_stationary_calls": null
+      },
+      "final_window_hat": null,
+      "horizon_hat": null,
+      "offset": {
+        "factor": null,
+        "maximum_delta": null,
+        "origin": "measured_fold_uncertainty",
+        "preregistered_before_trajectory": true,
+        "registration_receipt": null
+      },
+      "parent_certificate": {
+        "path": null,
+        "sha256": null
+      },
+      "target_ca": null
+    },
+    "I_to_III": {
+      "endpoint_certificate": {
+        "path": null,
+        "sha256": null
+      },
+      "endpoint_qualification": {
+        "fresh_cold_load_required": true,
+        "max_newton_updates": null,
+        "max_remeshes": null,
+        "max_stationary_calls": null
+      },
+      "final_window_hat": null,
+      "horizon_hat": null,
+      "offset": {
+        "factor": null,
+        "maximum_delta": null,
+        "origin": "measured_fold_uncertainty",
+        "preregistered_before_trajectory": true,
+        "registration_receipt": null
+      },
+      "parent_certificate": {
+        "path": null,
+        "sha256": null
+      },
+      "target_ca": null
+    }
+  },
+  "execution": {
+    "mode": "plan_only",
+    "native_execution_authorized": false
+  },
+  "model": {
+    "bond": 1.56,
+    "domain_over_r": 15.0,
+    "frame": "front_tip",
+    "gas_density_ratio": 0.000949,
+    "gas_viscosity_ratio": 1.8e-05,
+    "gravity": "explicit_downward_both_phases",
+    "liquid_viscosity": 1.0,
+    "ports": "paper_mixed",
+    "pressure": "static",
+    "problem": "finite_gas_bubble",
+    "r0": 1.0,
+    "r_tube": 0.6716793862139855,
+    "reynolds": 0.0,
+    "stress_jump": "ordinary_laplace",
+    "surface_tension": 1.0,
+    "upper_tip_over_r": 10.0,
+    "vhat": 3.3,
+    "volume": "fixed_pressure_constraint"
+  },
+  "roles": [
+    {
+      "direction": "I_to_III",
+      "dt_hat": 50,
+      "dt_solver": 33.583969310699274,
+      "max_steps": null,
+      "output_every_steps": 1,
+      "requested_profile_times_hat": [
+        31,
+        220,
+        430,
+        1000
+      ],
+      "role_id": "I_to_III_dt_hat_50",
+      "scalar_comparison_interval_hat": [
+        0,
+        1207
+      ]
+    },
+    {
+      "direction": "I_to_III",
+      "dt_hat": 25,
+      "dt_solver": 16.791984655349637,
+      "max_steps": null,
+      "output_every_steps": 1,
+      "requested_profile_times_hat": [
+        31,
+        220,
+        430,
+        1000
+      ],
+      "role_id": "I_to_III_dt_hat_25",
+      "scalar_comparison_interval_hat": [
+        0,
+        1207
+      ]
+    },
+    {
+      "direction": "III_to_I",
+      "dt_hat": 50,
+      "dt_solver": 33.583969310699274,
+      "max_steps": null,
+      "output_every_steps": 1,
+      "requested_profile_times_hat": [
+        10,
+        1018,
+        2005,
+        2990
+      ],
+      "role_id": "III_to_I_dt_hat_50",
+      "scalar_comparison_interval_hat": [
+        0,
+        3013
+      ]
+    },
+    {
+      "direction": "III_to_I",
+      "dt_hat": 25,
+      "dt_solver": 16.791984655349637,
+      "max_steps": null,
+      "output_every_steps": 1,
+      "requested_profile_times_hat": [
+        10,
+        1018,
+        2005,
+        2990
+      ],
+      "role_id": "III_to_I_dt_hat_25",
+      "scalar_comparison_interval_hat": [
+        0,
+        3013
+      ]
+    }
+  ],
+  "schema": "stone-figure7-jump-plan-v1",
+  "source": {
+    "fem_base_commit": "905c56d802ae85a3c10143f2f9f13bbc07f29ea1",
+    "isolated_published_implementation_commit": null,
+    "pyoomph_pin": "a186e07e1a7ea6b74ecc4f3a3fc39cc763d41618",
+    "source_seal": null
+  },
+  "threshold_evidence": {
+    "path": null,
+    "sha256": null
+  },
+  "thresholds": {
+    "cumulative_remesh_volume_relative": null,
+    "endpoint_profile_norm": null,
+    "endpoint_stationary_residual": null,
+    "endpoint_window_Ca_b_drift": null,
+    "endpoint_window_L_drift_over_R": null,
+    "flux_absolute": null,
+    "pair_Ca_b": null,
+    "pair_L_over_R": null,
+    "pair_profile_norm": null,
+    "remesh_geometry_profile_norm": null,
+    "remesh_history_profile_norm": null,
+    "remesh_volume_relative": null,
+    "static_port_pressure_absolute": null,
+    "surface_volume_relative": null,
+    "transient_newton_residual": null,
+    "volume_relative": null
+  }
+}
