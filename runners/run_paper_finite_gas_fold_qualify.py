@@ -595,6 +595,9 @@ def initialise(session, problem_type, prepared, output, core, ode_type, hook_typ
     problem.set_c_compiler("system")
     problem.setup_for_stability_analysis(azimuthal_stability=True, analytic_hessian=False)
     problem.set_eigensolver("spectra")
+    # Reconstruction must not request the default initial adaptive refinement.
+    problem.initial_adaption_steps = 0
+    gate(problem.project_initial_conditions is False, "initial_projection_forbidden_in_qualification")
     session.adapter = adapter = QualificationAdapter(
         problem, prepared, output, core, ode_type, hook_type, None, deadline
     )

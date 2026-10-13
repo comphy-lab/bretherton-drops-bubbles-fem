@@ -533,6 +533,44 @@ def test_actual_initialise_retains_handle_before_fallible_configuration(orchestr
     assert session.problem is problem and session.adapter is None
 
 
+@pytest.mark.parametrize("lane", ["same", "cold"])
+def test_saved_candidate_initialise_skips_default_adaptation(orchestration, monkeypatch, lane):
+    h = orchestration
+    names = set(qualify.SOLVE_APIS) | {
+        "set_output_directory", "set_linear_solver", "set_c_compiler",
+        "setup_for_stability_analysis", "set_eigensolver", "force_remesh",
+        "remesh_if_necessary", "remesh_handler_during_continuation", "_adapt", "adapt",
+        "_adapt_with_interfacial_errors", "custom_adapt", "actions_before_remeshing",
+        "actions_before_adapt", "actions_after_remeshing", "actions_after_adapt",
+        "_perform_pending_remesh",
+    }
+    problem = SimpleNamespace(**{name: lambda *args, **kwargs: None for name in names},
+                              initial_adaption_steps=None, max_refinement_level=8,
+                              project_initial_conditions=False, _meshdict={})
+    def initialise():
+        # Pinned Problem.initialise uses the default refinement limit when unset.
+        if problem.initial_adaption_steps is None:
+            problem.initial_adaption_steps = problem.max_refinement_level
+        for _ in range(problem.initial_adaption_steps):
+            problem._adapt()
+        raise RuntimeError("native-free initialisation boundary")
+    problem.initialise = initialise
+    def adapter(problem, *args):
+        guard = fold.RemeshGuard(problem)
+        guard.install()
+        return SimpleNamespace(mesh_guard=guard)
+    monkeypatch.setattr(fold, "build_bridged", lambda *args: problem)
+    monkeypatch.setattr(qualify, "QualificationAdapter", adapter)
+    session = qualify.NativeSession()
+    with pytest.raises(RuntimeError, match="native-free initialisation boundary"):
+        SOURCE_INITIALISE(session, object, h.prepared, h.output / lane, h.core,
+                          object, object, h.deadline)
+    assert problem.initial_adaption_steps == 0 and session.adapter.mesh_guard.requests == 0
+    with pytest.raises(fold.Refusal, match="physical_remesh_or_adapt_request"):
+        problem._adapt()
+    assert session.adapter.mesh_guard.requests == 1
+
+
 def test_cold_directory_failure_retains_durable_search_debits(orchestration):
     h = orchestration
     (h.output / "fresh-fold-cold").mkdir()
