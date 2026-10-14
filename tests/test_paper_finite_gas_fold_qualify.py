@@ -7,6 +7,7 @@ import importlib.abc
 import io
 import json
 import os
+import stat
 import struct
 import sys
 from datetime import UTC, datetime, timedelta
@@ -449,13 +450,14 @@ def orchestration(tmp_path, monkeypatch):
 
     def same(adapter, prepared, selected_output, arguments, result):
         assert core.enabled is True
-        adapter.work["eigenproblem_calls"] = 2
+        adapter.work["eigenproblem_calls"] = 1
         result.update(status="candidate_ready_for_cold_qualification", returned_real_null_matched=True,
                       cold_restart={"software": True}, restoration=[{"software_restoration": True}],
                       same_instance_baseline_restored=True)
 
     warm = {"actual_pins": {"software": True}, "signature": {"software": True}}
-    prepared = {"native_execution_authorized": True, "lineage": {"deadline_utc": deadline.isoformat()},
+    prepared = {"native_execution_authorized": True, "phase_kind": qualify.REMAINING_KIND,
+                "lineage": {"deadline_utc": deadline.isoformat()},
                 "case": {"software": True}, "candidate": {"warm": warm}}
     monkeypatch.setattr(qualify, "native_bindings", lambda value: (core, object, object, object, object, object))
     monkeypatch.setattr(qualify, "initialise", initialise)
@@ -475,7 +477,8 @@ def orchestration(tmp_path, monkeypatch):
 
 def assert_spent_searches(result):
     assert result["work"] == {**qualify.DEBITS, "augmented_solve_calls": 0, "completed_augmented_updates": 0,
-                             "eigenproblem_calls": 2, "stationary_solve_calls": 0, "time_solve_calls": 0}
+                             "eigenproblem_calls": 1, "stationary_solve_calls": 0, "time_solve_calls": 0}
+    assert result["prior_cumulative_work"] == qualify.REMAINING_DEBITS
     assert result["cumulative_work"] == {**qualify.DEBITS, "eigenproblem_calls": 2}
 
 
@@ -650,7 +653,8 @@ def test_main_supplies_held_progress_before_admission_and_preserves_outer_fallba
     write(case, {"software": True})
     deadline = (datetime.now(UTC) + timedelta(minutes=5)).isoformat()
     prepared = {"output": output, "case": {"software": True}, "contract": {}, "records": [],
-                "implementation": {}, "lineage": {"deadline_utc": deadline}, "native_execution_authorized": False}
+                "implementation": {}, "lineage": {"deadline_utc": deadline},
+                "phase_kind": qualify.REMAINING_KIND, "native_execution_authorized": False}
     monkeypatch.setattr(qualify, "preflight", lambda args: prepared)
     monkeypatch.setattr(qualify, "manifest", lambda *args: {"software": True})
     def active(value, path, deadline_text):
@@ -664,7 +668,7 @@ def test_main_supplies_held_progress_before_admission_and_preserves_outer_fallba
     def unexpected(*args, result):
         assert prepared["native_execution_authorized"] is True
         qualify.update_work(result, SimpleNamespace(work={**qualify.DEBITS, "augmented_solve_calls": 0,
-            "completed_augmented_updates": 0, "eigenproblem_calls": 2}))
+            "completed_augmented_updates": 0, "eigenproblem_calls": 1}))
         result.update(restoration=[{"software": True}], same_instance_released=True)
         raise RuntimeError("software late escape")
     monkeypatch.setattr(qualify, "execute", unexpected)
@@ -839,3 +843,286 @@ def test_recovery_active_admission_cannot_reuse_the_old_phase_or_another_declara
     admission["active_tracker"] = write(Path(admission["active_tracker"]["path"]), tracker)
     with pytest.raises(fold.Refusal, match="(qualification_admission|recovery_active_admission_binding)_differs"):
         qualify.admission_contract(admission, prepared, now=now)
+
+
+@pytest.fixture
+def remaining_declaration(recovery_declaration):
+    declaration, reference, requirements, lineage, now = recovery_declaration
+    predecessor = {**requirements["predecessor"], "terminal_checked_at": "2026-10-13T23:31:00.713794+00:00",
+                   "archive_verified_at": "2026-10-13T23:31:13.242320Z",
+                   "interrupted_deadline_utc": qualify.PARTIAL_DEADLINE,
+                   "cumulative_charged_work": qualify.REMAINING_DEBITS,
+                   "final_baseline_restoration_state": "unknown", "controlled_release_state": "unknown",
+                   "fresh_cold_qualification_state": "unknown", "returned_bank_verified": False}
+    requirements = {**requirements, "schema": qualify.REMAINING_KIND + "-declaration",
+                    "phase_kind": qualify.REMAINING_KIND, "predecessor": predecessor,
+                    "prior_cumulative_work": qualify.REMAINING_DEBITS, "new_work_caps": qualify.REMAINING_CAPS,
+                    "spectral_request": qualify.REMAINING_REQUEST, "durable_pre_native_eigen_charge_required": True}
+    declaration = {**requirements, **{name: declaration[name] for name in
+                   ("issued_by", "phase_authorized", "declared_at", "deadline_utc")}}
+    reference = write(Path(reference["path"]).with_name("software-remaining-declaration.json"), declaration)
+    return declaration, reference, requirements, lineage, now
+
+
+def test_remaining_phase_inherits_the_interrupted_call_and_retains_unknown_cleanup(remaining_declaration):
+    declaration, reference, requirements, lineage, now = remaining_declaration
+    resumed = qualify.remaining_phase_contract(declaration, reference, requirements, lineage, now=now)
+    result = qualify.new_result({"phase_kind": qualify.REMAINING_KIND, "lineage": resumed})
+    assert resumed["remaining_phase"] == reference and resumed["cumulative_work"] == qualify.REMAINING_DEBITS
+    assert resumed["new_work_caps"] == qualify.REMAINING_CAPS
+    assert resumed["interrupted_deadline_utc"] == qualify.PARTIAL_DEADLINE
+    assert lineage["deadline_utc"] == qualify.ORIGINAL_QUALIFICATION_DEADLINE
+    assert result["prior_cumulative_work"] == result["cumulative_work"] == qualify.REMAINING_DEBITS
+    assert result["work"]["eigenproblem_calls"] == 0
+    assert result["interrupted_predecessor"]["returned_bank_verified"] is False
+    for name in ("final_baseline_restoration_state", "controlled_release_state", "fresh_cold_qualification_state"):
+        assert result["interrupted_predecessor"][name] == "unknown"
+    assert result["two_shift_certificate"] is result["infinity_classification_certified"] is False
+    assert qualify.phase_shifts(result) == [.001]
+
+
+@pytest.mark.parametrize("key,value", [
+    ("prior_cumulative_work", qualify.DEBITS), ("new_work_caps", qualify.NEW_CAPS),
+    ("spectral_request", {**qualify.REMAINING_REQUEST, "shifts": [-.001, .001]}),
+    ("spectral_request", {**qualify.REMAINING_REQUEST, "shifts": [-.001]}),
+    ("spectral_request", {**qualify.REMAINING_REQUEST, "neigen": 9}),
+    ("spectral_request", {**qualify.REMAINING_REQUEST, "max_retries": 1}),
+    ("durable_pre_native_eigen_charge_required", False),
+    ("issued_by", "not-root"), ("phase_authorized", False),
+])
+def test_remaining_declaration_cannot_reset_the_charge_or_change_the_request(remaining_declaration, key, value):
+    declaration, reference, requirements, lineage, now = remaining_declaration
+    with pytest.raises(fold.Refusal, match="prospective_remaining_call_declaration_differs"):
+        qualify.remaining_phase_contract({**declaration, key: value}, reference, requirements, lineage, now=now)
+
+
+@pytest.mark.parametrize("timing", ["before_terminal", "before_archive", "future", "expired", "too_long"])
+def test_remaining_clock_is_root_prospective_after_custody_with_the_same_finite_cap(remaining_declaration, timing):
+    declaration, reference, requirements, lineage, now = remaining_declaration
+    declaration = dict(declaration)
+    if timing in {"before_terminal", "before_archive"}:
+        now = datetime(2026, 10, 13, 23, 40, tzinfo=UTC)
+        declaration.update(declared_at="2026-10-13T23:30:59+00:00" if timing == "before_terminal"
+                           else "2026-10-13T23:31:10+00:00", deadline_utc="2026-10-14T00:00:00+00:00")
+    elif timing == "future":
+        declaration["declared_at"] = (now + timedelta(seconds=1)).isoformat()
+    elif timing == "expired":
+        now += timedelta(seconds=2700)
+    else:
+        declaration["deadline_utc"] = (now + timedelta(seconds=2700)).isoformat()
+    with pytest.raises(fold.Refusal, match="remaining_phase_not_prospective_or_finite"):
+        qualify.remaining_phase_contract(declaration, reference, requirements, lineage, now=now)
+
+
+@pytest.mark.parametrize("phase", [qualify.SCHEMA, qualify.RECOVERY_KIND])
+def test_historical_two_search_routes_refuse_native_even_with_an_admission(monkeypatch, phase):
+    monkeypatch.setattr(qualify, "native_bindings", lambda _: pytest.fail("native boundary reached"))
+    with pytest.raises(fold.Refusal, match="historical_two_search_native_execution_refused"):
+        qualify.execute({"native_execution_authorized": True, "phase_kind": phase}, None, [], datetime.now(UTC))
+
+
+def test_remaining_work_cannot_reset_the_inherited_charge():
+    result = qualify.new_result({"phase_kind": qualify.REMAINING_KIND, "lineage": {}})
+    result["prior_cumulative_work"] = dict(qualify.DEBITS)
+    with pytest.raises(fold.Refusal, match="qualification_inherited_work_debit_changed"):
+        qualify.update_work(result, SimpleNamespace(work={name: 0 for name in qualify.DEBITS}))
+
+
+@pytest.fixture
+def charged_search(tmp_path, monkeypatch):
+    """Primitive solver boundary and small synthetic arrays; native imports are denied."""
+    monkeypatch.setattr(fold, "N", 4)
+    output = tmp_path / "software-charge-output"
+    output.mkdir()
+    trace = []
+    original_fsync = os.fsync
+    def fsync(descriptor):
+        trace.append("directory-fsync" if stat.S_ISDIR(os.fstat(descriptor).st_mode) else "file-fsync")
+        original_fsync(descriptor)
+    monkeypatch.setattr(os, "fsync", fsync)
+    adapter = object.__new__(qualify.QualificationAdapter)
+    adapter.output = output
+    adapter.work = {name: 0 for name in qualify.DEBITS}
+    adapter.check = lambda: None
+    adapter.prepared = {"phase_kind": qualify.REMAINING_KIND, "output": output,
+        "native_execution_authorized": True, "component": {"commit": "software-source"},
+        "active_admission": {"path": "software-admission", "sha256": "software-only"},
+        "lineage": {"remaining_phase": {"path": "software-declaration", "sha256": "software-only"},
+                    "interrupted_predecessor": {"charged_eigen_calls": 1, "returned_bank_verified": False},
+                    "deadline_utc": "2099-01-01T12:30:00+00:00"}}
+    faults = {}
+    class Problem:
+        def get_eigen_solver(self):
+            return SimpleNamespace(max_retries=0, use_pardiso=False)
+
+        def get_last_eigenmodes_m(self):
+            return [0] * 8
+
+        def solve_eigenproblem(self, *args, **options):
+            assert args == (8,) and options == {"shift": .001, "azimuthal_m": 0, "quiet": True}
+            assert trace == ["directory-fsync", "file-fsync", "directory-fsync"]
+            receipt = json.loads(qualify.eigen_charge_path(adapter.prepared).read_text())
+            assert receipt["prior_cumulative_work"] == qualify.REMAINING_DEBITS
+            assert receipt["cumulative_work"] == {**qualify.REMAINING_DEBITS, "eigenproblem_calls": 2}
+            assert receipt["stage"] == "charged-before-native-entry" and receipt["numerical_acceptance"] is False
+            trace.append("native-boundary")
+            if faults.get("interrupt"):
+                raise KeyboardInterrupt("software interrupted eigen call")
+            return qualify.np.zeros(8), qualify.np.zeros((8, fold.N))
+    adapter.problem = Problem()
+    return SimpleNamespace(adapter=adapter, output=output, trace=trace, faults=faults)
+
+
+def test_remaining_call_charge_is_durable_before_the_frozen_native_boundary(charged_search):
+    h = charged_search
+    values, vectors = h.adapter.solve_spectrum(.001)
+    assert values.shape == (8,) and vectors.shape == (8, 4)
+    assert h.trace[-1] == "native-boundary" and h.adapter.work["eigenproblem_calls"] == 1
+    assert "solve_eigenproblem" not in vars(h.adapter.problem)
+    assert fold.regular(qualify.eigen_charge_path(h.adapter.prepared)) == h.adapter.eigen_charge
+    assert (h.output / "search-returns/call-01.npz").is_file()
+    with pytest.raises(fold.Refusal, match="remaining_eigen_call_already_spent"):
+        h.adapter.solve_spectrum(.001)
+    assert h.trace.count("native-boundary") == 1
+
+
+@pytest.mark.parametrize("shift", [-.001, 0., 1.])
+def test_wrong_remaining_shift_is_refused_without_charging_or_entering(charged_search, shift):
+    h = charged_search
+    with pytest.raises(fold.Refusal, match="remaining_call_shift_differs"):
+        h.adapter.solve_spectrum(shift)
+    assert h.adapter.work["eigenproblem_calls"] == 0 and h.trace == []
+    assert not qualify.eigen_charge_path(h.adapter.prepared).exists()
+
+
+def test_existing_charge_blocks_another_owner_even_with_reset_local_work(charged_search):
+    h = charged_search
+    write(qualify.eigen_charge_path(h.adapter.prepared), {"software": "prior charged call"})
+    with pytest.raises(fold.Refusal, match="remaining_eigen_charge_already_exists"):
+        h.adapter.solve_spectrum(.001)
+    assert h.adapter.work["eigenproblem_calls"] == 0 and h.trace == []
+
+
+@pytest.mark.parametrize("failed_sync", [1, 2, 3])
+def test_any_charge_fsync_failure_prevents_native_entry_and_retains_conservative_work(charged_search,
+                                                                                    monkeypatch, failed_sync):
+    h = charged_search
+    calls = []
+    original = os.fsync
+    def fail(descriptor):
+        calls.append(descriptor)
+        if len(calls) == failed_sync:
+            raise OSError("software fsync refusal")
+        original(descriptor)
+    monkeypatch.setattr(os, "fsync", fail)
+    with pytest.raises(OSError, match="fsync refusal"):
+        h.adapter.solve_spectrum(.001)
+    assert "native-boundary" not in h.trace and h.adapter.work["eigenproblem_calls"] == 1
+    assert "solve_eigenproblem" not in vars(h.adapter.problem)
+
+
+def test_interrupted_remaining_call_retains_its_durable_charge_and_no_return_bank(charged_search):
+    h = charged_search
+    h.faults["interrupt"] = True
+    with pytest.raises(KeyboardInterrupt, match="interrupted eigen call"):
+        h.adapter.solve_spectrum(.001)
+    result = qualify.new_result(h.adapter.prepared)
+    qualify.update_work(result, h.adapter)
+    qualify.persist_result(h.output, result, "software-interrupted-call")
+    assert result["work"]["eigenproblem_calls"] == 1 and result["cumulative_work"]["eigenproblem_calls"] == 2
+    assert result["charged_eigen_call_receipts"] == [h.adapter.eigen_charge]
+    assert not (h.output / "search-returns").exists()
+    assert "solve_eigenproblem" not in vars(h.adapter.problem)
+    assert json.loads(qualify.eigen_charge_path(h.adapter.prepared).read_text())["returned_bank_verified"] is False
+
+
+@pytest.fixture
+def remaining_admitted(admitted):
+    admission, prepared, tracker, _now = admitted
+    now = datetime(2099, 1, 1, 12, tzinfo=UTC)
+    prepared["phase_kind"] = qualify.REMAINING_KIND
+    expected = {"remaining_phase": {"path": "software-new-declaration", "sha256": "software-only"},
+                "original_deadline_utc": qualify.ORIGINAL_QUALIFICATION_DEADLINE,
+                "interrupted_deadline_utc": qualify.PARTIAL_DEADLINE, "prospective_declared_at": now.isoformat()}
+    prepared["lineage"].update(expected, deadline_utc=(now + timedelta(minutes=30)).isoformat())
+    admission.update(schema=qualify.REMAINING_KIND + "-admission", **expected)
+    tracker.update(schema=qualify.REMAINING_KIND + "-active-tracker", phase_kind=qualify.REMAINING_KIND,
+                   cumulative_work=qualify.REMAINING_DEBITS, new_work_caps=qualify.REMAINING_CAPS,
+                   deadline_utc=prepared["lineage"]["deadline_utc"], checked_at=now.isoformat(), **expected)
+    admission["active_tracker"] = write(Path(admission["active_tracker"]["path"]), tracker)
+    return admission, prepared, tracker, now
+
+
+def test_remaining_admission_binds_the_charged_budget_and_both_historical_clocks(remaining_admitted):
+    admission, prepared, _tracker, now = remaining_admitted
+    assert len(qualify.admission_contract(admission, prepared, now=now)) == 1
+    assert prepared.get("native_execution_authorized") is None
+
+
+@pytest.mark.parametrize("key,value", [
+    ("cumulative_work", qualify.DEBITS), ("new_work_caps", qualify.NEW_CAPS),
+    ("remaining_phase", {"path": "software-old-declaration", "sha256": "software-only"}),
+    ("interrupted_deadline_utc", qualify.ORIGINAL_QUALIFICATION_DEADLINE),
+    ("prospective_declared_at", "2099-01-01T11:59:59+00:00"),
+])
+def test_remaining_admission_cannot_reuse_an_uncharged_or_historical_phase(remaining_admitted, key, value):
+    admission, prepared, tracker, now = remaining_admitted
+    tracker[key] = value
+    admission["active_tracker"] = write(Path(admission["active_tracker"]["path"]), tracker)
+    with pytest.raises(fold.Refusal, match="(qualification_active_tracker|remaining_call_active_admission_binding)_differs"):
+        qualify.admission_contract(admission, prepared, now=now)
+
+
+def test_missing_or_changed_exact_partial_receipt_refuses_before_new_clock(tmp_path, monkeypatch):
+    source = tmp_path / "project/repos/remaining"
+    source.mkdir(parents=True)
+    monkeypatch.setattr(qualify, "ROOT", source)
+    with pytest.raises(fold.Refusal, match="regular_authority_required"):
+        qualify.partial_predecessor_contract({}, {}, [])
+    archive = source.parents[1] / "scratch/figure3/stability/full-comparison-2026-10-12" / \
+        "recovery-aa922-20261013/zero-adapt-attempt1-archive.json"
+    write(archive, {"source": str(tmp_path / "old")})
+    with pytest.raises(fold.Refusal, match="exact_partial_archive_required"):
+        qualify.partial_predecessor_contract({}, {}, [])
+    monkeypatch.setattr(qualify, "PARTIAL_ARCHIVE_SHA", fold.sha(archive))
+    write(tmp_path / "old/attempts/attempt-0001/execution-terminal.json", {"charged_eigen_calls": 0})
+    with pytest.raises(fold.Refusal, match="exact_interrupted_search_terminal_required"):
+        qualify.partial_predecessor_contract({}, {}, [])
+
+
+@pytest.mark.parametrize("key,value", [
+    ("cumulative_charged_work", qualify.DEBITS), ("charged_eigen_calls", 0), ("remaining_original_eigen_calls", 2),
+    ("owned_processes_terminal", False), ("native_pid_absent", False), ("returned_real_null_matched", True),
+    ("same_instance_final_baseline_restoration_verified", True), ("controlled_release_verified", True),
+    ("fresh_cold_qualification_complete", True), ("new_augmented_calls", 1), ("new_physical_remeshes", 1),
+])
+def test_partial_receipt_cannot_erase_work_or_invent_missing_qualification(tmp_path, monkeypatch, key, value):
+    source = tmp_path / "project/repos/remaining"
+    source.mkdir(parents=True)
+    monkeypatch.setattr(qualify, "ROOT", source)
+    old_root = tmp_path / "old"
+    archive = source.parents[1] / "scratch/figure3/stability/full-comparison-2026-10-12" / \
+        "recovery-aa922-20261013/zero-adapt-attempt1-archive.json"
+    write(archive, {"source": str(old_root)})
+    monkeypatch.setattr(qualify, "PARTIAL_ARCHIVE_SHA", fold.sha(archive))
+    terminal = {"schema": "stone-fold-zero-adapt-timeout-root-v1", "status": "failed",
+        "source_commit": qualify.PARTIAL_COMMIT, "owned_processes_terminal": True, "native_pid_absent": True,
+        "unit": {"MainPID": "0", "ControlGroup": "", "Result": "timeout"},
+        "original_qualification_deadline_utc": qualify.ORIGINAL_QUALIFICATION_DEADLINE,
+        "prospective_deadline_utc": qualify.PARTIAL_DEADLINE,
+        "cumulative_charged_work": qualify.REMAINING_DEBITS, "charged_eigen_calls": 1,
+        "remaining_original_eigen_calls": 1,
+        **{name: True for name in ("native_execution_started", "native_execution_performed", "numerical_work_started",
+            "stationary_fold_candidate_passed", "direct_dynamic_null_passed", "warm_checks_reached_and_passed",
+            "portable_checkpoint_roundtrip_verified", "partial_runtime_preserved")},
+        **{name: False for name in ("scientific_result_accepted", "numerical_acceptance", "returned_real_null_matched",
+            "fresh_cold_qualification_complete", "same_instance_final_baseline_restoration_verified",
+            "controlled_release_verified", "original_parent_restoration_passed", "original_parent_numerical_acceptance",
+            "prior_failures_or_acceptance_changed", *fold.NO_CLAIMS)},
+        **{name: 0 for name in ("new_augmented_calls", "new_completed_updates", "new_physical_remeshes",
+            "new_stationary_solve_calls", "new_time_solve_calls")}}
+    terminal[key] = value
+    record = write(old_root / "attempts/attempt-0001/execution-terminal.json", terminal)
+    monkeypatch.setattr(qualify, "PARTIAL_TERMINAL_SHA", record["sha256"])
+    with pytest.raises(fold.Refusal, match="interrupted_search_work_or_terminal_evidence_differs"):
+        qualify.partial_predecessor_contract({}, {}, [])

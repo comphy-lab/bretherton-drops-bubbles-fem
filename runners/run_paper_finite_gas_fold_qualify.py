@@ -1,10 +1,11 @@
 """Qualify one saved finite-gas fold candidate without another equilibrium solve.
 
-The failed producer and cumulative work remain immutable inputs. This is a new
-qualification phase with a fresh Problem, two bounded m=0 searches, exact
-same-instance restoration and a fresh cold check. Metadata checking imports no
-pyoomph. A clean source, external seal and active admission are required
-before native work; this driver cannot issue that admission.
+The failed producers and cumulative work remain immutable inputs. Only the
+remaining +0.001 m=0 search may execute, with a fresh Problem, exact
+same-instance restoration and a fresh cold check. Historical two-search
+contracts remain readable in metadata checking. A clean source, external seal
+and active admission are required before native work; this driver cannot issue
+that admission.
 """
 
 from __future__ import annotations
@@ -38,6 +39,11 @@ ENTRYPOINT = "runners/run_paper_finite_gas_fold_qualify.py"
 TEST = "tests/test_paper_finite_gas_fold_qualify.py"
 SCHEMA = "saved-finite-gas-fold-qualification-only-v1"
 RECOVERY_KIND = "saved-finite-gas-fold-qualification-recovery-v1"
+REMAINING_KIND = "saved-finite-gas-fold-remaining-call-qualification-v1"
+PARTIAL_COMMIT = "99917439b54654e048de239937468262d1e50d53"
+PARTIAL_TERMINAL_SHA = "e54361e0b66c7852ed287022d6c4da8d4a3d06ef76eb653e483e05c7a0e089f1"
+PARTIAL_ARCHIVE_SHA = "5d9db4397fde11d8c0171bbf794cfdf331ecb629a58458d0cb577e7aedd9614c"
+PARTIAL_DEADLINE = "2026-10-13T23:24:00.391173+00:00"
 PRELAUNCH_COMMIT = "9cfe77adaf0500fb48f98b2bfb9c2ec27bb8ad77"
 PRELAUNCH_TERMINAL_SHA = "0cc9c66c8462607e601dea70470ac56c66e9b04f032380f34492601b215b4bba"
 PRELAUNCH_ARCHIVE_SHA = "0045537f71e07eee9e692d1ea03ae115e8c0fa771b5b83c3f3dbf37c0cb75de6"
@@ -56,6 +62,9 @@ DEBITS = {"augmented_solve_calls": 2, "completed_augmented_updates": 6,
 NEW_CAPS = {"augmented_solve_calls": 0, "completed_augmented_updates": 0,
             "stationary_solve_calls": 0, "time_solve_calls": 0,
             "eigenproblem_calls": 2, "physical_remeshes": 0}
+REMAINING_DEBITS = {**DEBITS, "eigenproblem_calls": 1}
+REMAINING_CAPS = {**NEW_CAPS, "eigenproblem_calls": 1}
+REMAINING_REQUEST = {"azimuthal_m": 0, "shifts": [0.001], "neigen": 8, "max_retries": 0}
 AGGREGATE_CAPS = {"augmented_solve_calls": 2, "completed_augmented_updates": 23,
                   "eigenproblem_calls": 2, "physical_remeshes": 0}
 SOLVE_APIS = ("solve", "run", "solve_auxiliary_residual", "arclength_continuation",
@@ -90,6 +99,7 @@ def source_contract(parent, metadata_only):
          "saved_candidate_source_differs")
     diagnostic.git(ROOT, "merge-base", "--is-ancestor", BASE, current["head"])
     diagnostic.git(ROOT, "merge-base", "--is-ancestor", PRELAUNCH_COMMIT, current["head"])
+    diagnostic.git(ROOT, "merge-base", "--is-ancestor", PARTIAL_COMMIT, current["head"])
     names = diagnostic.git(ROOT, "ls-tree", "-r", "--name-only", BASE).decode().splitlines()
     frozen = {name for name in names if name.endswith(".py")
               or name in ("pyproject.toml", "uv.lock", ".python-version")}
@@ -240,8 +250,8 @@ def admission_contract(admission, prepared, *, now=None):
          and tracker.get("output") == str(prepared["output"])
          and tracker.get("source_commit") == prepared["component"]["commit"]
          and tracker.get("deadline_utc") == prepared["lineage"]["deadline_utc"]
-         and tracker.get("cumulative_work") == DEBITS
-         and tracker.get("new_work_caps") == NEW_CAPS
+         and tracker.get("cumulative_work") == phase_debits(prepared)
+         and tracker.get("new_work_caps") == phase_caps(prepared)
          and tracker.get("reservation", {}).get("state") == "active"
          and isinstance(tracker.get("reservation", {}).get("id"), str)
          and bool(tracker["reservation"]["id"])
@@ -253,11 +263,30 @@ def admission_contract(admission, prepared, *, now=None):
                     "prospective_declared_at": prepared["lineage"]["prospective_declared_at"]}
         gate(all(admission.get(key) == value and tracker.get(key) == value for key, value in expected.items()),
              "recovery_active_admission_binding_differs")
+    elif phase_kind == REMAINING_KIND:
+        expected = {"remaining_phase": prepared["lineage"]["remaining_phase"],
+                    "original_deadline_utc": ORIGINAL_QUALIFICATION_DEADLINE,
+                    "interrupted_deadline_utc": prepared["lineage"]["interrupted_deadline_utc"],
+                    "prospective_declared_at": prepared["lineage"]["prospective_declared_at"]}
+        gate(all(admission.get(key) == value and tracker.get(key) == value for key, value in expected.items()),
+             "remaining_call_active_admission_binding_differs")
     observed = datetime.fromisoformat(tracker["checked_at"])
     current = datetime.now(UTC) if now is None else now
     gate(observed.tzinfo is not None and 0 <= (current - observed).total_seconds() <= 300,
          "qualification_active_tracker_stale")
     return records
+
+
+def phase_debits(prepared):
+    return REMAINING_DEBITS if prepared.get("phase_kind") == REMAINING_KIND else DEBITS
+
+
+def phase_caps(prepared):
+    return REMAINING_CAPS if prepared.get("phase_kind") == REMAINING_KIND else NEW_CAPS
+
+
+def phase_shifts(prepared):
+    return [0.001] if prepared.get("phase_kind") == REMAINING_KIND else fold.LIMITS["shifts"]
 
 
 def inherited_deadline(requested, lineage, *, now=None):
@@ -392,6 +421,184 @@ def recovery_phase_contract(declaration, reference, requirements, lineage, *, no
             "source_alone_authorizes_recovery": False}
 
 
+def partial_predecessor_contract(original_contract, candidate, records):
+    """Bind the interrupted search without inferring its missing return or cleanup."""
+    archive_path = ROOT.parents[1] / "scratch/figure3/stability/full-comparison-2026-10-12" / \
+        "recovery-aa922-20261013/zero-adapt-attempt1-archive.json"
+    archive_ref = regular(archive_path)
+    gate(archive_ref["sha256"] == PARTIAL_ARCHIVE_SHA, "exact_partial_archive_required")
+    archive = read_bound(archive_ref, records)
+    old_root = Path(archive["source"])
+    attempt = old_root / "attempts/attempt-0001"
+    runtime = attempt / "runtime"
+    terminal_ref = regular(attempt / "execution-terminal.json")
+    gate(terminal_ref["sha256"] == PARTIAL_TERMINAL_SHA, "exact_interrupted_search_terminal_required")
+    terminal = read_bound(terminal_ref, records)
+    gate(terminal.get("schema") == "stone-fold-zero-adapt-timeout-root-v1"
+         and terminal.get("status") == "failed" and terminal.get("source_commit") == PARTIAL_COMMIT
+         and terminal.get("owned_processes_terminal") is True and terminal.get("native_pid_absent") is True
+         and terminal.get("unit", {}).get("MainPID") == "0"
+         and terminal.get("unit", {}).get("ControlGroup") == ""
+         and terminal.get("unit", {}).get("Result") == "timeout"
+         and terminal.get("original_qualification_deadline_utc") == ORIGINAL_QUALIFICATION_DEADLINE
+         and terminal.get("prospective_deadline_utc") == PARTIAL_DEADLINE
+         and terminal.get("cumulative_charged_work") == REMAINING_DEBITS
+         and type(terminal.get("charged_eigen_calls")) is int and terminal["charged_eigen_calls"] == 1
+         and type(terminal.get("remaining_original_eigen_calls")) is int
+         and terminal["remaining_original_eigen_calls"] == 1
+         and all(terminal.get(key) is True for key in ("native_execution_started", "native_execution_performed",
+             "numerical_work_started", "stationary_fold_candidate_passed", "direct_dynamic_null_passed",
+             "warm_checks_reached_and_passed", "portable_checkpoint_roundtrip_verified", "partial_runtime_preserved"))
+         and all(terminal.get(key) is False for key in ("scientific_result_accepted", "numerical_acceptance",
+             "returned_real_null_matched", "fresh_cold_qualification_complete",
+             "same_instance_final_baseline_restoration_verified", "controlled_release_verified",
+             "original_parent_restoration_passed", "original_parent_numerical_acceptance",
+             "prior_failures_or_acceptance_changed", *fold.NO_CLAIMS))
+         and all(type(terminal.get(key)) is int and terminal[key] == 0 for key in
+             ("new_augmented_calls", "new_completed_updates", "new_physical_remeshes",
+              "new_stationary_solve_calls", "new_time_solve_calls")),
+         "interrupted_search_work_or_terminal_evidence_differs")
+    files = archive["files"]
+    gate(archive.get("schema") == "figure10-next-phase-archive-v1"
+         and archive.get("simulation") == terminal["simulation"]
+         and archive.get("attempt") == terminal["attempt"] == "attempt-0001"
+         and archive.get("file_count") == len(files) == 166
+         and archive.get("bytes") == sum(item["bytes"] for item in files.values()) == 535010870
+         and archive.get("source_deleted") is False and archive.get("destination")
+         and archive.get("protocol_files_verified_at") == archive.get("verified_at")
+         and archive.get("bounded_terminal_evidence") == {
+             "terminal_kind": "root-failed-execution-readback", "reported_numerical_acceptance": False,
+             "execution_terminal_sha256": PARTIAL_TERMINAL_SHA}, "partial_archival_custody_differs")
+    for name, row in files.items():
+        gate(not Path(name).is_absolute() and ".." not in Path(name).parts, "partial_inventory_path_invalid")
+        item = regular(old_root / name)
+        gate(item["sha256"] == row["sha256"] and Path(item["path"]).stat().st_size == row["bytes"],
+             "partial_immutable_inventory_changed", item["path"])
+        records.append(item)
+    absent = ("result.json", "completion.json", "search-returns", "phase-receipts",
+              "snapshots/005-eigen-0-after.json", "snapshots/005-eigen-0-after.dump")
+    gate(all(not (runtime / name).exists() and not (runtime / name).is_symlink() for name in absent),
+         "interrupted_search_unrecorded_return_appeared")
+    manifest_record = regular(runtime / "run-manifest.json")
+    manifest = read_bound(manifest_record, records)
+    prepared = read_bound(regular(attempt / "prepared.json"), records)
+    preparation = read_bound(regular(runtime / "preparation.json"), records)
+    old_seal = read_bound(prepared["execution_seal"], records)
+    contract = manifest["qualification_contract"]
+    gate(manifest["qualification_schema"] == RECOVERY_KIND
+         and contract["schema"] == RECOVERY_KIND + "-contract" and contract["phase_kind"] == RECOVERY_KIND
+         and manifest["component_commit"] == manifest["component"]["commit"]
+         == prepared["source_commit"] == old_seal["source_commit"] == PARTIAL_COMMIT
+         and old_seal["schema"] == RECOVERY_KIND + "-execution-seal"
+         and old_seal["contract"] == preparation["contract"] == contract
+         and prepared["source_files"] == old_seal["source_files"]
+         == {name: row["sha256"] for name, row in manifest["implementation"].items()}
+         and preparation["source_files"] == manifest["implementation"]
+         and prepared["deadline_utc"] == preparation["deadline_utc"] == PARTIAL_DEADLINE
+         and all(contract[key] == value for key, value in original_contract.items()
+                 if key not in {"schema", "lineage"}), "interrupted_phase_bindings_changed")
+    runner.require_clean_source(manifest["component"])
+    old_source = Path(manifest["runner"]["path"]).parents[1]
+    for name, row in manifest["implementation"].items():
+        committed = hashlib.sha256(diagnostic.git(ROOT, "show", f"{PARTIAL_COMMIT}:{name}")).hexdigest()
+        item = regular(old_source / name)
+        gate(item == row and item["sha256"] == committed, "interrupted_phase_source_changed", name)
+        records.append(item)
+    for row in old_seal["inputs"]:
+        actual = regular(row["path"])
+        gate(actual == row, "interrupted_phase_input_changed", actual["path"])
+        records.append(actual)
+    old_lineage = contract["lineage"]
+    expired = predecessor_contract(original_contract, records)
+    gate(old_lineage["expired_predecessor"] == expired
+         and old_lineage["original_qualification_deadline_utc"] == ORIGINAL_QUALIFICATION_DEADLINE
+         and old_lineage["deadline_utc"] == old_lineage["prospective_deadline_utc"] == PARTIAL_DEADLINE
+         and old_lineage["cumulative_work"] == DEBITS and old_lineage["new_work_caps"] == NEW_CAPS
+         and old_lineage["aggregate_caps"] == AGGREGATE_CAPS, "interrupted_historical_lineage_changed")
+    read_bound(old_lineage["recovery_phase"], records)
+    gate(runner._read_json(runtime / "case.json") == runner._read_json(runtime / "fold/case.json")
+         == candidate["case"] and regular(runtime / "null.npy")["sha256"] == candidate["null"]["sha256"]
+         and regular(runtime / "null-actions.json")["sha256"] == candidate["direct_null"]["sha256"]
+         and terminal["null_actions"] == regular(runtime / "null-actions.json")
+         and terminal["warm_sample"] == regular(runtime / "fold/samples/warm.json")
+         and runner._read_json(runtime / "layout.json") == candidate["layout"],
+         "interrupted_candidate_case_null_or_layout_differs")
+    warm = runner._read_json(runtime / "fold/samples/warm.json")
+    restart = runner.validate_restart(runtime / "fold/checkpoints/bond_016/resume.json", candidate["case"],
+        sha(runtime / "fold/case.json"), component=manifest["component"], environment=manifest["pyoomph"],
+        azimuthal_stability=True)
+    gate(warm["sampling_preserved_state"] is True and warm["actual_pins"] == candidate["warm"]["actual_pins"]
+         and approach.iii.physical_signature(warm["signature"])
+         == approach.iii.physical_signature(candidate["warm"]["signature"])
+         == approach.iii.physical_signature(restart["roundtrip"]["after"]),
+         "interrupted_warm_or_portable_candidate_differs")
+    portable_stream = hashlib.sha256(history.normalized_bytes(Path(restart["state"]["path"]).read_bytes(),
+                                                              Path(restart["mesh_reference_base"]))).hexdigest()
+    gate(portable_stream == candidate["stream_sha256"], "interrupted_portable_complete_history_differs")
+    baseline = runner._read_json(runtime / "snapshots/001-fresh-candidate-baseline.json")
+    before = runner._read_json(runtime / "snapshots/004-eigen-0-before.json")
+    for name, snapshot in (("001-fresh-candidate-baseline", baseline), ("004-eigen-0-before", before)):
+        stream = hashlib.sha256(history.normalized_bytes((runtime / "snapshots" / (name + ".dump")).read_bytes(),
+                                                        attempt)).hexdigest()
+        gate(stream == snapshot["full_native_stream"] == candidate["stream_sha256"]
+             and snapshot["mode_state"]["mode"] == 0
+             and snapshot["mode_state"]["flags"] == candidate["solved_signature"]["mode_state"]["flags"]
+             and snapshot["mode_state"]["actual_pins"] == warm["actual_pins"]
+             and snapshot["mode_state"]["parameters"] == restart["roundtrip"]["after"]["parameters"],
+             "interrupted_fresh_baseline_or_eigen_entry_differs", name)
+    return {"terminal": terminal_ref, "archive": archive_ref, "runtime_manifest": manifest_record,
+            "execution_seal": prepared["execution_seal"], "source_commit": PARTIAL_COMMIT,
+            "source_checkout": str(old_source), "root": str(old_root), "status": "failed",
+            "archive_destination": archive["destination"], "archive_custody_basis": "bound root verification receipt",
+            "terminal_checked_at": terminal["checked_at"], "archive_verified_at": archive["verified_at"],
+            "original_deadline_utc": ORIGINAL_QUALIFICATION_DEADLINE, "interrupted_deadline_utc": PARTIAL_DEADLINE,
+            "cumulative_charged_work": REMAINING_DEBITS, "charged_eigen_calls": 1,
+            "remaining_original_eigen_calls": 1, "interrupted_shift": -0.001,
+            "returned_bank_verified": False, "final_baseline_restoration_state": "unknown",
+            "controlled_release_state": "unknown", "fresh_cold_qualification_state": "unknown"}
+
+
+def remaining_requirements(original_contract, candidate, component, implementation, environment, output, records):
+    """Describe the sole remaining call; root supplies the prospective declaration."""
+    predecessor = partial_predecessor_contract(original_contract, candidate, records)
+    return {"schema": REMAINING_KIND + "-declaration", "phase_kind": REMAINING_KIND,
+            "predecessor": predecessor, "original_phase_contract": original_contract, "output": str(output),
+            "source_commit": component["commit"],
+            "source_files": {name: item["sha256"] for name, item in implementation.items()},
+            "pyoomph_commit": environment["commit"], "native_core_sha256": environment["native_core"]["sha256"],
+            "inputs": approach.coarse.unique_records(records), "prior_cumulative_work": REMAINING_DEBITS,
+            "new_work_caps": REMAINING_CAPS, "aggregate_caps": AGGREGATE_CAPS,
+            "spectral_request": REMAINING_REQUEST, "maximum_wall_seconds": RECOVERY_MAX_WALL_SECONDS,
+            "durable_pre_native_eigen_charge_required": True, "cold_load_required": True,
+            "original_failures_and_acceptance_preserved": True, "released_parent_process_resumed": False,
+            "old_unserialized_continuation_buffer_restored": False}
+
+
+def remaining_phase_contract(declaration, reference, requirements, lineage, *, now=None):
+    gate(set(declaration) == set(requirements) | {"issued_by", "declared_at", "deadline_utc", "phase_authorized"}
+         and all(declaration[key] == value for key, value in requirements.items())
+         and declaration["issued_by"] == "root/Kelvin" and declaration["phase_authorized"] is True,
+         "prospective_remaining_call_declaration_differs")
+    declared = utc_timestamp(declaration["declared_at"], "remaining_declaration_utc_required")
+    deadline = utc_timestamp(declaration["deadline_utc"], "remaining_deadline_utc_required")
+    predecessor = requirements["predecessor"]
+    terminal = utc_timestamp(predecessor["terminal_checked_at"], "predecessor_terminal_utc_required")
+    archived = utc_timestamp(predecessor["archive_verified_at"], "predecessor_archive_utc_required")
+    current = datetime.now(UTC) if now is None else now
+    gate(max(terminal, archived) < declared <= current < deadline
+         and 0 < (deadline - declared).total_seconds() <= RECOVERY_MAX_WALL_SECONDS,
+         "remaining_phase_not_prospective_or_finite")
+    gate(lineage["deadline_utc"] == predecessor["original_deadline_utc"] == ORIGINAL_QUALIFICATION_DEADLINE,
+         "original_qualification_deadline_changed")
+    return {**lineage, "phase_kind": REMAINING_KIND, "remaining_phase": reference,
+            "original_qualification_deadline_utc": ORIGINAL_QUALIFICATION_DEADLINE,
+            "interrupted_deadline_utc": predecessor["interrupted_deadline_utc"],
+            "prospective_deadline_utc": declaration["deadline_utc"], "deadline_utc": declaration["deadline_utc"],
+            "prospective_declared_at": declaration["declared_at"], "interrupted_predecessor": predecessor,
+            "cumulative_work": REMAINING_DEBITS, "new_work_caps": REMAINING_CAPS,
+            "released_parent_process_resumed": False, "source_alone_authorizes_remaining_call": False}
+
+
 def preflight(args):
     gate(args.source.resolve(strict=True) == ROOT and Path(fold.__file__).resolve() == ROOT / fold.ENTRYPOINT,
          "isolated_qualification_source_required")
@@ -437,8 +644,24 @@ def preflight(args):
         "released_parent_process_resumed": False, "original_parent_restoration_passed": False,
         "original_parent_numerical_acceptance": False, **fold.NO_CLAIMS}
     recovery_path = getattr(args, "recovery_phase", None)
+    remaining_path = getattr(args, "remaining_phase", None)
+    gate(recovery_path is None or remaining_path is None, "qualification_phase_routes_conflict")
     phase_kind = SCHEMA
-    if recovery_path is not None:
+    if remaining_path is not None:
+        requirements = remaining_requirements(phase_contract, candidate, component, implementation,
+                                              prepared["environment"], prepared["output"], records)
+        remaining_ref = regular(remaining_path)
+        declaration = read_bound(remaining_ref, records)
+        lineage = remaining_phase_contract(declaration, remaining_ref, requirements, lineage)
+        phase_kind = REMAINING_KIND
+        phase_contract = {**phase_contract, "schema": REMAINING_KIND + "-contract", "phase_kind": phase_kind,
+                          "lineage": lineage, "remaining_phase": remaining_ref, "new_work_caps": REMAINING_CAPS,
+                          "spectral_request": REMAINING_REQUEST,
+                          "original_qualification_deadline_utc": ORIGINAL_QUALIFICATION_DEADLINE,
+                          "interrupted_deadline_utc": lineage["interrupted_deadline_utc"],
+                          "prospective_deadline_utc": lineage["prospective_deadline_utc"],
+                          "two_shift_certificate": False, "infinity_classification_certified": False}
+    elif recovery_path is not None:
         requirements = recovery_requirements(phase_contract, component, implementation, prepared["environment"],
                                              prepared["output"], records)
         recovery_ref = regular(recovery_path)
@@ -460,6 +683,11 @@ def preflight(args):
         gate(all(not output.is_relative_to(Path(path)) and not Path(path).is_relative_to(output)
                  for path in (predecessor["root"], predecessor["source_checkout"])),
              "recovery_output_overlaps_expired_phase")
+    if remaining_path is not None:
+        predecessor = lineage["interrupted_predecessor"]
+        gate(all(not output.is_relative_to(Path(path)) and not Path(path).is_relative_to(output)
+                 for path in (predecessor["root"], predecessor["source_checkout"])),
+             "remaining_output_overlaps_interrupted_phase")
     records = approach.coarse.unique_records(records)
     prepared.update(origin=prepared["restart"], restart=candidate["restart"], case=candidate["case"],
                     candidate=candidate, parent_fold=parent, parent_result=result, lineage=lineage,
@@ -486,6 +714,7 @@ def preflight(args):
         records.extend(admission_contract(admission, prepared))
     prepared["input_seal"] = regular(args.seal) if args.seal is not None else None
     if not args.check:
+        gate(phase_kind == REMAINING_KIND, "historical_two_search_native_execution_refused")
         gate(not pending, "native_qualification_not_admitted", pending)
         inherited_deadline(args.deadline, lineage)
         # The held process supplies fresh progress for the existing launcher.
@@ -561,13 +790,92 @@ class QualificationAdapter(fold.Adapter):
         gate(all(self.work[name] == 0 for name in
                  ("augmented_solve_calls", "completed_augmented_updates", "physical_remeshes")),
              "qualification_forbidden_work_recorded")
-        gate(DEBITS["eigenproblem_calls"] + self.work["eigenproblem_calls"] <= AGGREGATE_CAPS["eigenproblem_calls"],
+        gate(self.work["eigenproblem_calls"] <= phase_caps(self.prepared)["eigenproblem_calls"]
+             and phase_debits(self.prepared)["eigenproblem_calls"] + self.work["eigenproblem_calls"]
+             <= AGGREGATE_CAPS["eigenproblem_calls"],
              "qualification_cumulative_eigen_cap_exceeded")
         gate(not self.solve_denial.attempts, "qualification_forbidden_solve_attempt", self.solve_denial.attempts)
         gate(self.core.get_detect_inverted_elements() is True and p._inversion_remesh_threshold == 0,
              "qualification_inversion_detection_policy_changed")
         gate(fold.owned_template_signature(p) == self.template_policy,
              "qualification_template_registration_changed")
+
+    def solve_spectrum(self, shift):
+        """Keep the frozen solver policy, charging durably before native entry."""
+        gate(self.prepared.get("phase_kind") == REMAINING_KIND,
+             "historical_two_search_native_execution_refused")
+        gate(shift == 0.001, "remaining_call_shift_differs", shift)
+        gate(self.work["eigenproblem_calls"] == 0, "remaining_eigen_call_already_spent")
+        charge_path = eigen_charge_path(self.prepared)
+        gate(not charge_path.exists() and not charge_path.is_symlink(), "remaining_eigen_charge_already_exists")
+        p = self.problem
+        present, original = "solve_eigenproblem" in vars(p), p.solve_eigenproblem
+        entered = False
+        def charged(*args, **options):
+            nonlocal entered
+            gate(not entered and args == (8,)
+                 and options == {"shift": 0.001, "azimuthal_m": 0, "quiet": True}
+                 and self.work["eigenproblem_calls"] == 1, "remaining_native_request_or_debit_differs")
+            self.eigen_charge = durable_eigen_charge(self, shift)
+            self.check()
+            entered = True
+            return original(*args, **options)
+        p.solve_eigenproblem = charged
+        try:
+            return super().solve_spectrum(shift)
+        finally:
+            if present:
+                p.solve_eigenproblem = original
+            else:
+                del p.solve_eigenproblem
+
+
+def eigen_charge_path(prepared):
+    return Path(prepared["output"]) / "phase-receipts/eigen-call-02-charged.json"
+
+
+def sync_directory(path):
+    descriptor = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def durable_eigen_charge(adapter, shift):
+    """Exclusive file and directory fsync must finish before solver entry."""
+    prepared = adapter.prepared
+    path = eigen_charge_path(prepared)
+    output = path.parent.parent
+    gate(output.is_dir() and not any(item.is_symlink() for item in (output, *output.parents)),
+         "regular_remaining_output_required")
+    path.parent.mkdir(mode=0o700, exist_ok=True)
+    gate(not path.parent.is_symlink(), "remaining_charge_directory_symlink")
+    sync_directory(output)
+    prior = phase_debits(prepared)
+    work = {**adapter.work, "stationary_solve_calls": 0, "time_solve_calls": 0}
+    gate(prepared["native_execution_authorized"] is True and prepared["phase_kind"] == REMAINING_KIND
+         and work == REMAINING_CAPS and shift == 0.001, "remaining_charge_request_or_work_differs")
+    receipt = {"schema": REMAINING_KIND + "-eigen-charge", "stage": "charged-before-native-entry",
+               "phase_kind": REMAINING_KIND, "source_commit": prepared["component"]["commit"],
+               "remaining_phase": prepared["lineage"]["remaining_phase"],
+               "interrupted_predecessor": prepared["lineage"]["interrupted_predecessor"],
+               "active_admission": prepared["active_admission"],
+               "deadline_utc": prepared["lineage"]["deadline_utc"],
+               "spectral_request": REMAINING_REQUEST, "shift": shift,
+               "new_phase_call_index": 1, "cumulative_call_index": 2,
+               "prior_cumulative_work": dict(prior), "work": work,
+               "cumulative_work": {name: prior[name] + adapter.work[name] for name in DEBITS},
+               "returned_bank_verified": False, "numerical_acceptance": False,
+               "durability_policy": "exclusive file fsync and parent directory fsync before native entry",
+               **fold.NO_CLAIMS}
+    with path.open("x", encoding="utf-8") as stream:
+        json.dump(receipt, stream, indent=2, allow_nan=False)
+        stream.write("\n")
+        stream.flush()
+        os.fsync(stream.fileno())
+    sync_directory(path.parent)
+    return regular(path)
 
 
 class NativeSession:
@@ -643,19 +951,26 @@ def manifest(case_path, prepared, arguments):
 def new_result(prepared=None):
     lineage = {} if prepared is None else prepared["lineage"]
     phase_kind = SCHEMA if prepared is None else prepared.get("phase_kind", SCHEMA)
+    policy = {} if prepared is None else prepared
     return {"schema": phase_kind, "phase_kind": phase_kind, "status": "inconclusive", "numerical_acceptance": False,
             "original_qualification_deadline_utc": ORIGINAL_QUALIFICATION_DEADLINE,
             "prospective_deadline_utc": lineage.get("prospective_deadline_utc"),
             "prospective_declared_at": lineage.get("prospective_declared_at"),
             "recovery_phase": lineage.get("recovery_phase"), "expired_predecessor": lineage.get("expired_predecessor"),
+            "remaining_phase": lineage.get("remaining_phase"),
+            "interrupted_predecessor": lineage.get("interrupted_predecessor"),
+            "interrupted_deadline_utc": lineage.get("interrupted_deadline_utc"),
             "source_alone_authorizes_recovery": False,
+            "source_alone_authorizes_remaining_call": False,
+            "two_shift_certificate": False, "infinity_classification_certified": False,
+            "qualification_scope": "remaining returned null and fresh cold qualification only",
             "released_parent_process_resumed": False, "same_instance_baseline_restored": False,
             "original_parent_restoration_passed": False, "original_parent_numerical_acceptance": False,
             "old_unserialized_continuation_buffer_restored": False,
             "continuation_scope": "Fresh admitted owner captures/restores its own continuation state; "
                                   "the old un-serialized current buffer is not recovered.",
-            "work": dict(NEW_CAPS, eigenproblem_calls=0), "prior_cumulative_work": DEBITS,
-            "cumulative_work": dict(DEBITS), **fold.NO_CLAIMS}
+            "work": {name: 0 for name in phase_caps(policy)}, "prior_cumulative_work": dict(phase_debits(policy)),
+            "cumulative_work": dict(phase_debits(policy)), **fold.NO_CLAIMS}
 
 
 def record_refusal(result, key, error):
@@ -664,11 +979,15 @@ def record_refusal(result, key, error):
 
 
 def update_work(result, *adapters):
+    prior = phase_debits(result)
+    gate(result["prior_cumulative_work"] == prior, "qualification_inherited_work_debit_changed")
     work = {name: sum(adapter.work[name] for adapter in adapters if adapter is not None) for name in DEBITS}
     gate(all(work[name] >= result.get("work", {}).get(name, 0) for name in DEBITS),
          "qualification_work_debit_regressed")
     result["work"] = {**work, "stationary_solve_calls": 0, "time_solve_calls": 0}
-    result["cumulative_work"] = {name: DEBITS[name] + work[name] for name in DEBITS}
+    result["cumulative_work"] = {name: prior[name] + work[name] for name in DEBITS}
+    result["charged_eigen_call_receipts"] = [adapter.eigen_charge for adapter in adapters
+                                            if adapter is not None and hasattr(adapter, "eigen_charge")]
 
 
 def persist_result(output, result, label):
@@ -741,7 +1060,7 @@ def qualify_same_instance(adapter, prepared, output, arguments, result):
         adapter.restore(original, "qualification-checkpoint-restoration")
         event["verified"] = True
         pairs = []
-        for index, shift in enumerate(fold.LIMITS["shifts"]):
+        for index, shift in enumerate(phase_shifts(prepared)):
             values, vectors = adapter.probe(f"eigen-{index}", lambda shift=shift: adapter.solve_spectrum(shift))
             rows = fold.returned_null_metrics(values, vectors, jacobian, mass, q, layout, prepared["case"])
             pairs.append({"shift": shift, "pairs": rows})
@@ -863,6 +1182,7 @@ def cold_lane(session, same_session, prepared, output, deadline, bindings, resul
 
 def execute(prepared, output, arguments, deadline, *, result=None):
     gate(prepared["native_execution_authorized"] is True, "metadata_cannot_authorise_native_qualification")
+    gate(prepared.get("phase_kind") == REMAINING_KIND, "historical_two_search_native_execution_refused")
     result = new_result(prepared) if result is None else result
     same_session, cold_session = NativeSession(), NativeSession()
     try:
@@ -893,8 +1213,11 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
     for name in ("source", "parent-attempt", "case", "out"):
         parser.add_argument("--" + name, type=Path, required=True)
-    for name in ("seal", "admission", "recovery-phase"):
+    for name in ("seal", "admission"):
         parser.add_argument("--" + name, type=Path)
+    phases = parser.add_mutually_exclusive_group()
+    for name in ("recovery-phase", "remaining-phase"):
+        phases.add_argument("--" + name, type=Path)
     parser.add_argument("--deadline")
     parser.add_argument("--check", action="store_true")
     args = parser.parse_args(arguments)
