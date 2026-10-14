@@ -662,7 +662,7 @@ class MetadataAndBridgeControls(unittest.TestCase):
             progress = [json.loads(row) for row in (self.runtime / "progress.jsonl").read_text().splitlines()]
             self.assertIs(manifest["marker_only"], True)
             self.assertIs(manifest["equations_initialised"], False)
-            self.assertIsNone(manifest["restart_from"])
+            self.assertNotIn("restart_from", manifest)
             self.assertIsNone(manifest["qualified_stationary_parent"])
             self.assertEqual(progress[0]["event"], "prepared")
             self.assertFalse((self.runtime / "fidelity").exists())

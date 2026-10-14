@@ -123,7 +123,6 @@ def main(argv=None, *, driver=None):
         'pyoomph': prepared['environment'], 'runner': bridge, 'runner_path': bridge['path'],
         'runner_sha256': bridge['sha256'], 'argv': [sys.executable, bridge['path'], *arguments],
         'azimuthal_stability': False,
-        'restart_from': None,
         'qualified_stationary_parent': None,
         'marker_only': True, 'equations_initialised': False, 'stability_layout_initialised': False,
         'constructor_policy': prepared['controls'],
