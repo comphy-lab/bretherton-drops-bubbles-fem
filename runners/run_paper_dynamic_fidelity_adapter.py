@@ -37,7 +37,7 @@ def parser():
     result = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
     for name in ('case', 'source', 'bindings', 'runtime'):
         result.add_argument('--' + name, type=Path, required=True)
-    result.add_argument('--role', choices=('warm', 'cold'), required=True)
+    result.add_argument('--role', choices=('marker', 'warm', 'cold'), required=True)
     for name in ('controls', 'environment', 'warm-result', 'phase', 'admission'):
         result.add_argument('--' + name, type=Path)
     mode = result.add_mutually_exclusive_group(required=True)
@@ -58,7 +58,7 @@ def driver_arguments(args, child):
 
 def case_selector(path, prepared, driver):
     reference = driver.fidelity.reference(path.absolute())
-    original = prepared['parent']['case']
+    original = prepared['case_ref'] if prepared['requirements']['role'] == 'marker' else prepared['parent']['case']
     require(all(reference[key] == original[key] for key in ('path', 'sha256')),
             'official case selector differs from the exact bound parent')
     prepared['book'].file(original)
@@ -122,10 +122,12 @@ def main(argv=None, *, driver=None):
         'component_commit': prepared['source']['commit'], 'component': prepared['component'],
         'pyoomph': prepared['environment'], 'runner': bridge, 'runner_path': bridge['path'],
         'runner_sha256': bridge['sha256'], 'argv': [sys.executable, bridge['path'], *arguments],
-        'azimuthal_stability': True,
-        'restart_from': (prepared['parent']['state'] if prepared.get('warm') is None
-                         else prepared['warm']['initial_row']['state']),
-        'qualified_stationary_parent': prepared['parent']['state'],
+        'azimuthal_stability': False,
+        'restart_from': None,
+        'qualified_stationary_parent': None,
+        'marker_only': True, 'equations_initialised': False, 'stability_layout_initialised': False,
+        'constructor_policy': prepared['controls'],
+        'inherited_time_step_charge_spent': 1, 'new_time_step_allowance': 0,
         'fidelity_role': args.role, 'fidelity_output': str(child), 'requirements': prepared['requirements'],
         'phase': prepared['phase_ref'], 'native_execution_authorized': False,
         'production_jump_qualified': False, 'nonflat_physical_history_qualified': False,

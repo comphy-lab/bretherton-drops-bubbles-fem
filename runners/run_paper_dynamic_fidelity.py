@@ -1,15 +1,13 @@
-"""Inspect or separately admit one unchanged-case native fidelity role.
+"""Inspect or separately admit the zero-solve before-step marker role.
 
-Metadata inspection cannot authorise native entry. Warm and cold roles require
-distinct processes, exact published source/input/control/clock declarations,
-and an official active launch receipt. Neither role admits a production jump.
+Metadata cannot authorise native entry. Marker execution requires exact root
+phase and official active admission. Full warm/cold execution remains refused.
 """
 
 from __future__ import annotations
 
 import argparse
 import ast
-import hashlib
 import json
 import os
 import sys
@@ -22,9 +20,10 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from problems import paper_bubble as model
-from runners import paper_dynamic_capture as native_capture
+from runners import paper_dynamic_callback_protocol as callback_protocol
 from runners import paper_dynamic_fidelity as fidelity
 from runners import paper_dynamic_jump_runtime as runtime
+from runners import paper_dynamic_marker as marker
 from runners import run_paper_case as ordinary
 from runners import run_paper_cold_history as history
 
@@ -48,7 +47,13 @@ class Book:
         path, raw, record = fidelity.read_bound(ref)
         def reject_constant(value):
             raise ValueError(f"nonfinite JSON value: {value}")
-        result = json.loads(raw.decode("utf-8"), parse_constant=reject_constant)
+        def unique_object(pairs):
+            value = {}
+            for key, child in pairs:
+                require(key not in value, "duplicate JSON authority key: " + key)
+                value[key] = child
+            return value
+        result = json.loads(raw.decode("utf-8"), parse_constant=reject_constant, object_pairs_hook=unique_object)
         require(isinstance(result, dict), "JSON authority must be an object")
         require(str(path) not in self.records or self.records[str(path)] == record, "conflicting input authority")
         self.records[str(path)] = record
@@ -167,77 +172,14 @@ def warm_contract(ref, book, selected, source):
     return result
 
 
-def preflight(args, *, component=None, observed=None):
-    require(args.source.resolve(strict=True) == ROOT, "use the explicitly selected isolated fidelity checkout")
-    fidelity.no_cached_foreign_helpers(ROOT)
-    book = Book()
-    bindings_ref = fidelity.reference(args.bindings.absolute())
-    bindings = book.read(bindings_ref)
-    parent = parent_contract(bindings, book)
-    factory_contract(bindings, book)
-    selected = {key: None for key in fidelity.CONTROL_KEYS} if args.controls is None else book.read(fidelity.reference(args.controls.absolute()))
-    selected, missing = fidelity.controls(selected, unissued=True)
-    component = ordinary.component_revision(ROOT) if component is None else component
-    observed = ordinary.pyoomph_revision() if observed is None else observed
-    pending = ["numerical control unissued: " + key for key in missing]
-    try:
-        ordinary.require_clean_source(component)
-    except ValueError:
-        pending.append("prospective driver is not clean published source")
-    source = {"commit": component["head"], "root": str(ROOT), "files": fidelity.source_files(ROOT)}
-    if component.get("clean") is True:
-        for name, ref in source["files"].items():
-            committed = ordinary._git(ROOT, "show", "HEAD:" + name)
-            require(committed is not None and hashlib.sha256(committed).hexdigest() == ref["sha256"],
-                    "prospective source closure is not committed: " + name)
-    receipt_ref = None if args.environment is None else fidelity.reference(args.environment.absolute())
-    pending.extend(environment_contract(bindings, receipt_ref, book, observed))
-    warm = None
-    if args.role == "cold":
-        if args.warm_result is None:
-            pending.append("completed warm-role result unissued")
-        elif not missing:
-            warm = warm_contract(fidelity.reference(args.warm_result.absolute()), book, selected, source)
-    else:
-        require(args.warm_result is None, "warm role cannot consume another warm result")
-    output = None
-    if args.out is None:
-        pending.append("fidelity output unissued")
-    else:
-        output = args.out.absolute()
-        require(not any(p.is_symlink() for p in (output, *output.parents)), "output alias refused")
-        for ref in [*book.records.values(), *source["files"].values()]:
-            path = Path(ref["path"])
-            require(not path.is_relative_to(output) and not output.is_relative_to(path.parent)
-                    and not output.is_relative_to(ROOT), "output overlaps input or source authority")
-    requirements = {"schema": fidelity.SCHEMA + "-requirements", "role": args.role, "bindings": bindings_ref,
-        "source": source, "environment": observed, "fresh_environment": receipt_ref, "controls": selected,
-        "caps": fidelity.CAPS, "case": parent["case"], "output": str(output) if output is not None else None,
-        "warm_result": None if args.warm_result is None else fidelity.reference(args.warm_result.absolute()),
-        "inputs": sorted(book.records.values(), key=lambda row: row["path"]),
-        "policy": {"history_fill": False, "clock_reset": False, "forcing_change": False,
-                   "production_jump": False, "synthetic_buffer_stress": False, "exact_next_transition": True}}
-    phase = phase_ref = None
-    if args.phase is None:
-        pending.append("root phase declaration unissued")
-    elif not pending:
-        phase_ref = fidelity.reference(args.phase.absolute())
-        phase = book.read(phase_ref)
-        phase_contract(phase, requirements)
-    return {**parent, "bindings": bindings, "bindings_ref": bindings_ref, "book": book, "controls": selected,
-            "component": component, "source": source, "environment": observed, "warm": warm,
-            "output": output, "phase": phase, "phase_ref": phase_ref,
-            "requirements": requirements, "pending": pending, "native_execution_authorized": False}
+def preflight(args, *, component=None, observed=None, committed_reader=None):
+    require(args.role == "marker", "full warm/cold execution and metadata remain refused pending separate wiring/review")
+    return marker.preflight(args, sys.modules[__name__], component=component, observed=observed,
+                            committed_reader=committed_reader)
 
 
 def phase_contract(phase, requirements, *, now=None):
-    require(isinstance(phase, dict) and set(phase) == {"schema", "requirements", "issued_by", "declared_at", "deadline_utc", "phase_authorized"}
-            and phase["schema"] == fidelity.SCHEMA + "-phase" and phase["requirements"] == requirements
-            and phase["issued_by"] == "root" and phase["phase_authorized"] is True, "root phase differs from exact requirements")
-    current = datetime.now(UTC) if now is None else now
-    start, end = utc(phase["declared_at"]), utc(phase["deadline_utc"])
-    require(start <= current < end and end > start, "prospective finite phase window is not current")
-    return end
+    return marker.phase_contract(phase, requirements, now=now)
 
 
 def process_identity():
@@ -252,16 +194,19 @@ def process_identity():
 def admission_contract(admission, prepared, *, now=None, identity=None, affinity=None):
     current = datetime.now(UTC) if now is None else now
     deadline = phase_contract(prepared["phase"], prepared["requirements"], now=current)
-    require(admission.get("schema") == fidelity.SCHEMA + "-admission"
+    marker.admission_header_contract(admission, prepared)
+    require(admission.get("schema") == marker.SCHEMA + "-admission"
+            and admission.get("marker_authorized") is True and admission.get("role") == "marker"
+            and admission.get("deadline_utc") == prepared["phase"]["deadline_utc"]
             and admission.get("native_execution_authorized") is True
-            and admission.get("phase") == prepared["phase_ref"]
-            and admission.get("requirements") == prepared["requirements"], "native admission differs")
+            and callback_protocol.same(admission.get("phase"), prepared["phase_ref"])
+            and callback_protocol.same(admission.get("requirements"), prepared["requirements"]), "native admission differs")
     tracker = prepared["book"].read(admission["active_tracker"])
-    require(tracker.get("schema") == fidelity.SCHEMA + "-active-tracker" and tracker.get("phase_kind") == fidelity.SCHEMA
+    require(tracker.get("schema") == marker.SCHEMA + "-active-tracker" and tracker.get("phase_kind") == marker.SCHEMA
             and tracker.get("status") == "running" and tracker.get("role") == prepared["requirements"]["role"]
             and tracker.get("phase") == prepared["phase_ref"] and tracker.get("phase_authorized") is True
             and tracker.get("output") == str(prepared["output"]) and tracker.get("source_commit") == prepared["source"]["commit"]
-            and utc(tracker["deadline_utc"]) == deadline and tracker.get("caps") == fidelity.CAPS,
+            and utc(tracker["deadline_utc"]) == deadline and callback_protocol.same(callback_protocol.caps_contract(tracker.get("caps")), prepared["requirements"]["caps"]),
             "active tracker differs from the exact fidelity role")
     require(0 <= (current - utc(tracker["checked_at"])).total_seconds() <= 300, "active tracker is stale")
     reservation = tracker["reservation"]
@@ -275,15 +220,18 @@ def admission_contract(admission, prepared, *, now=None, identity=None, affinity
     prepared["book"].file(tracker["launch_audit"])
     require(launch["launch_audit"] == tracker["launch_audit"], "official launch audit differs")
     actual = process_identity() if identity is None else identity
-    expected = tracker["current_root_identity"]
-    require(all(actual[k] == expected[k] for k in actual), "admitted native worker process identity differs")
-    require(all(expected[k] == launch["root_identity"][k] for k in expected if k != "host"), "official launch identity differs")
+    expected = callback_protocol.process_contract(tracker["current_root_identity"])
+    callback_protocol.process_contract(actual)
+    require(callback_protocol.same(actual, expected), "admitted native worker process identity differs")
+    require(all(callback_protocol.same(expected[k], launch["root_identity"][k]) for k in expected if k != "host"), "official launch identity differs")
     cpus = tracker["cpus"]
     require(isinstance(cpus, list) and cpus and all(type(c) is int and c >= 0 for c in cpus)
-            and len(set(cpus)) == len(cpus) and dispatcher.get("cpus") == cpus, "official CPU set differs")
+            and len(set(cpus)) == len(cpus) and callback_protocol.same(dispatcher.get("cpus"), cpus), "official CPU set differs")
     if affinity is None:
         affinity = {int(path.name): sorted(os.sched_getaffinity(int(path.name))) for path in Path("/proc/self/task").iterdir()}
-    require(affinity and all(value == sorted(cpus) for value in affinity.values()), "actual worker thread affinity differs")
+    require(type(affinity) is dict and affinity and all(type(tid) is int and tid > 0
+            and type(value) is list and callback_protocol.same(value, sorted(cpus)) for tid, value in affinity.items()),
+            "actual worker thread affinity differs")
     warm = prepared.get("warm")
     if warm is not None:
         previous = warm["native_process"]
@@ -305,103 +253,25 @@ def await_admission(prepared, path, *, clock=None, sleep=None):
         end = phase_contract(prepared["phase"], prepared["requirements"], now=current)
         require(not any(p.is_symlink() for p in (path, *path.parents)), "admission alias refused")
         sleep(min(1.0, (end - current).total_seconds()))
-    admission = prepared["book"].read(fidelity.reference(path))
+    admission_ref = fidelity.reference(path)
+    admission = prepared["book"].read(admission_ref)
     actual = admission_contract(admission, prepared, now=clock())
     prepared["native_execution_authorized"] = True
     prepared["native_process"] = actual
+    prepared["admission_ref"] = admission_ref
+    prepared["admission"] = admission
 
 
 def execute(prepared, output, emit):
-    require(prepared["native_execution_authorized"] is True and prepared["phase"] is not None and not prepared["pending"],
-            "metadata cannot authorise native fidelity entry")
-    phase_contract(prepared["phase"], prepared["requirements"])
-    prepared["book"].stable()
-    for ref in prepared["source"]["files"].values():
-        fidelity.bound(ref)
-    # Every native import follows actual root-issued phase and active admission.
-    from pyoomph import _pyoomph_core as core
-    prepared["native_imported"] = True
-    from pyoomph.meshes.mesh import ODEStorageMesh
-    from pyoomph.meshes.remesher import RemesherViaRecreation
-
-    from problems.paper_mesh import PaperTwoPhaseMesh
-
-    require(fidelity.reference(Path(core.__file__).absolute()) == prepared["environment"]["native_core"], "imported native core differs")
-    before_detection = core.get_detect_inverted_elements()
-    selected = prepared["controls"]
-    deadline = utc(prepared["phase"]["deadline_utc"])
-
-    def stable():
-        require(datetime.now(UTC) < deadline, "finite native fidelity deadline elapsed")
-        prepared["book"].stable()
-        for ref in prepared["source"]["files"].values():
-            fidelity.bound(ref)
-
-    case = prepared["case"]
-    forcing = {"Ca_in": case["physics"]["ca_in"], "Bo": case["physics"]["bond"]}
-    types = native_capture.NativeTypes(model._native_problem_types()[0], core.MultiTimeStepper,
-                ODEStorageMesh, PaperTwoPhaseMesh, RemesherViaRecreation)
-    capture = native_capture.Capture(types)
-    core.set_detect_inverted_elements(True)
-    try:
-        with model.build_problem(case, initial_bond=case["physics"]["bond"]) as problem:
-            problem.set_output_directory(str(output / "solver"))
-            problem.set_linear_solver("superlu")
-            problem.set_c_compiler("system")
-            problem.setup_for_stability_analysis(azimuthal_stability=True, analytic_hessian=False)
-            policy = native_capture.prepare_initialisation(problem, types)
-            emit("initialisation_policy", policy)
-            problem.eigen_data_in_states, problem.continuation_data_in_states = True, False
-            problem.do_call_remeshing_when_necessary = False
-            problem.inversion_remesh_max_retries = 0
-            guard = fidelity.EvolutionGuard(problem, forcing, emit)
-            with guard.installed():
-                stable()
-                with guard.declared("initialise"):
-                    problem.initialise()
-                require(not problem.is_distributed(), "serial native fidelity role required")
-                parent = prepared["parent"]
-                expected = None
-                if prepared["warm"] is not None:
-                    row = prepared["warm"]["initial_row"]
-                    inventory = prepared["book"].read(row["mesh_inventory"])
-                    physical = prepared["book"].read(row["physical_witness"])
-                    parent = {"state": row["state"], "meshes": inventory["meshes"]}
-                    expected = runtime.validate_witness(physical["witness"])
-                loader = fidelity.LoadAdapter(problem, capture, guard, emit)
-                loader.load(parent["state"], parent["meshes"])
-                original = prepared["book"].file(parent["state"]).read_bytes()
-                fidelity.endtime_restore(problem, original, case, output, emit)
-                if expected is None:
-                    fidelity.cross_check_live(problem, capture, original, emit, "original_parent_numeric_cross_check")
-                    initial = fidelity.register_policy(problem, capture, emit)
-                else:
-                    runtime.restore_loaded_policy(problem, expected, fidelity.capture_module_hooks(capture))
-                    initial = fidelity.cross_check_live(problem, capture, original, emit, "cold_initial_numeric_cross_check")
-                    require(initial == expected, "fresh cold complete history/policy differs")
-                initial_row = fidelity.retain(problem, capture, output, 0, initial)
-                require(capture(problem) == initial, "initial retention changed native state")
-                stable()
-                next_state = fidelity.sole_step(problem, capture, guard, selected, deadline, output, emit, stable)
-                if prepared["warm"] is not None:
-                    warm_after = prepared["book"].read(prepared["warm"]["next_row"]["physical_witness"])["witness"]
-                    require(next_state["next_witness"] == warm_after, "warm/cold next transition differs")
-                    emit("exact_next_transition_match", {"full_witness_equal": True})
-                stable()
-                return {"initial_row": initial_row, "next_row": next_state["row"], "work": next_state["work"],
-                        "callbacks": next_state["callbacks"], "time_step_calls_charged": 1,
-                        "load_calls": loader.calls, "forbidden_entry_attempts": guard.denied,
-                        "native_imported": True, "exact_warm_cold_next_transition": prepared["warm"] is not None}
-    finally:
-        core.set_detect_inverted_elements(before_detection)
-        require(core.get_detect_inverted_elements() == before_detection, "inversion detection cleanup differs")
+    require(prepared["requirements"]["role"] == "marker", "full warm/cold execution remains refused")
+    return marker.execute(prepared, output, emit, sys.modules[__name__])
 
 
 def parser():
     result = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
     for name in ("bindings", "source"):
         result.add_argument("--" + name, type=Path, required=True)
-    result.add_argument("--role", choices=fidelity.ROLES, required=True)
+    result.add_argument("--role", choices=("marker", *fidelity.ROLES), required=True)
     for name in ("controls", "environment", "warm-result", "out", "phase", "admission"):
         result.add_argument("--" + name, type=Path)
     mode = result.add_mutually_exclusive_group(required=True)
@@ -417,47 +287,56 @@ def main(argv=None):
         prepared = preflight(args)
         if not args.check:
             require(not prepared["pending"] and prepared["phase"] is not None and prepared["output"] is not None
-                    and args.admission is not None, "native fidelity requirements are unissued")
+                    and args.admission is not None, "native marker requirements are unissued")
     except (ValueError, OSError, KeyError, TypeError) as error:
         print(json.dumps({"status": "refused", "refusal": str(error), "native_imported": False,
                           "native_execution_authorized": False, "ready_for_dispatch": False}))
         return 2
     if args.check:
-        print(json.dumps({"schema": fidelity.SCHEMA + "-metadata-check", "requirements": prepared["requirements"],
+        print(json.dumps({"schema": marker.SCHEMA + "-metadata-check", "requirements": prepared["requirements"],
               "pending": prepared["pending"], "native_imported": False, "native_execution_authorized": False,
               "ready_for_dispatch": False}, indent=2, allow_nan=False))
         return 0
     output = prepared["output"]
     output.mkdir(parents=True, exist_ok=False, mode=0o700)
-    counter = 0
+    counter = 1
+    fidelity.write_new(output / "receipt-0001-prepared.json", {"event": "prepared", "role": "marker",
+        "native_execution_authorized": False, "active_admission_pending": True,
+        "requirements": prepared["requirements"], "phase": prepared["phase_ref"]})
+    prepared["raw_events"] = []
 
     def emit(label, value):
         nonlocal counter
         counter += 1
-        return fidelity.write_new(output / (f"receipt-{counter:04d}-" + label + ".json"), value)
+        authority = prepared["marker_authority"].snapshot()
+        event = {"schema": marker.SCHEMA + "-raw-event", "role": "marker", "sequence": counter,
+                 "event": label, "authority": authority, "value": value}
+        ref = fidelity.write_new(output / (f"receipt-{counter:04d}-" + label + ".json"), event)
+        prepared["raw_events"].append(ref)
+        if label == "before_step_cpp_marker_received":
+            prepared["raw_marker_deliveries"] = value["raw_marker_deliveries"]
+        if label == "before_step_cpp_descriptor_returned":
+            prepared["normal_descriptor_return"] = value["normal_descriptor_return"]
+        return ref
 
-    emit("prepared", {"event": "prepared", "native_execution_authorized": False, "active_admission_pending": True,
-                     "requirements": prepared["requirements"], "phase": prepared["phase_ref"]})
-    result = {"schema": fidelity.SCHEMA + "-result", "role": args.role, "status": "failed",
-              "source": prepared["source"], "controls": prepared["controls"], "phase": prepared["phase_ref"],
-              "native_imported": False, "numerical_acceptance": False, "production_jump_qualified": False,
-              "nonflat_physical_history_qualified": False, "synthetic_buffer_stress_performed": False}
+    result = marker.initial_result(prepared)
     try:
         await_admission(prepared, args.admission)
+        prepared["marker_authority"] = marker.bind_authority(prepared, sys.modules[__name__])
         result["native_process"] = prepared["native_process"]
+        result["admission"] = prepared["admission_ref"]
         fidelity.write_new(output / "run-manifest.json", {**result, "native_execution_authorized": True,
-                     "requirements": prepared["requirements"], "environment": prepared["environment"]})
+                     "environment": prepared["environment"]})
         result["native_entry_attempted"] = True
         result.update(execute(prepared, output, emit))
-        result["status"] = "complete_role"
-    except BaseException as error:  # noqa: BLE001 - preserve interrupted charges without retrying native work
-        result["native_imported"] = prepared.get("native_imported", False)
+        result["status"] = "complete_marker"
+    except BaseException as error:  # noqa: BLE001 - preserve charges/raw evidence; never retry native work
         result["failure"] = {"type": type(error).__name__, "message": str(error)}
-        if (output / "step-charge.json").exists():
-            result["time_step_calls_charged"] = 1
+    marker.retain_result_state(result, prepared)
+    if result["status"] == "failed_marker":
         fidelity.write_new(output / "failure.json", result)
     fidelity.write_new(output / "result.json", result)
-    return 0 if result["status"] == "complete_role" else 1
+    return 0 if result["status"] == "complete_marker" else 1
 
 
 if __name__ == "__main__":
