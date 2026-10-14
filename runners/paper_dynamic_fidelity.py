@@ -19,7 +19,6 @@ from runners import paper_dynamic_jump as study
 from runners import paper_dynamic_jump_runtime as runtime
 from runners import paper_dynamic_state as numeric_state
 from runners import run_paper_cold_history as history
-from runners import run_paper_finite_gas_fold as fold
 
 require = study.require
 SCHEMA = "stone-dynamic-fidelity-v1"
@@ -133,6 +132,9 @@ class LoadAdapter:
         self.calls = 0
 
     def load(self, state_ref, meshes):
+        # This helper imports NumPy; load is reached only after native admission.
+        from runners import run_paper_finite_gas_fold as fold
+
         require(self.calls == 0, "an additional native load requires a new declared phase")
         state_path = bound(state_ref)
         parsed = history.serialized_metadata(state_path.read_bytes())
