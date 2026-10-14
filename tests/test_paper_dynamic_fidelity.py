@@ -63,14 +63,116 @@ def initial_witness():
         "policy": {"all_parameters": {"Ca_in": 0.01, "Bo": 0.5}, "serialization": {"output_step": 2}}}
 
 
+# Source-derived API presence at a186e07e1a7ea6b74ecc4f3a3fc39cc763d41618.
+# Python Problem plus src/nanobind/problem.cpp; literals do not depend on
+# EvolutionGuard.REQUIRED. These stubs establish software behaviour only.
+PYOOMPH_A186_API = frozenset({
+    '_adapt',
+    '_adapt_with_interfacial_errors',
+    '_apply_deferred_initial_refinement',
+    '_arc_length_step',
+    '_compute_arclength_tangent',
+    '_load_state',
+    '_perform_pending_remesh',
+    '_solve_eigenproblem_helper',
+    '_solve_normal_mode_eigenproblem',
+    '_solve_normal_mode_eigenproblem_impl',
+    '_solve_with_inversion_remesh',
+    '_start_bifurcation_tracking',
+    '_start_orbit_tracking',
+    'actions_after_remeshing',
+    'actions_before_newton_solve',
+    'actions_before_remeshing',
+    'activate_bifurcation_tracking',
+    'activate_eigenbranch_tracking',
+    'adapt',
+    'adaptive_unsteady_newton_solve',
+    'arclength_continuation',
+    'assemble_eigenproblem_matrices',
+    'assign_initial_values_impulsive',
+    'custom_adapt',
+    'deactivate_bifurcation_tracking',
+    'deflated_solve_by_eigenperturbation',
+    'doubly_adaptive_unsteady_newton_solve',
+    'find_bifurcation_via_eigenvalues',
+    'force_remesh',
+    'initialise',
+    'initialise_dt',
+    'load_state',
+    'newton_solve',
+    'perturb_by_eigenfunction',
+    'precice_run',
+    'refine_eigenfunction',
+    'refine_uniformly',
+    'remesh_handler_during_continuation',
+    'remesh_if_necessary',
+    'run',
+    'set_current_pinned_values',
+    'set_current_time',
+    'set_eigenfunction_as_dofs',
+    'set_history_dofs',
+    'set_initial_condition',
+    'set_max_refinement_level',
+    'shift_time_values',
+    'solve',
+    'solve_auxiliary_residual',
+    'solve_eigenproblem',
+    'steady_newton_solve',
+    'unrefine_uniformly',
+    'unsteady_newton_solve',
+})
+
+
 class CallbackProblem:
     def __init__(self, *, zero=False, fault=None):
         self.witness = initial_witness()
         self.zero, self.fault = zero, fault
         self.calls = []
+        self._initialised = True
+        for name, value in runtime.DYNAMIC_FLAGS.items():
+            setattr(self, name, value)
+        self._runmode = "new"
+        self.initial_adaption_steps = 0
+        self.project_initial_conditions = False
+        self.inversion_remesh_max_retries = 0
+        self._remesh_requested_inside_solve = False
+
+    def is_initialised(self):
+        return self._initialised
+
+    def get_scaling(self, name):
+        assert name == "temporal"
+        return 1.0
 
     def solve(self, **kwargs):
         self.calls.append(("solve", kwargs))
+        self._solve_with_inversion_remesh(
+            lambda: self.unsteady_newton_solve(kwargs["timestep"], kwargs["shift_values"]))
+        self._perform_pending_remesh()
+        # The high-level pinned solve increments the counter after its native
+        # primitive succeeds; a failed attempt remains charged without this.
+        self.witness["counter"] += 1
+        self.witness["steppers"][0]["counter"] = self.witness["counter"]
+
+    def _solve_with_inversion_remesh(self, callback):
+        assert self.inversion_remesh_max_retries == 0
+        return callback()
+
+    def _perform_pending_remesh(self):
+        assert self._remesh_requested_inside_solve is False
+        return False
+
+    def unsteady_newton_solve(self, dt, shift_values):
+        assert shift_values is True
+        # Embedded ordinary stepping shifts time/history before the virtual
+        # Newton callbacks. This synthetic leaf contains no native arrays.
+        old = self.witness["dts"][:]
+        self.witness["time"] += dt
+        self.witness["dts"] = [dt, old[0]]
+        stepper = self.witness["steppers"][0]
+        stepper.update(time=self.witness["time"], dts=self.witness["dts"][:])
+        if self.fault == "dt_flatten":
+            self.witness["dts"][1] = dt
         self.actions_before_newton_solve()
         self.actions_before_newton_step()
         if self.fault == "interrupted":
@@ -79,17 +181,8 @@ class CallbackProblem:
             self.witness["data"][0]["rows"][0][0] += 0.125
             self.actions_after_newton_step()
         self.actions_after_newton_solve()
-        dt = kwargs["timestep"]
-        old = self.witness["dts"][:]
-        self.witness["time"] += dt
-        self.witness["counter"] += 1
-        self.witness["dts"] = [dt, old[0]]
-        stepper = self.witness["steppers"][0]
-        stepper.update(time=self.witness["time"], counter=self.witness["counter"], dts=self.witness["dts"][:])
-        if self.fault == "dt_flatten":
-            self.witness["dts"][1] = dt
 
-    def solve_stationary(self):
+    def steady_newton_solve(self):
         self.calls.append("stationary")
 
     def solve_eigenproblem(self):
@@ -132,8 +225,26 @@ class CallbackProblem:
         self.calls.append("load")
 
 
+def synthetic_api_method(name):
+    def call(self, *args, **kwargs):
+        self.calls.append(name)
+    return call
+
+
+for _api in PYOOMPH_A186_API:
+    if not hasattr(CallbackProblem, _api):
+        setattr(CallbackProblem, _api, synthetic_api_method(_api))
+
+
 def selected():
     return {"dt_solver": 0.25, "max_newton_iterations": 3, "max_newton_updates": 3, "newton_tolerance": 1e-6}
+
+
+def selected_solve_kwargs():
+    value = selected()
+    return {"timestep": value["dt_solver"], "temporal_error": None, "spatial_adapt": 0,
+        "shift_values": True, "do_not_set_IC": True, "max_newton_iterations": value["max_newton_iterations"],
+        "newton_solver_tolerance": value["newton_tolerance"]}
 
 
 def test_unissued_native_entry_refuses_before_import_or_factory(tmp_path):
@@ -160,7 +271,7 @@ def test_each_unissued_control_is_an_actual_native_gate(key):
         fidelity.controls(value)
 
 
-@pytest.mark.parametrize("name", ["solve_stationary", "solve_eigenproblem", "force_remesh", "adapt",
+@pytest.mark.parametrize("name", ["steady_newton_solve", "solve_eigenproblem", "force_remesh", "adapt",
                                    "assign_initial_values_impulsive", "solve"])
 def test_guard_denies_hidden_preparation_and_restores_instance_methods(name):
     problem = CallbackProblem()
@@ -168,26 +279,27 @@ def test_guard_denies_hidden_preparation_and_restores_instance_methods(name):
     events = []
     with pytest.raises(ValueError, match="prohibits"), fidelity.EvolutionGuard(problem, {}, lambda *x: events.append(x)).installed():
         getattr(problem, name)()
-    assert vars(problem) == own and not problem.calls and events[0][0] == "forbidden_native_entry"
+    assert vars(problem) == own and not problem.calls
+    assert any(event[0] == "forbidden_native_entry" for event in events)
 
 
 def test_step_scope_cannot_admit_a_hidden_load_or_second_solve():
     problem = CallbackProblem()
     guarded = fidelity.EvolutionGuard(problem, {}, lambda *_: None)
-    with pytest.raises(ValueError, match="additional native time-step"), guarded.installed(), guarded.declared("step"):
-        problem.solve(timestep=0.25)
-        problem.solve(timestep=0.25)
+    with pytest.raises(ValueError, match="additional guarded entry"), guarded.installed(), guarded.declared("step", selected=selected()):
+        problem.solve(**selected_solve_kwargs())
+        problem.solve(**selected_solve_kwargs())
     assert len([v for v in problem.calls if isinstance(v, tuple)]) == 1
     problem = CallbackProblem()
     guarded = fidelity.EvolutionGuard(problem, {}, lambda *_: None)
-    with pytest.raises(ValueError, match="prohibits load_state"), guarded.installed(), guarded.declared("step"):
+    with pytest.raises(ValueError, match="prohibits load_state"), guarded.installed(), guarded.declared("step", selected=selected()):
         problem.load_state()
     assert not problem.calls
 
 
 def test_partial_guard_installation_is_also_restored():
     problem = CallbackProblem()
-    problem.solve_stationary = None
+    problem.steady_newton_solve = None
     own = dict(vars(problem))
     with pytest.raises(ValueError, match="required guarded API absent"), fidelity.EvolutionGuard(problem, {}, lambda *_: None).installed():
         pass

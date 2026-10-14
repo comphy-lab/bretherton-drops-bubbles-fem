@@ -170,13 +170,35 @@ class LoadAdapter:
 
 
 class EvolutionGuard:
-    """Refuse undeclared solver/remesh entrypoints before native initialisation."""
+    """Admit only the pinned ordinary solve path and administrative init/load."""
 
-    ALWAYS = frozenset({"solve_stationary", "solve_eigenproblem", "run", "run_with_adaptive_timestepping",
-              "arclength_continuation", "activate_bifurcation_tracking", "force_remesh", "adapt",
-              "actions_before_remeshing"})
-    STEP_ONLY = frozenset({"solve", "solve_unsteady", "unsteady_newton_solve", "actions_before_newton_solve"})
-    FILL = frozenset({"assign_initial_values_impulsive", "assign_initial_positions_impulsive"})
+    # These five spellings are absent from the pinned Python/binding census.
+    # Wrap any added alias under its explicit deny/initialisation category;
+    # none supplies a new stepping path. Actual stationary aliases are required.
+    ABSENT_ALIASES = frozenset({"solve_stationary", "stationary_newton_solve",
+                               "solve_unsteady", "run_with_adaptive_timestepping",
+                               "assign_initial_positions_impulsive"})
+    ALWAYS = frozenset({"solve_stationary", "stationary_newton_solve", "steady_newton_solve", "newton_solve",
+        "solve_unsteady", "run", "run_with_adaptive_timestepping", "precice_run",
+        "adaptive_unsteady_newton_solve", "doubly_adaptive_unsteady_newton_solve",
+        "solve_eigenproblem", "_solve_eigenproblem_helper", "_solve_normal_mode_eigenproblem",
+        "_solve_normal_mode_eigenproblem_impl", "refine_eigenfunction", "set_eigenfunction_as_dofs",
+        "perturb_by_eigenfunction", "arclength_continuation", "_arc_length_step", "_compute_arclength_tangent",
+        "activate_bifurcation_tracking", "deactivate_bifurcation_tracking", "activate_eigenbranch_tracking",
+        "_start_bifurcation_tracking", "_start_orbit_tracking", "find_bifurcation_via_eigenvalues",
+        "solve_auxiliary_residual", "deflated_solve_by_eigenperturbation",
+        "force_remesh", "remesh_if_necessary", "remesh_handler_during_continuation",
+        "adapt", "_adapt", "_adapt_with_interfacial_errors", "custom_adapt", "set_max_refinement_level",
+        "actions_before_remeshing", "refine_uniformly", "unrefine_uniformly",
+        "assemble_eigenproblem_matrices", "shift_time_values"})
+    STEP_ONLY = frozenset({"solve", "unsteady_newton_solve", "actions_before_newton_solve",
+                          "_solve_with_inversion_remesh", "_perform_pending_remesh"})
+    FILL = frozenset({"assign_initial_values_impulsive", "assign_initial_positions_impulsive",
+                      "initialise_dt", "set_initial_condition"})
+    LOAD_ONLY = frozenset({"load_state", "_load_state", "actions_after_remeshing", "set_current_time",
+                           "set_history_dofs", "set_current_pinned_values"})
+    INIT_ONLY = frozenset({"initialise", "_apply_deferred_initial_refinement"})
+    REQUIRED = (ALWAYS | STEP_ONLY | FILL | LOAD_ONLY | INIT_ONLY) - ABSENT_ALIASES
 
     def __init__(self, problem, forcing, record):
         self.problem, self.forcing, self.record = problem, forcing, record
@@ -185,44 +207,107 @@ class EvolutionGuard:
         self.callbacks = []
         self.step_entries = {}
         self.restored = []
+        self._api_stack = []
+        self._step_controls = None
         self.initialisations = self.loads = self.steps = 0
+
+    def check(self, permitted, name, reason):
+        if not permitted:
+            self.denied.append(name)
+            self.record("forbidden_native_entry", {"api": name, "scope": self.scope, "reason": reason})
+            raise ValueError("fidelity role prohibits " + name + ": " + reason)
+
+    def validate(self, name, args, kwargs):
+        parent = self._api_stack[-1] if self._api_stack else None
+        self.check(name not in self.ALWAYS, name, "undeclared evolution API")
+        if name == "solve":
+            expected = {"timestep": self._step_controls["dt_solver"], "temporal_error": None,
+                "spatial_adapt": 0, "shift_values": True, "do_not_set_IC": True,
+                "max_newton_iterations": self._step_controls["max_newton_iterations"],
+                "newton_solver_tolerance": self._step_controls["newton_tolerance"]} if self._step_controls else None
+            self.check(self.scope == "step" and parent is None and not args and kwargs == expected
+                and type(kwargs.get("spatial_adapt")) is int and kwargs.get("shift_values") is True
+                and kwargs.get("do_not_set_IC") is True and type(kwargs.get("timestep")) in (int, float),
+                name, "exact selected scalar ordinary timestep arguments required")
+            self.check(self.problem.is_initialised() and self.problem._taken_already_an_unsteady_step is True
+                and self.problem._first_step is False and self.problem._last_step_was_stationary is False
+                and float(self.problem.get_scaling("temporal")) == 1.0,
+                name, "loaded continuing history and unit temporal mapping required")
+        elif name == "_solve_with_inversion_remesh":
+            self.check(self.scope == "step" and parent == "solve" and len(args) == 1 and not kwargs
+                and callable(args[0]) and self.problem.inversion_remesh_max_retries == 0,
+                name, "ordinary solve's zero-retry wrapper required")
+        elif name == "unsteady_newton_solve":
+            self.check(self.scope == "step" and parent == "_solve_with_inversion_remesh"
+                and len(args) == 2 and not kwargs and type(args[0]) in (int, float)
+                and args[0] == self._step_controls["dt_solver"] and args[1] is True,
+                name, "only the nested pinned (dt, shift=True) overload is admitted")
+        elif name == "actions_before_newton_solve":
+            self.check(self.scope == "step" and parent == "unsteady_newton_solve" and not args and not kwargs,
+                name, "Newton callback outside the admitted native primitive")
+        elif name == "_perform_pending_remesh":
+            self.check(self.scope == "step" and parent == "solve" and not args and not kwargs
+                and self.problem._remesh_requested_inside_solve is False,
+                name, "only the source's empty deferred-remesh check is admitted")
+        elif name == "initialise":
+            self.check(self.scope == "initialise" and parent is None and not args and not kwargs
+                and self.problem.initial_adaption_steps == 0 and self.problem.project_initial_conditions is False
+                and self.problem._runmode not in {"continue", "replot"},
+                name, "one explicit zero-adaptation, unprojected fresh initialisation required")
+        elif name == "_apply_deferred_initial_refinement":
+            self.check(self.scope == "initialise" and parent == "initialise" and args == ([],) and not kwargs,
+                name, "only an empty initial refinement list is administrative")
+        elif name in self.FILL:
+            self.check(self.scope == "initialise" and self._api_stack and self._api_stack[0] == "initialise",
+                name, "history fill is confined to initialisation before the bound load")
+        elif name == "load_state":
+            self.check(self.scope == "load" and parent is None, name, "one explicit administrative load required")
+        elif name == "_load_state":
+            self.check(self.scope == "load" and parent == "load_state", name, "private loader requires its public entry")
+        elif name in self.LOAD_ONLY:
+            self.check(self.scope == "load" and self._api_stack and self._api_stack[0] == "load_state",
+                name, "state/history writers and load callbacks are administrative only")
+        else:
+            self.check(False, name, "unknown guarded API")
 
     def wrapper(self, name, original):
         def call(*args, **kwargs):
-            permitted = ((name in self.STEP_ONLY and self.scope == "step")
-                         or (name in self.FILL and self.scope == "initialise")
-                         or (name == "load_state" and self.scope == "load")
-                         or (name == "actions_after_remeshing" and self.scope == "load"))
-            if not permitted:
-                self.denied.append(name)
-                self.record("forbidden_native_entry", {"api": name, "scope": self.scope})
-                raise ValueError("fidelity role prohibits " + name)
-            if name in {"solve", "solve_unsteady", "unsteady_newton_solve"}:
-                require(self.step_entries.get(name, 0) == 0, "additional native time-step entry refused: " + name)
+            self.validate(name, args, kwargs)
+            if name in self.STEP_ONLY | {"initialise", "load_state", "_load_state"}:
+                self.check(self.step_entries.get(name, 0) == 0, name, "additional guarded entry refused")
                 self.step_entries[name] = 1
             self.callbacks.append({"api": name, "scope": self.scope})
-            return original(*args, **kwargs)
+            self._api_stack.append(name)
+            try:
+                return original(*args, **kwargs)
+            finally:
+                require(self._api_stack.pop() == name, "guard API stack changed")
         return call
 
     @contextlib.contextmanager
     def installed(self):
-        names = self.ALWAYS | self.STEP_ONLY | self.FILL | {"actions_after_remeshing", "load_state"}
+        names = self.ALWAYS | self.STEP_ONLY | self.FILL | self.LOAD_ONLY | self.INIT_ONLY
+        present_names = []
+        absent_aliases = []
         try:
             for name in sorted(names):
                 original = getattr(self.problem, name, None)
                 if not callable(original):
-                    require(name not in {"solve", "solve_stationary", "solve_eigenproblem", "force_remesh", "adapt",
-                                         "actions_before_newton_solve", "actions_before_remeshing", "actions_after_remeshing"},
-                            "required guarded API absent: " + name)
+                    require(name not in self.REQUIRED, "required guarded API absent: " + name)
+                    absent_aliases.append(name)
                     continue
                 present, stored = name in vars(self.problem), vars(self.problem).get(name)
                 wrapped = self.wrapper(name, original)
                 setattr(self.problem, name, wrapped)
                 self.restored.append((name, present, stored, wrapped))
+                present_names.append(name)
+            self.record("guard_api_census", {"source_pin": study.PYOOMPH_PIN,
+                "guarded": present_names, "source_absent_optional_aliases": absent_aliases,
+                "boundary": "instance API on the pinned declared call path; native base/subobject calls are outside it"})
             yield self
-            require(not self.denied, "fidelity role attempted forbidden native work")
+            require(not self.denied and not self._api_stack, "fidelity role attempted forbidden native work")
         finally:
-            unchanged = all(getattr(self.problem, name) is wrapped for name, _, _, wrapped in self.restored)
+            unchanged = all(getattr(self.problem, name, None) is wrapped for name, _, _, wrapped in self.restored)
             for name, present, stored, _ in reversed(self.restored):
                 if present:
                     setattr(self.problem, name, stored)
@@ -232,10 +317,14 @@ class EvolutionGuard:
             require(unchanged, "guard callback inventory changed")
 
     @contextlib.contextmanager
-    def declared(self, name):
-        require(self.scope is None, "nested fidelity mutation scope")
+    def declared(self, name, *, selected=None):
+        require(self.scope is None and not self._api_stack, "nested fidelity mutation scope")
         attribute = {"initialise": "initialisations", "load": "loads", "step": "steps"}[name]
         require(getattr(self, attribute) == 0, "fidelity operation allowance exhausted: " + name)
+        if name == "step":
+            self._step_controls, _ = controls(selected)
+        else:
+            require(selected is None, "numerical controls belong only to the declared step")
         setattr(self, attribute, 1)
         self.scope = name
         try:
@@ -347,7 +436,7 @@ def sole_step(problem, capture, guard, selected, deadline, output, record, stabl
     bridge = runtime.NewtonCallbackBridge(problem, budget, record)
     try:
         budget.check()
-        with guard.declared("step"), bridge.installed():
+        with guard.declared("step", selected=selected), bridge.installed():
             problem.solve(timestep=selected["dt_solver"], temporal_error=None, spatial_adapt=0,
                           shift_values=True, do_not_set_IC=True,
                           max_newton_iterations=selected["max_newton_iterations"],
