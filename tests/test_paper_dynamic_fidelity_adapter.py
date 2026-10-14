@@ -39,7 +39,9 @@ def reference(path):
 class BridgeTests(unittest.TestCase):
     def test_actual_driver_import_defers_all_scientific_packages(self):
         code = '''import importlib.abc
+import json
 import sys
+from pathlib import Path
 class NoScientific(importlib.abc.MetaPathFinder):
     def find_spec(self, fullname, path=None, target=None):
         if fullname in ('numpy', 'scipy', 'pyoomph') or fullname.startswith(('numpy.', 'scipy.', 'pyoomph.', '_pyoomph')):
@@ -48,6 +50,10 @@ sys.meta_path.insert(0, NoScientific())
 from runners import run_paper_dynamic_fidelity_adapter as bridge
 driver = bridge.selected_driver(bridge.ROOT)
 assert driver.parser() is not None
+case = json.loads(Path('validation/herradaEtAl_paper_model/cases/h15-bo1p56.json').read_text())
+case['physics']['ca_in'] = -.002
+assert driver.model.validate_case(case)['physics']['ca_in'] == -.002
+assert 'postprocess.film' not in sys.modules
 assert not any(name in ('numpy', 'scipy', 'pyoomph') or name.startswith(('numpy.', 'scipy.', 'pyoomph.', '_pyoomph')) for name in sys.modules)
 print('real driver imports without scientific packages')
 '''

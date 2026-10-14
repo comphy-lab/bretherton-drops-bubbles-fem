@@ -23,8 +23,6 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 
-from postprocess.film import aussillous_quere
-
 
 @dataclass(frozen=True)
 class CapsuleGeometry:
@@ -80,6 +78,8 @@ class CapsuleGeometry:
         The parent Basilisk campaign inverts the same relation when it chooses
         ``Ca_in = 0.4788`` to target ``Ca_b = 1``.
         """
+        from postprocess.film import aussillous_quere
+
         if ca_in <= 0:
             raise ValueError("Ca_in must be positive")
         ratio = 1.0
@@ -109,6 +109,8 @@ class CapsuleGeometry:
         capillary ripple and the film relaxation, the front sees only the
         Poiseuille approach, so they need not converge at the same pad.
         """
+        from postprocess.film import aussillous_quere
+
         seed_ca = cls.expected_bubble_speed(ca) if seed_from_bubble_speed else ca
         if not 0.0 < aussillous_quere(seed_ca) < 1.0:
             raise ValueError(
