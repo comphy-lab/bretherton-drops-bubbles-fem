@@ -500,6 +500,16 @@ class UpdateBudget:
         self.initial_residual_pending = self.finished = False
         self.solves_completed = 0
         self.solve_open = False
+        self.sequence_qualified = True
+        self.failure_reasons = []
+        self.observed_hooks = []
+
+    def invalidate(self, reason):
+        self.sequence_qualified = False
+        self.failure_reasons.append(reason)
+
+    def observe_hook(self, name):
+        self.observed_hooks.append(name)
 
     def check(self):
         require(self.deadline.tzinfo is not None and datetime.now(UTC) < self.deadline,
@@ -551,6 +561,7 @@ class UpdateBudget:
         self.solves_completed += 1
 
     def finish(self):
+        require(self.sequence_qualified, "invalidated native callback accounting cannot finish")
         require(not self.finished and not self.solve_open and self.starts >= 1
                 and self.solves_completed == self.starts and self.started == self.completed,
                 "incomplete native Newton callback ledger")
@@ -559,12 +570,16 @@ class UpdateBudget:
         self.finished = True
 
     def callback_receipt(self):
+        qualified = (self.sequence_qualified and self.starts > 0 and self.started == self.completed
+                     and not self.solve_open and self.solves_completed == self.starts)
         return {"solve_attempts": self.starts, "completed_updates": self.completed,
                 "completed_solve_callbacks": self.solves_completed,
                 "initial_residual_checks": self.initial_checks, "zero_update_solves": self.zero_update_solves,
-                "unmatched_possible_update": self.started != self.completed,
-                "counts_qualified_for_resume": self.started == self.completed and not self.solve_open
-                and self.solves_completed == self.starts}
+                "observed_hooks": list(self.observed_hooks), "failure_reasons": list(self.failure_reasons),
+                "callback_sequence_qualified": self.sequence_qualified, "work_counts_qualified": qualified,
+                "physical_completed_updates": self.completed if qualified else None,
+                "unmatched_possible_update": self.started != self.completed or not self.sequence_qualified,
+                "counts_qualified_for_resume": qualified}
 
 
 class NewtonCallbackBridge:
@@ -606,6 +621,8 @@ class NewtonCallbackBridge:
             return original["actions_before_newton_step"]()
 
         def after_step():
+            if not (self.solve_open and self.iteration_open):
+                self.budget.invalidate("after-step received without a before-update reservation")
             require(self.solve_open and self.iteration_open, "unmatched after-Newton-step callback")
             # Account first: an original after-step hook may itself fail after
             # the native DOF update has already completed.
@@ -625,19 +642,35 @@ class NewtonCallbackBridge:
             self.record("native_newton_call_completed", self.budget.callback_receipt())
             return result
 
-        wrapped = dict(zip(self.CALLBACKS, (before_solve, before_step, after_step, after_solve), strict=True))
+        def observed(name, callback):
+            def call():
+                self.budget.observe_hook(name)
+                try:
+                    return callback()
+                except BaseException:
+                    self.budget.invalidate(name + " callback failed; physical work is unqualified")
+                    raise
+            return call
+
+        callbacks = (observed("before_solve", before_solve), observed("before_step", before_step),
+                     observed("after_step", after_step), observed("after_solve", after_solve))
+        wrapped = dict(zip(self.CALLBACKS, callbacks, strict=True))
         for name, callback in wrapped.items():
             setattr(self.problem, name, callback)
         try:
             yield
+            require(self.budget.sequence_qualified, "invalidated native callback sequence")
             require(not self.solve_open and not self.iteration_open, "native solve did not complete its callbacks")
         except BaseException:
+            self.budget.invalidate("callback or native solve failed; completed physical updates are unqualified")
             self.record("interrupted_native_newton_call", {**self.budget.callback_receipt(),
                          "solve_completed": not self.solve_open, "native_recovery_qualified": False,
                          "cumulative_work": copy.deepcopy(self.budget.work)})
             raise
         finally:
             unchanged = all(getattr(self.problem, name) is callback for name, callback in wrapped.items())
+            if not unchanged:
+                self.budget.invalidate("native callback inventory changed; physical work is unqualified")
             for name, callback in original.items():
                 setattr(self.problem, name, callback)
             require(unchanged, "native Newton callback inventory changed")
@@ -900,6 +933,8 @@ def _advance_steps(problem, role, controls, thresholds, hooks, deadline, accepte
                           max_newton_iterations=controls["max_newton_iterations_per_step"],
                           newton_solver_tolerance=thresholds["transient_newton_residual"])
         budget.finish()
+        require(budget.callback_receipt()["work_counts_qualified"] is True,
+                "unqualified native callback work cannot advance a transient row")
         after = capture(problem, hooks)
         require(after["time"] == expected_clock and all(dt == role["dt_solver"] for dt in after["dts"])
                 and after["counter"] == index and after["flags"] == DYNAMIC_FLAGS

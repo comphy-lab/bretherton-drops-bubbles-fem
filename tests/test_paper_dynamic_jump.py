@@ -1020,7 +1020,7 @@ def test_native_callback_bridge_stops_before_a_second_physical_update(bundle):
     assert p.events.count("actions_before_newton_step") == 1
     assert records[-1][0] == "interrupted_native_newton_call"
     assert records[-1][1]["native_recovery_qualified"] is False
-    with pytest.raises(ValueError, match="incomplete native Newton callback ledger"):
+    with pytest.raises(ValueError, match="invalidated native callback accounting"):
         budget.finish()
 
 
@@ -1038,7 +1038,7 @@ def test_interrupted_initial_residual_is_not_a_completed_update_or_a_resumable_r
     assert records[-1][1]["counts_qualified_for_resume"] is False
     assert records[-1][1]["cumulative_work"]["newton_updates"] == 0
     assert records[-1][1]["cumulative_work"]["solve_calls"] == 0
-    with pytest.raises(ValueError, match="incomplete native Newton callback ledger"):
+    with pytest.raises(ValueError, match="invalidated native callback accounting"):
         budget.finish()
     with pytest.raises(ValueError, match="qualified recovery"):
         budget.before_solve()
@@ -1060,8 +1060,85 @@ def test_completed_update_is_counted_when_an_original_after_step_hook_fails(bund
     assert records[-1][1]["solve_completed"] is False
     assert records[-1][1]["native_recovery_qualified"] is False
     assert records[-1][1]["counts_qualified_for_resume"] is False
-    with pytest.raises(ValueError, match="incomplete native Newton callback ledger"):
+    with pytest.raises(ValueError, match="invalidated native callback accounting"):
         budget.finish()
+
+
+@pytest.mark.parametrize("failing_hook", runtime.NewtonCallbackBridge.CALLBACKS)
+def test_caught_original_callback_failure_stays_unqualified(bundle, failing_hook):
+    p = callback_problem()
+    original = getattr(p, failing_hook)
+
+    def failure():
+        original()
+        raise RuntimeError("synthetic caught callback failure")
+
+    setattr(p, failing_hook, failure)
+    budget = runtime.UpdateBudget(runtime.empty_work(), bundle.packet["controls"],
+                                  datetime(2099, 1, 1, tzinfo=UTC))
+    bridge = runtime.NewtonCallbackBridge(p, budget, lambda *_: None)
+    with pytest.raises(ValueError, match="invalidated native callback sequence"), bridge.installed():
+        for name in bridge.CALLBACKS:
+            try:
+                getattr(p, name)()
+            except RuntimeError:
+                break
+    receipt = budget.callback_receipt()
+    assert receipt["observed_hooks"] and receipt["failure_reasons"]
+    assert receipt["work_counts_qualified"] is False
+    assert receipt["physical_completed_updates"] is None
+    assert receipt["unmatched_possible_update"] is True
+    assert receipt["counts_qualified_for_resume"] is False
+    with pytest.raises(ValueError, match="invalidated native callback accounting"):
+        budget.finish()
+
+
+def test_caught_duplicate_after_solve_cannot_qualify_zero_update_work(bundle):
+    p = callback_problem()
+    budget = runtime.UpdateBudget(runtime.empty_work(), bundle.packet["controls"],
+                                  datetime(2099, 1, 1, tzinfo=UTC))
+    with pytest.raises(ValueError, match="invalidated native callback sequence"), \
+            runtime.NewtonCallbackBridge(p, budget, lambda *_: None).installed():
+        p.actions_before_newton_solve()
+        p.actions_before_newton_step()
+        p.actions_after_newton_solve()
+        with pytest.raises(ValueError, match="unmatched after-Newton-solve"):
+            p.actions_after_newton_solve()
+    receipt = budget.callback_receipt()
+    assert receipt["completed_updates"] == 0
+    assert receipt["observed_hooks"].count("after_solve") == 2
+    assert receipt["physical_completed_updates"] is None
+    assert receipt["work_counts_qualified"] is False
+
+
+def test_explicit_invalidated_matched_work_refuses_finish_before_debit(bundle):
+    p = callback_problem()
+    budget = runtime.UpdateBudget(runtime.empty_work(), bundle.packet["controls"],
+                                  datetime(2099, 1, 1, tzinfo=UTC))
+    with runtime.NewtonCallbackBridge(p, budget, lambda *_: None).installed():
+        for name in runtime.NewtonCallbackBridge.CALLBACKS:
+            getattr(p, name)()
+    before = copy.deepcopy(budget.work)
+    budget.invalidate("synthetic consumer rejects an otherwise matched sequence")
+    with pytest.raises(ValueError, match="invalidated native callback accounting"):
+        budget.finish()
+    assert budget.work == before and budget.finished is False
+    assert budget.callback_receipt()["completed_updates"] == 1
+    assert budget.callback_receipt()["physical_completed_updates"] is None
+
+
+def test_unmatched_after_step_retains_raw_zero_without_physical_zero_claim(bundle):
+    p = callback_problem()
+    budget = runtime.UpdateBudget(runtime.empty_work(), bundle.packet["controls"],
+                                  datetime(2099, 1, 1, tzinfo=UTC))
+    with pytest.raises(ValueError, match="unmatched after-Newton-step"), \
+            runtime.NewtonCallbackBridge(p, budget, lambda *_: None).installed():
+        p.actions_after_newton_step()
+    receipt = budget.callback_receipt()
+    assert receipt["completed_updates"] == receipt["initial_residual_checks"] == 0
+    assert receipt["observed_hooks"] == ["after_step"]
+    assert receipt["callback_sequence_qualified"] is receipt["work_counts_qualified"] is False
+    assert receipt["physical_completed_updates"] is None
 
 
 def test_unfinished_native_solve_cannot_enter_an_unqualified_retry(bundle):
