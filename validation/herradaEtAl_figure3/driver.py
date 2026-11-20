@@ -21,6 +21,7 @@ SCHEMA = "pyoomph-case-v1"
 BENCHMARK_SCHEMA = "herrada-figure3-v1"
 DOI = "10.1017/jfm.2023.123"
 BASE_CASE_ID = "herradaEtAl_figure3_bo1p56"
+BOND_RANGE = (0.01, 3.0)
 BASE_DOMAIN = {"domain_over_r": 15.0, "upper_tip_over_r": 10.0}
 BASE_MESH = {"film_elements": 4.0, "bulk_resolution": 0.08}
 CONVERGENCE_VARIANTS = {
@@ -134,9 +135,16 @@ def validate_case(case: dict, expected_mode: str | None = None) -> None:
 
     p = case["physics"]
     expected = {
-        "reynolds": 0.0, "laplace": 0.0, "bond": 1.56, "vhat": 3.3, "r0": 1.0,
+        "reynolds": 0.0, "laplace": 0.0, "vhat": 3.3, "r0": 1.0,
         "seed_ca": 0.02,
     }
+    # Figures 4, 5 and 12 vary Bo, and a density-corrected
+    # Bo_eff=(1-rho_g/rho_l)Bo represents gas buoyancy in the void
+    # approximation. The bounds keep the Bond homotopy from the Bo=0 seed
+    # meaningful (above go_to_param's 1e-6 tolerance) and finite in length.
+    bond = finite(p, "bond", positive=True)
+    if not BOND_RANGE[0] <= bond <= BOND_RANGE[1]:
+        raise ValueError(f"bond must lie in {BOND_RANGE} for the figure 3 family")
     for name, value in expected.items():
         if not math.isclose(float(p.get(name, math.nan)), value, rel_tol=1e-12,
                             abs_tol=1e-12):

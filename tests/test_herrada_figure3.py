@@ -139,10 +139,19 @@ def test_profile_coordinate_follows_translated_pinned_tip(tmp_path):
     assert lines[2].split(",")[2] == "0.0"
 
 
+def test_production_case_accepts_density_corrected_bond():
+    case = json.loads((HERE / "case.json").read_text())
+    case["physics"]["bond"] = 1.56 * (1 - 0.000949)
+    validate_case(case, "run")
+
+
 @pytest.mark.parametrize(
     ("mutation", "message"),
     [
         (lambda c: c["physics"].update(bond=0), "bond"),
+        (lambda c: c["physics"].update(bond=5e-7), "bond"),
+        (lambda c: c["physics"].update(bond=1e6), "bond"),
+        (lambda c: c["physics"].update(bond=float("nan")), "bond"),
         (lambda c: c["physics"].update(r_tube=0.7), "r_tube"),
         (lambda c: c["physics"].update(allow_signed_flow=False), "signed-flow"),
         (lambda c: c["closure"].update(frame_speed="centroid"), "front-tip"),
